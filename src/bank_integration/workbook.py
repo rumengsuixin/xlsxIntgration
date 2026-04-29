@@ -106,13 +106,13 @@ def write_all_to_summary(results: List[Dict], summary_path: str) -> None:
     if BALANCE_SHEET in wb.sheetnames:
         ws_bal = wb[BALANCE_SHEET]
         for item in results:
-            if item.get("balance") is not None and item.get("balance_date"):
+            for date_str, balance in item.get("monthly_balances", []):
                 update_balance_sheet(
                     ws_bal,
                     item["bank_name"],
                     item["company_code"],
-                    item["balance_date"],
-                    item["balance"],
+                    date_str,
+                    balance,
                 )
     else:
         logging.warning(f"汇总文件中未找到 '{BALANCE_SHEET}' 工作表，跳过余额更新")
@@ -123,3 +123,35 @@ def write_all_to_summary(results: List[Dict], summary_path: str) -> None:
     except PermissionError:
         logging.error(f"无法保存汇总文件，请先关闭 Excel 中的 {SUMMARY_FILE}")
         raise
+
+
+def align_workbook_year(summary_path: str, source_year: int) -> None:
+    """若工作副本的余额表年份与源文件年份不一致，刷新至 source_year。"""
+    try:
+        wb = openpyxl.load_workbook(summary_path)
+    except PermissionError:
+        logging.error(f"无法打开汇总文件，请先关闭 Excel 中的 {SUMMARY_FILE}")
+        raise
+
+    if BALANCE_SHEET not in wb.sheetnames:
+        wb.close()
+        return
+
+    ws = wb[BALANCE_SHEET]
+    current_year = detect_balance_sheet_year(ws)
+
+    if current_year != source_year:
+        logging.info(
+            f"工作副本年份为 {current_year}，源文件年份为 {source_year}，"
+            f"刷新余额表至 {source_year} 年度"
+        )
+        refresh_balance_sheet_dates(ws, source_year)
+        try:
+            wb.save(summary_path)
+            logging.info(f"工作副本已更新至 {source_year} 年度")
+        except PermissionError:
+            logging.error(f"无法保存汇总文件，请先关闭 Excel 中的 {SUMMARY_FILE}")
+            wb.close()
+            raise
+
+    wb.close()

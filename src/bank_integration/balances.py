@@ -60,6 +60,59 @@ def get_last_balance(df, bank_name: str):
     return None, None
 
 
+def get_monthly_balances(df, bank_name: str) -> List[Tuple[str, float]]:
+    """
+    Extract end-of-month balances for every calendar month present in the data.
+
+    For each month, picks the row with the latest date; when dates tie, the
+    later source-order row wins (same rule as get_last_balance).
+    Returns a list of ("YYYY-MM-DD", float) tuples sorted by date,
+    or [] if no valid balances are found.
+    """
+    balance_col = BANK_BALANCE_COL.get(bank_name, "")
+    date_col = BANK_DATE_COL.get(bank_name, "")
+
+    if balance_col not in df.columns:
+        logging.warning(f"  余额列 '{balance_col}' 不存在，跳过余额更新")
+        return []
+    if date_col not in df.columns:
+        logging.warning(f"  日期列 '{date_col}' 不存在，跳过余额更新")
+        return []
+
+    # (year, month) -> (latest_date_in_month, balance)
+    month_best: dict = {}
+
+    for _, row in df.iterrows():
+        bal_str = str(row.get(balance_col, "")).strip().replace(",", "").replace("+", "")
+        if not bal_str:
+            continue
+        try:
+            balance = float(bal_str)
+        except ValueError:
+            continue
+        if balance == 0.0:
+            continue
+
+        date_raw = str(row.get(date_col, "")).strip()
+        m = re.search(r"(\d{4})[-/]?(\d{2})[-/]?(\d{2})", date_raw)
+        if not m:
+            continue
+        try:
+            row_date = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            continue
+
+        month_key = (row_date.year, row_date.month)
+        prev = month_best.get(month_key)
+        if prev is None or row_date >= prev[0]:
+            month_best[month_key] = (row_date, balance)
+
+    return [
+        (d.isoformat(), bal)
+        for _, (d, bal) in sorted(month_best.items())
+    ]
+
+
 def parse_cell_date(val) -> Optional[date]:
     """Parse an openpyxl cell value as a Python date."""
     if val is None:

@@ -1,9 +1,17 @@
 """Project paths and bank-specific configuration."""
 
 from pathlib import Path
+import sys
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+def get_project_root() -> Path:
+    """Return the folder that contains template/ and data/."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
+PROJECT_ROOT = get_project_root()
 TEMPLATE_DIR = PROJECT_ROOT / "template"
 DATA_DIR = PROJECT_ROOT / "data"
 INPUT_DIR = DATA_DIR / "input"
@@ -67,4 +75,3 @@ BALANCE_BANK_ORDER = [
     "兴业银行",
     "中信银行",
 ]
-

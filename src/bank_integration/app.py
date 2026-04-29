@@ -10,7 +10,7 @@ from .scanner import scan_source_files
 from .workbook import align_workbook_year, prepare_work_copy, write_all_to_summary
 
 
-def main() -> None:
+def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -19,19 +19,20 @@ def main() -> None:
 
     summary_path = prepare_work_copy(OUTPUT_DIR)
     if summary_path is None:
-        return
+        return 1
 
     sources = scan_source_files(INPUT_DIR)
     if not sources:
         logging.warning(
-            "未找到符合命名规范的源文件。"
-            "请将文件重命名为 {公司代号}-{银行全称}.{扩展名}，例如：B-建设银行.xls，"
-            f"并放入 {INPUT_DIR}"
+            "未找到可处理的银行流水文件。请把文件放入 data/input，并按规则命名，"
+            "例如：A-中信银行.xlsx、B-招商银行.xlsx、C-建设银行.xls。"
         )
-        return
+        logging.warning(f"当前检查的文件夹: {INPUT_DIR}")
+        return 1
 
     logging.info(f"共找到 {len(sources)} 个源文件待处理")
     results = []
+    failures = []
 
     for item in sources:
         company = item["company"]
@@ -66,11 +67,14 @@ def main() -> None:
             )
         except Exception as exc:
             logging.error(f"  处理失败: {exc}", exc_info=True)
+            failures.append(os.path.basename(filepath))
             continue
 
     if not results:
-        logging.warning("没有可写入的数据，退出")
-        return
+        logging.warning("没有可写入的数据，请检查源文件格式和命名是否正确。")
+        if failures:
+            logging.warning("处理失败的文件: " + "、".join(failures))
+        return 1
 
     years = [
         int(date_str[:4])
@@ -82,6 +86,16 @@ def main() -> None:
         source_year = Counter(years).most_common(1)[0][0]
         align_workbook_year(summary_path, source_year)
 
-    write_all_to_summary(results, summary_path)
-    logging.info("全部处理完成")
+    try:
+        write_all_to_summary(results, summary_path)
+    except Exception:
+        return 1
 
+    if failures:
+        logging.warning("部分文件处理失败，已跳过: " + "、".join(failures))
+        logging.warning(f"已成功生成结果文件: {summary_path}")
+        return 1
+
+    logging.info("全部处理完成")
+    logging.info(f"结果文件: {summary_path}")
+    return 0

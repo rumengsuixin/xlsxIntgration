@@ -24,13 +24,15 @@ def prepare_work_copy(output_dir: Optional[Union[str, Path]] = None) -> Optional
 
     def copy_from_template() -> bool:
         if not TEMPLATE_PATH.exists():
-            logging.error(f"缺少模板文件: {TEMPLATE_PATH}。请先将 {SUMMARY_FILE} 放入 template/ 子目录。")
+            logging.error(
+                f"缺少模板文件: {TEMPLATE_PATH}。请把 {SUMMARY_FILE} 放入 template 文件夹后再运行。"
+            )
             return False
         try:
             shutil.copy2(TEMPLATE_PATH, output_path)
             logging.info(f"已从模板复制工作副本: {output_path}")
         except PermissionError:
-            logging.error(f"无法覆盖工作副本，请先关闭 Excel 中的 {SUMMARY_FILE}")
+            logging.error(f"无法覆盖工作副本，请先关闭 Excel 中打开的 {SUMMARY_FILE}，然后重新运行。")
             return False
         return True
 
@@ -38,7 +40,7 @@ def prepare_work_copy(output_dir: Optional[Union[str, Path]] = None) -> Optional
         try:
             wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
         except PermissionError:
-            logging.error(f"无法读取 {SUMMARY_FILE}，请先关闭 Excel 中的该文件")
+            logging.error(f"无法读取 {SUMMARY_FILE}，请先关闭 Excel 中打开的该文件，然后重新运行。")
             return -1
         try:
             if BALANCE_SHEET in wb.sheetnames:
@@ -64,7 +66,7 @@ def prepare_work_copy(output_dir: Optional[Union[str, Path]] = None) -> Optional
         try:
             wb = openpyxl.load_workbook(output_path)
         except PermissionError:
-            logging.error(f"无法打开刚复制的工作副本 {SUMMARY_FILE}")
+            logging.error(f"无法打开刚复制的工作副本 {SUMMARY_FILE}，请确认文件没有被 Excel 占用。")
             return None
         if BALANCE_SHEET in wb.sheetnames:
             year = detect_balance_sheet_year(wb[BALANCE_SHEET])
@@ -82,7 +84,7 @@ def write_all_to_summary(results: List[Dict], summary_path: str) -> None:
     try:
         wb = openpyxl.load_workbook(summary_path)
     except PermissionError:
-        logging.error(f"无法打开汇总文件，请先关闭 Excel 中的 {SUMMARY_FILE}")
+        logging.error(f"无法打开汇总文件，请先关闭 Excel 中打开的 {SUMMARY_FILE}，然后重新运行。")
         raise
 
     for item in results:
@@ -121,7 +123,7 @@ def write_all_to_summary(results: List[Dict], summary_path: str) -> None:
         wb.save(summary_path)
         logging.info(f"汇总文件保存完成: {summary_path}")
     except PermissionError:
-        logging.error(f"无法保存汇总文件，请先关闭 Excel 中的 {SUMMARY_FILE}")
+        logging.error(f"无法保存汇总文件，请先关闭 Excel 中打开的 {SUMMARY_FILE}，然后重新运行。")
         raise
 
 
@@ -130,7 +132,7 @@ def align_workbook_year(summary_path: str, source_year: int) -> None:
     try:
         wb = openpyxl.load_workbook(summary_path)
     except PermissionError:
-        logging.error(f"无法打开汇总文件，请先关闭 Excel 中的 {SUMMARY_FILE}")
+        logging.error(f"无法打开汇总文件，请先关闭 Excel 中打开的 {SUMMARY_FILE}，然后重新运行。")
         raise
 
     if BALANCE_SHEET not in wb.sheetnames:
@@ -150,7 +152,7 @@ def align_workbook_year(summary_path: str, source_year: int) -> None:
             wb.save(summary_path)
             logging.info(f"工作副本已更新至 {source_year} 年度")
         except PermissionError:
-            logging.error(f"无法保存汇总文件，请先关闭 Excel 中的 {SUMMARY_FILE}")
+            logging.error(f"无法保存汇总文件，请先关闭 Excel 中打开的 {SUMMARY_FILE}，然后重新运行。")
             wb.close()
             raise
 

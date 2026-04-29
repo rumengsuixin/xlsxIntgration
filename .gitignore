@@ -1,12 +1,47 @@
+# Python virtual environments
 venv/
+.venv/
+env/
+ENV/
+
+# Python cache and test artifacts
 __pycache__/
-**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
 
-data/output/*.xlsx
+# PyInstaller build artifacts
+build/
+dist/
+*.manifest
+*.pyz
 
-**/*.xlsx
-**/*.xls
-**/*.csv
+# Local logs and temporary files
+*.log
+*.tmp
+*.temp
+Thumbs.db
+.DS_Store
+
+# Excel temporary lock files
+~$*
+
+# Runtime input/output data
+data/input/*
+data/output/*
+!data/input/
+!data/input/raw/
+!data/input/.gitkeep
+!data/input/raw/.gitkeep
+!data/output/
+!data/output/.gitkeep
+
+# Bank/export files are usually business data.
+# Keep the template workbook versioned, but ignore ad-hoc spreadsheets elsewhere.
+*.xlsx
+*.xls
+*.csv
 !template/
-!template/.gitkeep
-
+!template/**

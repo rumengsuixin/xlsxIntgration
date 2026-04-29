@@ -93,8 +93,8 @@ tests/
 | 银行 | header | 格式 | 余额列 | 日期列 | 特殊处理 |
 |---|---|---|---|---|---|
 | 汇丰银行 | 1 | CSV | 账面结余（前缀匹配） | 日期 | `strip_col_suffix_char="("` |
-| 东亚银行 | 0 | CSV | 存入金额 | 日期及时间 | `row_filter_prefix="总结余"` |
-| 华侨银行 | 0 | CSV (GBK) | 余 | 交易日期 | `encoding="gbk"`，`col_map` 重命名日期列 |
+| 东亚银行 | 0 | CSV | — | 日期及时间 | `row_filter_prefix="总结余"`；无余额列，跳过余额提取 |
+| 华侨银行 | 0 | CSV (GBK) | 余额 | 交易日期 | `encoding="gbk"`；`col_map` 仅在目标列不存在时重命名，避免重复 `交易日期` |
 | 渣打银行空中云汇 | 0 | XLSX | Account Balance | Time | — |
 | 华美银行 | 0 | CSV | — | — | 无余额列，跳过余额提取 |
 | 大华银行（UOB) | 3 | XLSX | Ledger Balance | Value Date | `row_filter_val="D2"` |
@@ -133,6 +133,8 @@ tests/
 - **模板**：`template/2/银行汇总.xlsx` 缺失时脚本直接退出
 - **年份自动刷新**：余额工作表名称以 `MIG银行余额` 开头，`_find_balance_sheet_2` 动态定位
 - **汇丰银行余额列**：列名含动态货币后缀（如 `账面结余(HKD 港元)`），通过前缀匹配 `_resolve_col` 定位
+- **东亚银行余额**：源文件没有可用于余额表更新的余额列，明细可写入，但余额更新跳过
+- **华侨银行余额**：使用 `余额` + `交易日期` 提取月末余额，日期为 `YYYYMMDD` 格式
 - **金额清洗**：余额字段中的逗号分隔符和 `+` 前缀在 `get_monthly_balances` 中处理
 
 ## 日期格式支持

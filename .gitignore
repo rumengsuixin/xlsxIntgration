@@ -40,8 +40,6 @@ data/output/*
 
 # Bank/export files are usually business data.
 # Keep the template workbook versioned, but ignore ad-hoc spreadsheets elsewhere.
-*.xlsx
-*.xls
-*.csv
-!template/
-!template/**
+**/*.xlsx
+**/*.xls
+**/*.csv

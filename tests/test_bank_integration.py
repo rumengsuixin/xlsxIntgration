@@ -1,27 +1,19 @@
 # -*- coding: utf-8 -*-
-import importlib.util
 import unittest
 from pathlib import Path
 
+from src.bank_integration.balances import get_last_balance
+from src.bank_integration.readers import read_bank_file
+from src.bank_integration.scanner import scan_source_files
+
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = ROOT / "整合.py"
-
-
-def load_merge_module():
-    spec = importlib.util.spec_from_file_location("bank_merge", SCRIPT_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+INPUT_DIR = ROOT / "data" / "input"
 
 
 class BankIntegrationSampleTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.mod = load_merge_module()
-
     def test_scan_source_files_only_recognizes_prefixed_samples(self):
-        sources = self.mod.scan_source_files(str(ROOT))
+        sources = scan_source_files(INPUT_DIR)
         names = sorted(path.name for path in (Path(item["filepath"]) for item in sources))
 
         self.assertEqual(
@@ -46,8 +38,8 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         for filename, (bank_name, rows, date_col, balance_col, exp_date, exp_balance) in cases.items():
             with self.subTest(filename=filename):
-                df = self.mod.read_bank_file(str(ROOT / filename), bank_name)
-                balance_date, balance = self.mod.get_last_balance(df, bank_name)
+                df = read_bank_file(str(INPUT_DIR / filename), bank_name)
+                balance_date, balance = get_last_balance(df, bank_name)
 
                 self.assertEqual(len(df), rows)
                 self.assertIn(date_col, df.columns)
@@ -56,8 +48,11 @@ class BankIntegrationSampleTests(unittest.TestCase):
                 self.assertAlmostEqual(balance, exp_balance, places=2)
 
     def test_summary_template_is_required(self):
-        self.assertFalse(hasattr(self.mod, "create_summary_file"))
+        import src.bank_integration.workbook as workbook
+
+        self.assertFalse(hasattr(workbook, "create_summary_file"))
 
 
 if __name__ == "__main__":
     unittest.main()
+

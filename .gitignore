@@ -1,6 +1,12 @@
-**/__pycache__
-**/venv
-**/=*
+venv/
+__pycache__/
+**/__pycache__/
+
+data/output/*.xlsx
+
 **/*.xlsx
 **/*.xls
 **/*.csv
+!template/
+!template/.gitkeep
+

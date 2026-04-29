@@ -2,13 +2,19 @@
 import unittest
 from pathlib import Path
 
-from src.bank_integration.balances import get_last_balance
+from src.bank_integration.balances import get_last_balance, get_monthly_balances
+from src.bank_integration.config2 import (
+    BANK_BALANCE_COL_2,
+    BANK_DATE_COL_2,
+    BANK_READ_CONFIG_2,
+)
 from src.bank_integration.readers import read_bank_file
 from src.bank_integration.scanner import scan_source_files
 
 
 ROOT = Path(__file__).resolve().parents[1]
 INPUT_DIR = ROOT / "data" / "input"
+INPUT_DIR_2 = INPUT_DIR / "2"
 
 
 class BankIntegrationSampleTests(unittest.TestCase):
@@ -55,6 +61,56 @@ class BankIntegrationSampleTests(unittest.TestCase):
         import src.bank_integration.workbook as workbook
 
         self.assertFalse(hasattr(workbook, "create_summary_file"))
+
+    def test_mode2_east_asia_has_no_balance_column(self):
+        cases = [
+            "B-东亚银行-HKD.csv",
+            "B-东亚银行-USD.csv",
+        ]
+
+        for filename in cases:
+            with self.subTest(filename=filename):
+                df = read_bank_file(
+                    str(INPUT_DIR_2 / filename),
+                    "东亚银行",
+                    bank_read_config=BANK_READ_CONFIG_2,
+                    bank_date_col=BANK_DATE_COL_2,
+                )
+                monthly = get_monthly_balances(
+                    df,
+                    "东亚银行",
+                    balance_col_map=BANK_BALANCE_COL_2,
+                    date_col_map=BANK_DATE_COL_2,
+                )
+
+                self.assertFalse(df.empty)
+                self.assertEqual(monthly, [])
+
+    def test_mode2_ocbc_extracts_monthly_balance(self):
+        cases = {
+            "D-华侨银行-HKD.csv": ("2026-04-13", 1716.58),
+            "D-华侨银行-USD.csv": ("2026-04-24", 96049.90),
+        }
+
+        for filename, (expected_date, expected_balance) in cases.items():
+            with self.subTest(filename=filename):
+                df = read_bank_file(
+                    str(INPUT_DIR_2 / filename),
+                    "华侨银行",
+                    bank_read_config=BANK_READ_CONFIG_2,
+                    bank_date_col=BANK_DATE_COL_2,
+                )
+                monthly = get_monthly_balances(
+                    df,
+                    "华侨银行",
+                    balance_col_map=BANK_BALANCE_COL_2,
+                    date_col_map=BANK_DATE_COL_2,
+                )
+
+                self.assertIn("余额", df.columns)
+                self.assertEqual(list(df.columns).count("交易日期"), 1)
+                self.assertEqual(monthly[0][0], expected_date)
+                self.assertAlmostEqual(monthly[0][1], expected_balance, places=2)
 
 
 if __name__ == "__main__":

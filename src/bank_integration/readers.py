@@ -56,7 +56,13 @@ def read_bank_file(
 
     col_map = cfg.get("col_map")
     if col_map:
-        df = df.rename(columns=col_map)
+        rename_map = {
+            old: new
+            for old, new in col_map.items()
+            if old in df.columns and (new not in df.columns or old == new)
+        }
+        if rename_map:
+            df = df.rename(columns=rename_map)
 
     row_filter_col = cfg.get("row_filter_col")
     if row_filter_col and row_filter_col in df.columns:

@@ -33,14 +33,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 数据整合目标
 
-将各行异构格式统一映射到 `国内银行汇总.xlsx` 的标准字段，主要整合字段为：
-- 银行来源标识
-- 交易日期 / 时间
-- 借贷方向（借/贷）
-- 交易金额
-- 余额
-- 对手方信息（账号 + 名称 + 开户行）
-- 摘要 / 用途 / 附言
+当前脚本目标是**原样归档 + 余额更新**，不是统一字段标准化：
+
+- 将符合 `{公司代号}-{银行全称}.{扩展名}` 命名规范的源文件读取为 DataFrame
+- 将各银行交易明细按源文件原始列结构写入 `国内银行汇总.xlsx` 的 `X-银行缩写` 子表
+- 从每个源文件中提取期末余额，更新 `银行余额` 工作表中对应月份、银行、公司的单元格
+- `国内银行汇总.xlsx` 必须作为模板文件预先存在；缺少该文件时脚本不处理数据并提示错误
+- 未加公司代号前缀的原始文件不会被当前扫描逻辑处理
 
 ## 注意事项
 
@@ -48,6 +47,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 汇总文件 `国内银行汇总.xlsx` 为最终输出，处理时以完整数据为准，不得截断
 - 中国银行文件为 CSV 格式，其他为 XLS/XLSX，解析时需分别处理
 - 金额字段可能含逗号分隔符（如 `6,475.08`）和正负号前缀（`+0.81` / `-400.00`），解析时需清洗
+- 期末余额按交易日期最新的一笔有效非零余额提取，避免倒序流水按物理末行取错余额；同一日期内多笔交易时保留源文件中靠后的那笔
 
 ## 生成的脚本文件
 
@@ -55,12 +55,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |---|---|
 | **整合.py** | 主整合脚本，将各银行源文件原样写入汇总文件子表并更新银行余额 |
 | **requirements.txt** | Python 依赖（pandas、openpyxl、xlrd>=2.0.1、chardet） |
+| **tests/test_bank_integration.py** | 基于当前样例文件的读取与余额提取回归测试 |
 
 ### 整合脚本使用方法
 
-1. 将银行源文件重命名为 `{公司代号}-{银行全称}.{扩展名}`，例如 `B-建设银行.xls`
-2. 放入本目录（与脚本同目录）
-3. 运行：`venv/Scripts/python.exe 整合.py`
+1. 将模板汇总文件 `国内银行汇总.xlsx` 放入脚本同目录
+2. 将银行源文件重命名为 `{公司代号}-{银行全称}.{扩展名}`，例如 `B-建设银行.xls`
+3. 放入本目录（与脚本同目录）
+4. 运行：`venv/Scripts/python.exe 整合.py`
 
 ### 各银行表头行位置（0-indexed）
 
@@ -78,4 +80,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Sheet9**：公司代号映射（A-V = 22个公司）
 - **银行余额**：按月末日期记录各公司在各银行的期末余额（E列=公司A，Z列=公司V）
+  - 每个月余额块包含 8 家银行（招商、浦发、中国、工商、建设、农业、兴业、中信）和 1 行“货币资金合计”
+  - 银行行 D 列为 E-Z 公司列合计，货币资金合计行 D-Z 列为各银行行合计
 - **X-银行缩写**：各公司-银行明细子表（如 `B-建行`、`A-招行`）
+
+### 回归测试
+
+使用标准库 `unittest`，不依赖 pytest：
+
+```powershell
+venv/Scripts/python.exe -m unittest discover -s tests
+```
+
+测试只读取样例文件，不运行主流程，不保存或改写 `国内银行汇总.xlsx`。

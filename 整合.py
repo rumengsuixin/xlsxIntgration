@@ -10,6 +10,7 @@
 功能：
   - 将源文件的交易数据原样写入 国内银行汇总.xlsx 对应的公司-银行子表
   - 提取最后一笔交易的期末余额，更新"银行余额"工作表对应月份的单元格
+  - 国内银行汇总.xlsx 必须预先存在，脚本不会自动创建模板文件
 """
 
 import os
@@ -121,7 +122,8 @@ def read_bank_file(filepath: str, bank_name: str) -> pd.DataFrame:
 
 def get_last_balance(df: pd.DataFrame, bank_name: str):
     """
-    从 DataFrame 末尾往前找最后一个余额非空非零的行。
+    按交易日期查找最新一笔有效余额。
+    同一日期内存在多笔交易时，保留源文件中靠后的那笔。
     返回 (date_str "YYYY-MM-DD", balance float)，找不到则返回 (None, None)。
     """
     balance_col = BANK_BALANCE_COL.get(bank_name, "")
@@ -130,8 +132,14 @@ def get_last_balance(df: pd.DataFrame, bank_name: str):
     if balance_col not in df.columns:
         logging.warning(f"  余额列 '{balance_col}' 不存在，跳过余额更新")
         return None, None
+    if date_col not in df.columns:
+        logging.warning(f"  日期列 '{date_col}' 不存在，跳过余额更新")
+        return None, None
 
-    for _, row in df.iloc[::-1].iterrows():
+    latest_date = None
+    latest_balance = None
+
+    for _, row in df.iterrows():
         bal_str = str(row.get(balance_col, '')).strip().replace(',', '').replace('+', '')
         if not bal_str:
             continue
@@ -146,7 +154,16 @@ def get_last_balance(df: pd.DataFrame, bank_name: str):
         date_raw = str(row.get(date_col, '')).strip()
         m = re.search(r'(\d{4})[-/]?(\d{2})[-/]?(\d{2})', date_raw)
         if m:
-            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}", balance
+            try:
+                row_date = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                continue
+            if latest_date is None or row_date >= latest_date:
+                latest_date = row_date
+                latest_balance = balance
+
+    if latest_date is not None:
+        return latest_date.isoformat(), latest_balance
 
     return None, None
 
@@ -175,13 +192,46 @@ def parse_cell_date(val) -> Optional[date]:
 
 # ─────────────────────────── 更新银行余额表 ─────────────────────
 
+def _append_balance_month_block(ws, month_end: date, start_row: Optional[int] = None) -> int:
+    """追加一个月末余额块，返回块起始行号。"""
+    from openpyxl.utils import get_column_letter
+
+    if start_row is None:
+        start_row = ws.max_row + 1
+    company_codes = [chr(c) for c in range(ord('A'), ord('V') + 1)]
+    first_company_col = 5
+    last_company_col = 4 + len(company_codes)
+
+    for i, bk in enumerate(BALANCE_BANK_ORDER):
+        row = start_row + i
+        if i == 0:
+            ws.cell(row=row, column=1).value = month_end
+            ws.cell(row=row, column=2).value = "银行存款"
+        ws.cell(row=row, column=3).value = bk
+        ws.cell(row=row, column=4).value = (
+            f"=SUM({get_column_letter(first_company_col)}{row}:"
+            f"{get_column_letter(last_company_col)}{row})"
+        )
+
+    summary_row = start_row + len(BALANCE_BANK_ORDER)
+    ws.cell(row=summary_row, column=2).value = "货币资金合计"
+    bank_start = start_row
+    bank_end = start_row + len(BALANCE_BANK_ORDER) - 1
+    for col_idx in range(4, last_company_col + 1):
+        col_letter = get_column_letter(col_idx)
+        ws.cell(row=summary_row, column=col_idx).value = (
+            f"=SUM({col_letter}{bank_start}:{col_letter}{bank_end})"
+        )
+
+    return start_row
+
+
 def _find_or_create_date_block(ws, year: int, month: int) -> int:
     """
     在银行余额表中查找目标年月的数据块起始行。
     找不到时，在表末追加新块（9行：8家银行 + 货币资金合计），返回其起始行号。
     """
     import calendar
-    from openpyxl.utils import get_column_letter
 
     # 扫描 A 列查找目标年月
     block_start = None
@@ -203,28 +253,8 @@ def _find_or_create_date_block(ws, year: int, month: int) -> int:
     # 月末日期（与现有格式一致）
     last_day = calendar.monthrange(year, month)[1]
     month_end = date(year, month, last_day)
-
-    company_codes = [chr(c) for c in range(ord('A'), ord('V') + 1)]  # A-V
-
-    for i, bk in enumerate(BALANCE_BANK_ORDER):
-        row = start_row + i
-        if i == 0:
-            # 第一行写月末日期和"银行存款"类别
-            ws.cell(row=row, column=1).value = month_end
-            ws.cell(row=row, column=2).value = "银行存款"
-        ws.cell(row=row, column=3).value = bk
-        # D 列写合计公式（E..Z 列公司余额之和）
-        e_col = get_column_letter(5)
-        z_col = get_column_letter(4 + len(company_codes))
-        ws.cell(row=row, column=4).value = f"=SUM({e_col}{row}:{z_col}{row})"
-
-    # 第 9 行：货币资金合计
+    _append_balance_month_block(ws, month_end, start_row=start_row)
     summary_row = start_row + len(BALANCE_BANK_ORDER)
-    ws.cell(row=summary_row, column=2).value = "货币资金合计"
-    d_start = get_column_letter(4)
-    ws.cell(row=summary_row, column=4).value = (
-        f"=SUM({d_start}{start_row}:{d_start}{start_row + len(BALANCE_BANK_ORDER) - 1})"
-    )
 
     logging.info(f"  银行余额表新增 {year}年{month}月 数据块（行 {start_row}-{summary_row}）")
     return start_row
@@ -270,36 +300,13 @@ def update_balance_sheet(
     )
 
 
-# ─────────────────────────── 创建汇总文件 ──────────────────────
+# ─────────────────────────── 汇总文件配置 ──────────────────────
 
 # 银行在余额表中的固定顺序
 BALANCE_BANK_ORDER = [
     "招商银行", "浦发银行", "中国银行", "工商银行",
     "建设银行", "农业银行", "兴业银行", "中信银行",
 ]
-
-def create_summary_file(summary_path: str) -> None:
-    """
-    当汇总文件不存在时，创建含基础结构的空白汇总文件：
-    - Sheet9：公司代号映射表（A-V）
-    - 银行余额：含列头行（日期 | 类别 | 银行名 | 合计 | A…V）
-    """
-    wb = openpyxl.Workbook()
-
-    # ── Sheet9：公司代号映射 ──────────────────────────────────────
-    ws9 = wb.active
-    ws9.title = "Sheet9"
-    ws9.append(["编号", "公司名称"])
-    for code in [chr(c) for c in range(ord('A'), ord('V') + 1)]:
-        ws9.append([code, ""])
-
-    # ── 银行余额：列头行 ─────────────────────────────────────────
-    ws_bal = wb.create_sheet(BALANCE_SHEET)
-    company_codes = [chr(c) for c in range(ord('A'), ord('V') + 1)]  # A-V
-    ws_bal.append(["日期", "类别", "", "合计"] + company_codes)
-
-    wb.save(summary_path)
-    logging.info(f"汇总文件不存在，已创建空白模板: {summary_path}")
 
 
 # ─────────────────────────── 扫描源文件目录 ─────────────────────
@@ -402,7 +409,11 @@ def main() -> None:
     summary_path = os.path.join(work_dir, SUMMARY_FILE)
 
     if not os.path.exists(summary_path):
-        create_summary_file(summary_path)
+        logging.error(
+            f"缺少汇总模板文件: {summary_path}。"
+            f"请先将已有模板 {SUMMARY_FILE} 放入脚本同目录后再运行。"
+        )
+        return
 
     sources = scan_source_files(work_dir)
     if not sources:

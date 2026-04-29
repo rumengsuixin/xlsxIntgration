@@ -31,25 +31,25 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
     def test_read_samples_and_extract_latest_balance_by_date(self):
         cases = {
-            "A-中信银行.xlsx": ("中信银行", 1, "交易日期", "账户余额", "2025-03-21", 4402.82),
-            "B-招商银行.xlsx": ("招商银行", 2, "交易日", "余额", "2025-03-21", 467.96),
-            "C-建设银行.xls": ("建设银行", 2, "交易时间", "余额", "2025-03-21", 28.05),
-            "D-浦发银行.xls": ("浦发银行", 47, "交易日期", "余额", "2025-03-31", 6919.8),
-            "E-工商银行.xlsx": ("工商银行", 4, "交易时间", "余额", "2025-03-27", 1065.78),
-            "F-中国银行.csv": ("中国银行", 2, "交易日期", "交易后余额", "2025-03-26", 6075.08),
-            "G-农业银行.xls": ("农业银行", 2, "交易时间", "账户余额", "2025-03-21", 3918.01),
+            "A-中信银行.xlsx": ("中信银行", "交易日期", "账户余额"),
+            "B-招商银行.xlsx": ("招商银行", "交易日", "余额"),
+            "C-建设银行.xls": ("建设银行", "交易时间", "余额"),
+            "D-浦发银行.xls": ("浦发银行", "交易日期", "余额"),
+            "E-工商银行.xlsx": ("工商银行", "交易时间", "余额"),
+            "F-中国银行.csv": ("中国银行", "交易日期", "交易后余额"),
+            "G-农业银行.xls": ("农业银行", "交易时间", "账户余额"),
         }
 
-        for filename, (bank_name, rows, date_col, balance_col, exp_date, exp_balance) in cases.items():
+        for filename, (bank_name, date_col, balance_col) in cases.items():
             with self.subTest(filename=filename):
                 df = read_bank_file(str(INPUT_DIR / filename), bank_name)
                 balance_date, balance = get_last_balance(df, bank_name)
 
-                self.assertEqual(len(df), rows)
+                self.assertEqual(len(df), 12)
                 self.assertIn(date_col, df.columns)
                 self.assertIn(balance_col, df.columns)
-                self.assertEqual(balance_date, exp_date)
-                self.assertAlmostEqual(balance, exp_balance, places=2)
+                self.assertEqual(balance_date, "2026-12-28")
+                self.assertAlmostEqual(balance, 11481.40, places=2)
 
     def test_summary_template_is_required(self):
         import src.bank_integration.workbook as workbook

@@ -14,8 +14,8 @@ from src.bank_integration.scanner import scan_source_files, scan_source_files_2
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INPUT_DIR = ROOT / "data" / "input"
-INPUT_DIR_2 = INPUT_DIR / "2"
+INPUT_DIR = ROOT / "data" / "input" / "1"
+INPUT_DIR_2 = ROOT / "data" / "input" / "2"
 HUAMEI_PDF = ROOT / "华美银行电子对账单-2025.02.pdf"
 
 
@@ -90,8 +90,8 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
     def test_mode2_ocbc_extracts_monthly_balance(self):
         cases = {
-            "D-华侨银行-HKD.csv": ("2025-04-13", 1716.58),
-            "D-华侨银行-USD.csv": ("2025-04-24", 96049.90),
+            "D-华侨银行-HKD.csv": ("2026-04-13", 1716.58),
+            "D-华侨银行-USD.csv": ("2026-04-24", 96049.90),
         }
 
         for filename, (expected_date, expected_balance) in cases.items():

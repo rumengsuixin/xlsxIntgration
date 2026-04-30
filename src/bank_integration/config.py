@@ -14,8 +14,8 @@ def get_project_root() -> Path:
 PROJECT_ROOT = get_project_root()
 TEMPLATE_DIR = PROJECT_ROOT / "template"
 DATA_DIR = PROJECT_ROOT / "data"
-INPUT_DIR = DATA_DIR / "input"
-RAW_INPUT_DIR = INPUT_DIR / "raw"
+INPUT_DIR = DATA_DIR / "input" / "1"
+RAW_INPUT_DIR = DATA_DIR / "input" / "raw"
 OUTPUT_DIR = DATA_DIR / "output"
 
 SUMMARY_FILE = "国内银行汇总.xlsx"

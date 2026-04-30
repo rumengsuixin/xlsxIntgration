@@ -362,7 +362,11 @@ def update_balance_sheet_2(
 
     余额表列结构（1-indexed）：
       A(1)=日期  B(2)=银行类型  C(3)=银行名  D(4)=折合人民币
-      E(5)=合计  F(6)=币种  G(7)=公司A … U(21)=公司O
+      E(5)=合计（模板公式，不写入）  F(6)=币种  G(7)=公司A … U(21)=公司O
+
+    D列写入 Excel 公式，由汇率工作表动态折算：
+      =IFERROR(E行 * INDEX(汇率!$B:$F, 月份匹配, 币种列匹配), E行)
+    IFERROR 回落到 E 列，适用于 CNY 等汇率表中无对应列的币种。
     """
     m = re.match(r"(\d{4})-(\d{2})", date_str)
     if not m:
@@ -383,6 +387,12 @@ def update_balance_sheet_2(
         f_val = str(ws.cell(row=row_idx, column=6).value or "").strip()
         if current_bank == bank_name and f_val == currency:
             ws.cell(row=row_idx, column=col_idx).value = balance
+            # D列写入公式：汇率表按月份+币种列头动态查找，IFERROR兜底（CNY等无对应列时等于E列）
+            ws.cell(row=row_idx, column=4).value = (
+                f"=IFERROR(E{row_idx}*INDEX(汇率!$B:$F,"
+                f"MATCH($A${block_start},汇率!$A:$A,0),"
+                f'MATCH(F{row_idx}&"/CNY",汇率!$B$1:$F$1,0)),E{row_idx})'
+            )
             logging.info(
                 f"  余额已更新: {year}年{month}月 / {bank_name} {currency} / 公司{company_code} = {balance}"
             )

@@ -105,7 +105,7 @@ BANK_BALANCE_COL_2 = {
     "大华银行（UOB)": "Ledger Balance",
     "联昌国际银行（CIMB）": "Balance",
     "招商银行": "余额",
-    "工商银行": "",
+    "工商银行": "余额",
 }
 
 # 各银行日期列名

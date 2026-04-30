@@ -68,7 +68,8 @@ BANK_READ_CONFIG_2 = {
     "华美银行": {
         "header": 0,
         "engine": None,
-        "is_csv": True,
+        "is_csv": False,
+        "is_pdf": True,
     },
     "大华银行（UOB)": {
         "header": 3,
@@ -100,7 +101,7 @@ BANK_BALANCE_COL_2 = {
     "东亚银行": "",
     "华侨银行": "余额",
     "渣打银行空中云汇": "Account Balance",
-    "华美银行": "",
+    "华美银行": "Amount",
     "大华银行（UOB)": "Ledger Balance",
     "联昌国际银行（CIMB）": "Balance",
     "招商银行": "余额",
@@ -113,7 +114,7 @@ BANK_DATE_COL_2 = {
     "东亚银行": "日期及时间",
     "华侨银行": "交易日期",
     "渣打银行空中云汇": "Time",
-    "华美银行": "",
+    "华美银行": "Date",
     "大华银行（UOB)": "Value Date",
     "联昌国际银行（CIMB）": "Transaction Date",
     "招商银行": "交易日",

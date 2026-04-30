@@ -31,6 +31,16 @@ build_exe.bat             开发电脑打包入口
 venv\Scripts\python.exe 整合.py
 ```
 
+## PDF 转 Excel
+
+```powershell
+venv\Scripts\python.exe scripts\pdf_to_excel.py "华美银行电子对账单-2026.02.pdf"
+```
+
+默认输出到 `data/output/{PDF文件名}.xlsx`。脚本会优先提取 `DAILY BALANCES` 为 `Daily_Balances` 工作表；如果找不到该段落，再退回到普通表格/文本提取。该脚本用于文本型 PDF，扫描件不做 OCR。
+
+代号2整合中，华美银行是 PDF 源文件，放入 `data/input/2/` 并按 `{公司代号}-华美银行-{币种}.pdf` 命名，例如 `A-华美银行-USD.pdf`。程序会读取 `DAILY BALANCES`，只取账单月份最后一条余额写入汇总。
+
 ## 打包
 
 ```powershell

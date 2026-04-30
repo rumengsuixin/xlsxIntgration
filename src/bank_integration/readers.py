@@ -6,6 +6,7 @@ from typing import Dict, Optional
 import pandas as pd
 
 from .config import BANK_DATE_COL, BANK_READ_CONFIG
+from .pdf_daily_balance import read_huamei_daily_balance_pdf
 
 
 def read_bank_file(
@@ -32,7 +33,9 @@ def read_bank_file(
     date_col_map = bank_date_col or BANK_DATE_COL
     header = cfg["header"]
 
-    if cfg["is_csv"]:
+    if cfg.get("is_pdf"):
+        df = read_huamei_daily_balance_pdf(filepath)
+    elif cfg["is_csv"]:
         df = _read_csv(filepath, header, cfg)
     else:
         df = pd.read_excel(

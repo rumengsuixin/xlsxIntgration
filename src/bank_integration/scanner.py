@@ -50,14 +50,14 @@ def scan_source_files(input_dir: Union[str, Path]) -> List[Dict]:
 
 def scan_source_files_2(input_dir: Union[str, Path]) -> List[Dict]:
     """
-    扫描代号2源文件，命名格式：{公司}-{银行}-{币种}.{xls|xlsx|csv}
+    扫描代号2源文件，命名格式：{公司}-{银行}-{币种}.{xls|xlsx|csv|pdf}
 
     只扫描指定目录，不递归子目录。
     返回列表每项含 company、bank_name、currency、filepath。
     """
     input_path = Path(input_dir)
     # 贪婪匹配银行名（允许含括号、空格），货币为末尾2-4个大写字母
-    pattern = re.compile(r"^([A-Z])-(.+)-([A-Z]{2,4})\.(xls|xlsx|csv)$")
+    pattern = re.compile(r"^([A-Z])-(.+)-([A-Z]{2,4})\.(?i:xls|xlsx|csv|pdf)$")
     results = []
 
     if not input_path.exists():
@@ -75,8 +75,12 @@ def scan_source_files_2(input_dir: Union[str, Path]) -> List[Dict]:
         company = m.group(1)
         bank_name = m.group(2)
         currency = m.group(3)
+        ext = path.suffix.lower().lstrip(".")
         if bank_name not in BANK_ABBR_2:
             logging.warning(f"未知银行名称 '{bank_name}'，跳过文件: {fname}")
+            continue
+        if ext == "pdf" and bank_name != "华美银行":
+            logging.warning(f"仅华美银行支持 PDF 源文件，跳过文件: {fname}")
             continue
         results.append(
             {

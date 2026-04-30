@@ -71,8 +71,8 @@ tests/
 ## 代号2数据流
 
 1. `prepare_work_copy(template_path=TEMPLATE_PATH_2, output_path=OUTPUT_PATH_2, ...)`：检查 `data/output/银行汇总.xlsx` 年份，若不匹配则从 `template/2/` 复制并刷新余额表日期
-2. `scan_source_files_2`：在 `data/input/2/` 扫描 `^([A-Z])-(.+)-([A-Z]{2,4})\.(xls|xlsx|csv)$` 格式文件，返回含 `currency` 字段的列表
-3. `read_bank_file`：传入 `BANK_READ_CONFIG_2` / `BANK_DATE_COL_2`；支持额外选项：`encoding`、`col_map`、`strip_col_suffix_char`、`row_filter_col`/`row_filter_prefix`/`row_filter_val`
+2. `scan_source_files_2`：在 `data/input/2/` 扫描 `^([A-Z])-(.+)-([A-Z]{2,4})\.(xls|xlsx|csv|pdf)$` 格式文件，返回含 `currency` 字段的列表；PDF 仅支持华美银行
+3. `read_bank_file`：传入 `BANK_READ_CONFIG_2` / `BANK_DATE_COL_2`；支持额外选项：`encoding`、`col_map`、`strip_col_suffix_char`、`row_filter_col`/`row_filter_prefix`/`row_filter_val`，华美银行 PDF 读取 `DAILY BALANCES`
 4. `get_monthly_balances`：传入 `BANK_BALANCE_COL_2` / `BANK_DATE_COL_2` 按月提取期末余额
 5. `write_all_to_summary_2`：覆盖写入 `{公司代号}-{银行缩写}-{币种}` 明细子表（如 `A-东亚-HKD`），调用 `update_balance_sheet_2` 更新余额工作表
 
@@ -96,7 +96,7 @@ tests/
 | 东亚银行 | 0 | CSV | — | 日期及时间 | `row_filter_prefix="总结余"`；无余额列，跳过余额提取 |
 | 华侨银行 | 0 | CSV (GBK) | 余额 | 交易日期 | `encoding="gbk"`；`col_map` 仅在目标列不存在时重命名，避免重复 `交易日期` |
 | 渣打银行空中云汇 | 0 | XLSX | Account Balance | Time | — |
-| 华美银行 | 0 | CSV | — | — | 无余额列，跳过余额提取 |
+| 华美银行 | 0 | PDF | Amount | Date | 读取 `DAILY BALANCES`，只保留账单月份最后一条余额 |
 | 大华银行（UOB) | 3 | XLSX | Ledger Balance | Value Date | `row_filter_val="D2"` |
 | 联昌国际银行（CIMB） | 5 | XLSX | Balance | Transaction Date | — |
 | 招商银行 | 12 | XLSX | 余额 | 交易日 | — |
@@ -129,12 +129,13 @@ tests/
 - **农业银行**：含非交易行，用日期格式正则 `\d{4}-\d{2}-\d{2}` 过滤
 
 ### 代号2
-- **源文件命名**：`{大写字母}-{银行全称}-{币种大写}.{xls|xlsx|csv}`，放入 `data/input/2/`
+- **源文件命名**：`{大写字母}-{银行全称}-{币种大写}.{xls|xlsx|csv}`，放入 `data/input/2/`；华美银行使用 `.pdf`，如 `A-华美银行-USD.pdf`
 - **模板**：`template/2/银行汇总.xlsx` 缺失时脚本直接退出
 - **年份自动刷新**：余额工作表名称以 `MIG银行余额` 开头，`_find_balance_sheet_2` 动态定位
 - **汇丰银行余额列**：列名含动态货币后缀（如 `账面结余(HKD 港元)`），通过前缀匹配 `_resolve_col` 定位
 - **东亚银行余额**：源文件没有可用于余额表更新的余额列，明细可写入，但余额更新跳过
 - **华侨银行余额**：使用 `余额` + `交易日期` 提取月末余额，日期为 `YYYYMMDD` 格式
+- **华美银行 PDF**：仅支持文本型 PDF，不做 OCR；从 `DAILY BALANCES` 取账单月份最后一条余额
 - **金额清洗**：余额字段中的逗号分隔符和 `+` 前缀在 `get_monthly_balances` 中处理
 
 ## 日期格式支持

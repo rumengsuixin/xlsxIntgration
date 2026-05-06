@@ -1,6 +1,7 @@
 # Python virtual environments
 venv/
 .venv/
+.vscode/
 env/
 ENV/
 
@@ -43,3 +44,8 @@ data/output/*
 **/*.xlsx
 **/*.xls
 **/*.csv
+
+**/**.bat
+**/**.spec
+**/**.ps1
+

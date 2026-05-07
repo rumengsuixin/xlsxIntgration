@@ -309,9 +309,10 @@ def _build_platform_only_rows(
                 if c_ is not None:
                     row[PLATFORM_AMOUNT_COL]   = str(round(abs(c_ or 0.0) + abs(f or 0.0), 2))
                     row[SETTLEMENT_AMOUNT_COL] = str(round((c_ or 0.0) - abs(f or 0.0), 2))
+                    # 国家税费：倒推 admin.金额 = Charge × 1.2，国家税费 = admin.金额 - Charge = Charge × 0.2
+                    row[COUNTRY_TAX_COL] = str(round(abs(c_) * 0.2, 2))
                 if f is not None:
                     row[FEE_COL] = str(round(abs(f), 2))
-                # 国家税费：无 admin.金额，留空
                 row[STATUS_COL] = "成功"
             extra.append(row)
 

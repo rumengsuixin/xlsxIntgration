@@ -4,9 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-银行流水数据整合项目，分为两条业务线：
+银行流水数据整合项目，分为三条业务线：
 - **代号1**：国内银行，将多家银行的交易流水原始导出文件（CSV/XLS/XLSX）汇总到 `国内银行汇总.xlsx`
 - **代号2**：海外银行，源文件命名携带币种，汇总到 `银行汇总.xlsx`，余额表每行代表"银行+币种"组合
+- **代号3**：游戏订单匹配，将游戏方后台 admin 订单表与 Adyen / 华为 / Google Play 商户平台订单通过流水号关联，追加「平台支付方式」列后输出到 `订单匹配结果_{YYYYMMDD}.xlsx`
 
 ## 常用命令
 
@@ -18,6 +19,9 @@ venv/Scripts/python.exe 整合.py
 
 # 代号2：海外银行整合
 venv/Scripts/python.exe 整合2.py
+
+# 代号3：游戏订单支付方式匹配
+venv/Scripts/python.exe 整合3.py
 
 # 运行全部回归测试
 venv/Scripts/python.exe -m unittest discover -s tests
@@ -35,15 +39,18 @@ venv/Scripts/pip.exe install -r requirements.txt
 整合.py                     # 代号1兼容入口（同 整合1.py）
 整合1.py                    # 代号1入口（调用 src/bank_integration/app.main()）
 整合2.py                    # 代号2入口（调用 src/bank_integration/app2.main()）
+整合3.py                    # 代号3入口（调用 src/bank_integration/app3.main()）
 src/bank_integration/
     config.py               # 代号1：路径常量、各银行读取配置、余额列/日期列映射
     config2.py              # 代号2：路径常量、各银行读取配置、余额列/日期列映射
+    config3.py              # 代号3：路径常量、各平台列名映射
     scanner.py              # 扫描源文件目录（scan_source_files / scan_source_files_2）
     readers.py              # 按银行配置读取 CSV/XLS/XLSX，返回清洗后的 DataFrame
     balances.py             # 提取期末余额、定位/写入余额工作表的行列
     workbook.py             # 从模板复制工作副本、写入明细子表、调用余额更新
     app.py                  # 代号1 main()，串联各模块流程
     app2.py                 # 代号2 main()，串联各模块流程
+    app3.py                 # 代号3 main()，游戏订单匹配逻辑
 template/
     1/
         国内银行汇总.xlsx   # 代号1模板（必须预先存在）
@@ -52,10 +59,12 @@ template/
 data/
     input/                  # 代号1：{公司代号}-{银行全称}.{扩展名} 源文件
     input/2/                # 代号2：{公司代号}-{银行全称}-{币种}.{扩展名} 源文件
+    input/3/                # 代号3：admin + ADYEN- + 华为平台- + Googol- 源文件
     input/raw/              # 原始未命名样例（不被扫描）
     output/
-        国内银行汇总.xlsx   # 代号1运行时从模板复制的工作副本（最终输出）
-        银行汇总.xlsx       # 代号2运行时从模板复制的工作副本（最终输出）
+        国内银行汇总.xlsx           # 代号1运行时从模板复制的工作副本（最终输出）
+        银行汇总.xlsx               # 代号2运行时从模板复制的工作副本（最终输出）
+        订单匹配结果_{YYYYMMDD}.xlsx # 代号3运行时生成（每日覆盖）
 tests/
     test_bank_integration.py
 ```
@@ -137,6 +146,19 @@ tests/
 - **华侨银行余额**：使用 `余额` + `交易日期` 提取月末余额，日期为 `YYYYMMDD` 格式
 - **华美银行 PDF**：仅支持文本型 PDF，不做 OCR；从 `DAILY BALANCES` 取账单月份最后一条余额
 - **金额清洗**：余额字段中的逗号分隔符和 `+` 前缀在 `get_monthly_balances` 中处理
+
+### 代号3
+- **源文件目录**：`data/input/3/`，所有文件平铺放置（均为 `.xlsx`）
+- **文件识别规则**（stem 小写前缀匹配）：
+  - `admin` 开头 → admin 订单主表（工作表："汇总"）
+  - `adyen-` 开头 → Adyen 平台报告（工作表："Data"）
+  - `华为` 开头 → 华为平台报告（工作表："Sheet0"）
+  - `googol-` 或 `google-` 开头 → Google Play 报告（取第一个工作表，名称含日期后缀）
+- **流水号关联**：admin.`流水号` ↔ Adyen.`Psp Reference` / 华为.`华为订单号` / Google.`Description`
+- **Adyen 去重**：同一 Psp Reference 有多行（Received/Authorised/SentForSettle），按 `ADYEN_RECORD_TYPE_PRIORITY = ["SentForSettle", "Authorised"]` 优先取 SentForSettle 行
+- **Google 去重**：只保留 `Transaction Type == "Charge"` 行（排除 Google fee 和退款行）
+- **平台支付方式填充**：Adyen → `Payment Method`（mc/visa/troy）；华为 → `支付方式`（World Pay/Adyen/话费）；Google → 固定值 "Google Play"
+- **输出文件**：`data/output/订单匹配结果_{YYYYMMDD}.xlsx`，单工作表"订单匹配结果"，包含 admin 全部原始列 + 末尾追加「平台支付方式」列
 
 ## 日期格式支持
 

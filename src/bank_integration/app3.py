@@ -239,6 +239,87 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
     return result.fillna("").drop_duplicates(subset=[join]).set_index(join)
 
 
+def _build_platform_only_rows(
+    result_cols: list,
+    admin_keys: set,
+    adyen_lk: Optional[pd.DataFrame],
+    huawei_lk: Optional[pd.DataFrame],
+    google_lk: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """构建平台有、admin 无对应记录的多余行（回调丢失/网络延迟场景）。
+
+    所有 admin 原始列留空，填充可从平台数据计算的 6 个新增列，状态统一标"失败"。
+    """
+    extra = []
+
+    # ── Adyen 多余行 ────────────────────────────────────────
+    if adyen_lk is not None:
+        for key in adyen_lk.index:
+            if key in admin_keys:
+                continue
+            row: dict = {c: "" for c in result_cols}
+            row[ADMIN_JOIN_COL]     = key
+            row[ADMIN_PAYMENT_COL]  = "Adyen"
+            row[PLATFORM_AMOUNT_COL]   = str(adyen_lk.at[key, ADYEN_AMOUNT_COL]).strip()
+            row[PLATFORM_CURRENCY_COL] = str(adyen_lk.at[key, ADYEN_CURRENCY_COL]).strip()
+            row[STATUS_COL]            = "成功"
+            row[SETTLEMENT_AMOUNT_COL] = str(adyen_lk.at[key, ADYEN_PAYABLE_COL]).strip()
+            m   = _to_float(adyen_lk.at[key, ADYEN_MARKUP_COL])
+            sch = _to_float(adyen_lk.at[key, ADYEN_SCHEME_FEES_COL])
+            itc = _to_float(adyen_lk.at[key, ADYEN_INTERCHANGE_COL])
+            if any(x is not None for x in [m, sch, itc]):
+                row[FEE_COL] = str(round((m or 0.0) + (sch or 0.0) + (itc or 0.0), 4))
+            extra.append(row)
+
+    # ── 华为多余行 ────────────────────────────────────────
+    if huawei_lk is not None:
+        for key in huawei_lk.index:
+            if key in admin_keys:
+                continue
+            row = {c: "" for c in result_cols}
+            row[ADMIN_JOIN_COL]     = key
+            row[ADMIN_PAYMENT_COL]  = "华为支付"
+            amt = str(huawei_lk.at[key, HUAWEI_AMOUNT_COL]).strip()
+            row[PLATFORM_AMOUNT_COL]   = amt
+            row[PLATFORM_CURRENCY_COL] = str(huawei_lk.at[key, HUAWEI_CURRENCY_COL]).strip()
+            row[SETTLEMENT_AMOUNT_COL] = amt  # 暂无手续费数据
+            row[STATUS_COL]            = "成功"
+            extra.append(row)
+
+    # ── Google 多余行 ─────────────────────────────────────
+    if google_lk is not None:
+        for key in google_lk.index:
+            if key in admin_keys:
+                continue
+            row = {c: "" for c in result_cols}
+            row[ADMIN_JOIN_COL]    = key
+            row[ADMIN_PAYMENT_COL] = "Google支付"
+            r  = _to_float(google_lk.at[key, "refund_amt"])
+            c_ = _to_float(google_lk.at[key, "charge_amt"])
+            f  = _to_float(google_lk.at[key, "fee_amt"])
+            fr = _to_float(google_lk.at[key, "fee_refund_amt"])
+            row[PLATFORM_CURRENCY_COL] = str(google_lk.at[key, "ccy"]).strip()
+            if r is not None:  # 有退款记录 → 退款
+                row[PLATFORM_AMOUNT_COL]   = str(round(abs(r or 0.0) + abs(fr or 0.0), 2))
+                row[SETTLEMENT_AMOUNT_COL] = str(round(abs(r or 0.0) - abs(fr or 0.0), 2))
+                if fr is not None:
+                    row[FEE_COL] = str(round(abs(fr), 2))
+                row[STATUS_COL] = "退款"
+            else:              # 无退款记录 → 成功
+                if c_ is not None:
+                    row[PLATFORM_AMOUNT_COL]   = str(round(abs(c_ or 0.0) + abs(f or 0.0), 2))
+                    row[SETTLEMENT_AMOUNT_COL] = str(round((c_ or 0.0) - abs(f or 0.0), 2))
+                if f is not None:
+                    row[FEE_COL] = str(round(abs(f), 2))
+                # 国家税费：无 admin.金额，留空
+                row[STATUS_COL] = "成功"
+            extra.append(row)
+
+    if not extra:
+        return pd.DataFrame(columns=result_cols)
+    return pd.DataFrame(extra, columns=result_cols)
+
+
 def enrich_admin(
     admin_df: pd.DataFrame,
     adyen_lk: Optional[pd.DataFrame],
@@ -372,6 +453,22 @@ def enrich_admin(
     result.insert(admin_col_count + 3, SETTLEMENT_AMOUNT_COL, settlement_list)
     result.insert(admin_col_count + 4, FEE_COL,               fee_list)
     result.insert(admin_col_count + 5, COUNTRY_TAX_COL,       country_tax_list)
+
+    # ── 追加平台多余行（平台有、admin 无对应记录）────────────
+    admin_keys = set(admin_df[ADMIN_JOIN_COL].str.strip())
+    extra_df = _build_platform_only_rows(
+        list(result.columns),
+        admin_keys,
+        adyen_lk if adyen_avail else None,
+        huawei_lk if huawei_avail else None,
+        google_lk if google_avail else None,
+    )
+    if not extra_df.empty:
+        logging.info(
+            "追加平台多余行：共 %d 行（在平台报表中存在但 admin 无对应记录，回调丢失或网络延迟）",
+            len(extra_df),
+        )
+        result = pd.concat([result, extra_df], ignore_index=True)
 
     return result.fillna("")
 

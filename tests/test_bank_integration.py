@@ -3,7 +3,14 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from src.bank_integration.balances import get_last_balance, get_monthly_balances
+from openpyxl import Workbook
+
+from src.bank_integration.balances import (
+    get_last_balance,
+    get_monthly_balances,
+    update_balance_sheet,
+    update_balance_sheet_2,
+)
 from src.bank_integration.config2 import (
     BANK_BALANCE_COL_2,
     BANK_DATE_COL_2,
@@ -23,34 +30,30 @@ class BankIntegrationSampleTests(unittest.TestCase):
     def test_scan_source_files_only_recognizes_prefixed_samples(self):
         sources = scan_source_files(INPUT_DIR)
         names = sorted(path.name for path in (Path(item["filepath"]) for item in sources))
+        bank_names = sorted(item["bank_name"] for item in sources)
 
+        self.assertEqual(len(names), 7)
+        self.assertIn("智星-中信银行.xlsx", names)
         self.assertEqual(
-            names,
-            [
-                "A-中信银行.xlsx",
-                "B-招商银行.xlsx",
-                "C-建设银行.xls",
-                "D-浦发银行.xls",
-                "E-工商银行.xlsx",
-                "F-中国银行.csv",
-                "G-农业银行.xls",
-            ],
+            bank_names,
+            ["中信银行", "中国银行", "农业银行", "工商银行", "建设银行", "招商银行", "浦发银行"],
         )
 
     def test_read_samples_and_extract_latest_balance_by_date(self):
         cases = {
-            "A-中信银行.xlsx": ("中信银行", "交易日期", "账户余额"),
-            "B-招商银行.xlsx": ("招商银行", "交易日", "余额"),
-            "C-建设银行.xls": ("建设银行", "交易时间", "余额"),
-            "D-浦发银行.xls": ("浦发银行", "交易日期", "余额"),
-            "E-工商银行.xlsx": ("工商银行", "交易时间", "余额"),
-            "F-中国银行.csv": ("中国银行", "交易日期", "交易后余额"),
-            "G-农业银行.xls": ("农业银行", "交易时间", "账户余额"),
+            "中信银行": ("交易日期", "账户余额"),
+            "招商银行": ("交易日", "余额"),
+            "建设银行": ("交易时间", "余额"),
+            "浦发银行": ("交易日期", "余额"),
+            "工商银行": ("交易时间", "余额"),
+            "中国银行": ("交易日期", "交易后余额"),
+            "农业银行": ("交易时间", "账户余额"),
         }
+        sources = {item["bank_name"]: item["filepath"] for item in scan_source_files(INPUT_DIR)}
 
-        for filename, (bank_name, date_col, balance_col) in cases.items():
-            with self.subTest(filename=filename):
-                df = read_bank_file(str(INPUT_DIR / filename), bank_name)
+        for bank_name, (date_col, balance_col) in cases.items():
+            with self.subTest(bank_name=bank_name):
+                df = read_bank_file(sources[bank_name], bank_name)
                 balance_date, balance = get_last_balance(df, bank_name)
 
                 self.assertEqual(len(df), 12)
@@ -63,6 +66,50 @@ class BankIntegrationSampleTests(unittest.TestCase):
         import src.bank_integration.workbook as workbook
 
         self.assertFalse(hasattr(workbook, "create_summary_file"))
+
+    def test_scan_source_files_accepts_chinese_company_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "A-中信银行.xlsx").touch()
+            (tmp_path / "瑞泽商务-中信银行.xlsx").touch()
+            (tmp_path / "瑞泽商务-未知银行.xlsx").touch()
+            (tmp_path / "中信银行.xlsx").touch()
+
+            sources = scan_source_files(tmp_path)
+            by_name = {Path(item["filepath"]).name: item for item in sources}
+
+            self.assertEqual(set(by_name), {"A-中信银行.xlsx", "瑞泽商务-中信银行.xlsx"})
+            self.assertEqual(by_name["A-中信银行.xlsx"]["company"], "A")
+            self.assertEqual(by_name["瑞泽商务-中信银行.xlsx"]["company"], "瑞泽商务")
+            self.assertEqual(by_name["瑞泽商务-中信银行.xlsx"]["bank_name"], "中信银行")
+
+    def test_update_balance_sheet_uses_existing_company_header(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "银行余额"
+        ws.append(["日期", "类别", None, "合计", "A", "B"])
+        ws.append(["2026-12-31", "银行存款", "中信银行", "=SUM(E2:F2)", None, None])
+
+        update_balance_sheet(ws, "中信银行", "A", "2026-12-28", 123.45)
+
+        self.assertEqual(ws.cell(row=2, column=5).value, 123.45)
+        self.assertEqual(ws.cell(row=1, column=7).value, None)
+        self.assertEqual(ws.cell(row=2, column=4).value, "=SUM(E2:F2)")
+
+    def test_update_balance_sheet_appends_missing_company_header_and_formula(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "银行余额"
+        ws.append(["日期", "类别", None, "合计", "A", "B"])
+        ws.append(["2026-12-31", "银行存款", "中信银行", "=SUM(E2:F2)", None, None])
+        ws.append([None, None, "招商银行", "=SUM(E3:F3)", None, None])
+
+        update_balance_sheet(ws, "中信银行", "瑞泽商务", "2026-12-28", 456.78)
+
+        self.assertEqual(ws.cell(row=1, column=7).value, "瑞泽商务")
+        self.assertEqual(ws.cell(row=2, column=7).value, 456.78)
+        self.assertEqual(ws.cell(row=2, column=4).value, "=SUM(E2:G2)")
+        self.assertEqual(ws.cell(row=3, column=4).value, "=SUM(E3:G3)")
 
     def test_mode2_east_asia_has_no_balance_column(self):
         cases = [
@@ -118,13 +165,54 @@ class BankIntegrationSampleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             (tmp_path / "A-华美银行-USD.pdf").touch()
+            (tmp_path / "瑞泽商务-华侨银行-HKD.csv").touch()
             (tmp_path / "B-汇丰银行-USD.pdf").touch()
             (tmp_path / "C-华侨银行-HKD.csv").touch()
+            (tmp_path / "瑞泽商务-未知银行-HKD.csv").touch()
 
             sources = scan_source_files_2(tmp_path)
-            names = sorted(Path(item["filepath"]).name for item in sources)
+            by_name = {Path(item["filepath"]).name: item for item in sources}
 
-            self.assertEqual(names, ["A-华美银行-USD.pdf", "C-华侨银行-HKD.csv"])
+            self.assertEqual(
+                set(by_name),
+                {"A-华美银行-USD.pdf", "C-华侨银行-HKD.csv", "瑞泽商务-华侨银行-HKD.csv"},
+            )
+            self.assertEqual(by_name["A-华美银行-USD.pdf"]["company"], "A")
+            self.assertEqual(by_name["瑞泽商务-华侨银行-HKD.csv"]["company"], "瑞泽商务")
+            self.assertEqual(by_name["瑞泽商务-华侨银行-HKD.csv"]["bank_name"], "华侨银行")
+            self.assertEqual(by_name["瑞泽商务-华侨银行-HKD.csv"]["currency"], "HKD")
+
+    def test_update_balance_sheet_2_uses_existing_company_header(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "MIG银行余额（20261231）"
+        ws.append(["日期", None, None, "折合人民币", "合计", "币种", "A", "B"])
+        ws.append(["2026-04-30", None, "华侨银行", None, "=SUM(G2:H2)", "HKD", None, None])
+        ws.append([None, None, None, None, "=SUM(G3:H3)", "USD", None, None])
+
+        update_balance_sheet_2(ws, "华侨银行", "HKD", "A", "2026-04-13", 123.45)
+
+        self.assertEqual(ws.cell(row=2, column=7).value, 123.45)
+        self.assertEqual(ws.cell(row=1, column=9).value, None)
+        self.assertEqual(ws.cell(row=2, column=5).value, "=SUM(G2:H2)")
+        self.assertIn("MATCH(F2", ws.cell(row=2, column=4).value)
+
+    def test_update_balance_sheet_2_appends_missing_company_header_and_formula(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "MIG银行余额（20261231）"
+        ws.append(["日期", None, None, "折合人民币", "合计", "币种", "A", "B"])
+        ws.append(["2026-04-30", None, "华侨银行", None, "=SUM(G2:H2)", "HKD", None, None])
+        ws.append([None, None, None, None, "=SUM(G3:H3)", "USD", None, None])
+
+        update_balance_sheet_2(ws, "华侨银行", "USD", "瑞泽商务", "2026-04-24", 456.78)
+
+        self.assertEqual(ws.cell(row=1, column=5).value, "合计")
+        self.assertEqual(ws.cell(row=1, column=9).value, "瑞泽商务")
+        self.assertEqual(ws.cell(row=3, column=9).value, 456.78)
+        self.assertEqual(ws.cell(row=2, column=5).value, "=SUM(G2:I2)")
+        self.assertEqual(ws.cell(row=3, column=5).value, "=SUM(G3:I3)")
+        self.assertIn("MATCH(F3", ws.cell(row=3, column=4).value)
 
     @unittest.skipIf(not HUAMEI_PDF.exists(), "华美银行 PDF 测试文件不存在")
     def test_mode2_huamei_pdf_extracts_statement_month_last_daily_balance(self):

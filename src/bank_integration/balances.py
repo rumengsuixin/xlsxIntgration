@@ -226,13 +226,14 @@ def refresh_balance_sheet_dates(ws, current_year: int) -> None:
     target_dates = build_target_dates(current_year)
     existing_blocks = collect_balance_month_blocks(ws)
     block_size = len(BALANCE_BANK_ORDER)
+    last_company_col = max(_last_company_header_col(ws), 26)
 
     for i, target_date in enumerate(target_dates):
         if i < len(existing_blocks):
             block_start, _ = existing_blocks[i]
             ws.cell(row=block_start, column=1).value = target_date
             for row in range(block_start, block_start + block_size + 1):
-                for col in range(5, 27):
+                for col in range(5, last_company_col + 1):
                     ws.cell(row=row, column=col).value = None
         else:
             append_balance_month_block(ws, target_date, start_row=ws.max_row + 2)
@@ -244,13 +245,14 @@ def refresh_balance_sheet_dates_2(ws, current_year: int) -> None:
     """刷新代号2余额表日期，清空公司余额列（G-U）。"""
     target_dates = build_target_dates(current_year)
     existing_blocks = collect_balance_month_blocks(ws)
+    last_company_col = max(_last_company_header_col_2(ws), COMPANY_COL_START_2 + 14)
 
     for i, target_date in enumerate(target_dates):
         if i < len(existing_blocks):
             block_start, _ = existing_blocks[i]
             ws.cell(row=block_start, column=1).value = target_date
             for row in range(block_start, block_start + BALANCE_BLOCK_SIZE_2):
-                for col in range(COMPANY_COL_START_2, COMPANY_COL_START_2 + 15):
+                for col in range(COMPANY_COL_START_2, last_company_col + 1):
                     ws.cell(row=row, column=col).value = None
         else:
             logging.warning(
@@ -264,9 +266,8 @@ def append_balance_month_block(ws, month_end: date, start_row: Optional[int] = N
     """追加代号1月末余额块，返回起始行。"""
     if start_row is None:
         start_row = ws.max_row + 1
-    company_codes = [chr(c) for c in range(ord("A"), ord("V") + 1)]
     first_company_col = 5
-    last_company_col = 4 + len(company_codes)
+    last_company_col = max(_last_company_header_col(ws), 26)
 
     for i, bk in enumerate(BALANCE_BANK_ORDER):
         row = start_row + i
@@ -331,8 +332,10 @@ def update_balance_sheet(ws, bank_name: str, company_code: str, date_str: str, b
         return
 
     year, month = int(m.group(1)), int(m.group(2))
-    col_idx = ord(company_code) - ord("A") + 5
     block_start = find_or_create_date_block(ws, year, month)
+    col_idx = find_or_append_company_column(ws, company_code)
+    if col_idx is None:
+        return
 
     target_row = None
     for row_idx in range(block_start, block_start + len(BALANCE_BANK_ORDER)):
@@ -347,6 +350,48 @@ def update_balance_sheet(ws, bank_name: str, company_code: str, date_str: str, b
 
     ws.cell(row=target_row, column=col_idx).value = balance
     logging.info(f"  银行余额已更新: {year}年{month}月 / {bank_name} / 公司{company_code} = {balance}")
+
+
+def find_or_append_company_column(ws, company_code: str) -> Optional[int]:
+    """Find a company column by header text, appending it when missing."""
+    company = str(company_code or "").strip()
+    if not company:
+        logging.warning("  公司前缀为空，跳过余额更新")
+        return None
+
+    last_header_col = _last_company_header_col(ws)
+    for col_idx in range(5, last_header_col + 1):
+        header = ws.cell(row=1, column=col_idx).value
+        if str(header or "").strip() == company:
+            return col_idx
+
+    new_col = max(last_header_col, 4) + 1
+    ws.cell(row=1, column=new_col).value = company
+    _refresh_balance_total_formulas(ws, new_col)
+    logging.info(f"  银行余额表新增公司列: {company} ({get_column_letter(new_col)}列)")
+    return new_col
+
+
+def _last_company_header_col(ws) -> int:
+    """Return the last non-empty company header column on row 1."""
+    last_col = 4
+    for col_idx in range(5, ws.max_column + 1):
+        value = ws.cell(row=1, column=col_idx).value
+        if str(value or "").strip():
+            last_col = col_idx
+    return last_col
+
+
+def _refresh_balance_total_formulas(ws, last_company_col: int) -> None:
+    """Extend D-column bank totals to include all company columns."""
+    if last_company_col < 5:
+        return
+
+    last_letter = get_column_letter(last_company_col)
+    for row_idx in range(1, ws.max_row + 1):
+        bank_name = str(ws.cell(row=row_idx, column=3).value or "").strip()
+        if bank_name in BALANCE_BANK_ORDER:
+            ws.cell(row=row_idx, column=4).value = f"=SUM(E{row_idx}:{last_letter}{row_idx})"
 
 
 def update_balance_sheet_2(
@@ -374,28 +419,81 @@ def update_balance_sheet_2(
         return
 
     year, month = int(m.group(1)), int(m.group(2))
-    col_idx = ord(company_code) - ord("A") + COMPANY_COL_START_2
     block_start = find_date_block_2(ws, year, month)
     if block_start == -1:
         return
 
     current_bank = ""
+    target_row = None
     for row_idx in range(block_start, block_start + BALANCE_BLOCK_SIZE_2):
         c_val = str(ws.cell(row=row_idx, column=3).value or "").strip()
         if c_val:
             current_bank = c_val
         f_val = str(ws.cell(row=row_idx, column=6).value or "").strip()
         if current_bank == bank_name and f_val == currency:
-            ws.cell(row=row_idx, column=col_idx).value = balance
-            # D列写入公式：汇率表按月份+币种列头动态查找，IFERROR兜底（CNY等无对应列时等于E列）
-            ws.cell(row=row_idx, column=4).value = (
-                f"=IFERROR(E{row_idx}*INDEX(汇率!$B:$F,"
-                f"MATCH($A${block_start},汇率!$A:$A,0),"
-                f'MATCH(F{row_idx}&"/CNY",汇率!$B$1:$F$1,0)),E{row_idx})'
-            )
-            logging.info(
-                f"  余额已更新: {year}年{month}月 / {bank_name} {currency} / 公司{company_code} = {balance}"
-            )
-            return
+            target_row = row_idx
+            break
 
-    logging.warning(f"  余额表中未找到行 [{bank_name} {currency}]，跳过")
+    if target_row is None:
+        logging.warning(f"  余额表中未找到行 [{bank_name} {currency}]，跳过")
+        return
+
+    col_idx = find_or_append_company_column_2(ws, company_code)
+    if col_idx is None:
+        return
+
+    ws.cell(row=target_row, column=col_idx).value = balance
+    # D列写入公式：汇率表按月份+币种列头动态查找，IFERROR兜底（CNY等无对应列时等于E列）
+    ws.cell(row=target_row, column=4).value = (
+        f"=IFERROR(E{target_row}*INDEX(汇率!$B:$F,"
+        f"MATCH($A${block_start},汇率!$A:$A,0),"
+        f'MATCH(F{target_row}&"/CNY",汇率!$B$1:$F$1,0)),E{target_row})'
+    )
+    logging.info(
+        f"  余额已更新: {year}年{month}月 / {bank_name} {currency} / 公司{company_code} = {balance}"
+    )
+
+
+def find_or_append_company_column_2(ws, company_code: str) -> Optional[int]:
+    """Find a mode2 company column by header text, appending it when missing."""
+    company = str(company_code or "").strip()
+    if not company:
+        logging.warning("  公司前缀为空，跳过余额更新")
+        return None
+
+    last_header_col = _last_company_header_col_2(ws)
+    for col_idx in range(COMPANY_COL_START_2, last_header_col + 1):
+        header = ws.cell(row=1, column=col_idx).value
+        if str(header or "").strip() == company:
+            return col_idx
+
+    new_col = max(last_header_col, COMPANY_COL_START_2 - 1) + 1
+    ws.cell(row=1, column=new_col).value = company
+    _refresh_balance_total_formulas_2(ws, new_col)
+    logging.info(f"  海外银行余额表新增公司列: {company} ({get_column_letter(new_col)}列)")
+    return new_col
+
+
+def _last_company_header_col_2(ws) -> int:
+    """Return the last non-empty mode2 company header column on row 1."""
+    last_col = COMPANY_COL_START_2 - 1
+    for col_idx in range(COMPANY_COL_START_2, ws.max_column + 1):
+        value = ws.cell(row=1, column=col_idx).value
+        if str(value or "").strip():
+            last_col = col_idx
+    return last_col
+
+
+def _refresh_balance_total_formulas_2(ws, last_company_col: int) -> None:
+    """Extend E-column mode2 totals to include all company columns."""
+    if last_company_col < COMPANY_COL_START_2:
+        return
+
+    start_letter = get_column_letter(COMPANY_COL_START_2)
+    last_letter = get_column_letter(last_company_col)
+    for row_idx in range(2, ws.max_row + 1):
+        currency = str(ws.cell(row=row_idx, column=6).value or "").strip()
+        if currency:
+            ws.cell(row=row_idx, column=5).value = (
+                f"=SUM({start_letter}{row_idx}:{last_letter}{row_idx})"
+            )

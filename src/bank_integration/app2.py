@@ -38,7 +38,7 @@ def main() -> int:
     if not sources:
         logging.warning(
             "未找到可处理的海外银行流水文件。请把文件放入 data/input/2，并按规则命名，"
-            "例如：A-东亚银行-HKD.csv、B-大华银行（UOB)-SGD.xlsx。"
+            "例如：A-东亚银行-HKD.csv、瑞泽商务-华侨银行-HKD.csv、B-大华银行（UOB)-SGD.xlsx。"
         )
         logging.warning(f"当前检查的文件夹: {INPUT_DIR_2}")
         return 1

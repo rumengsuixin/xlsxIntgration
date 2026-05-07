@@ -11,13 +11,13 @@ from .config2 import BANK_ABBR_2, SUMMARY_FILE_2
 
 def scan_source_files(input_dir: Union[str, Path]) -> List[Dict]:
     """
-    Scan for source files named {company}-{bank_name}.{xls|xlsx|csv}.
+    Scan for source files named {company_prefix}-{bank_name}.{xls|xlsx|csv}.
 
     Only the provided input directory is scanned; subdirectories such as raw/
     are intentionally ignored.
     """
     input_path = Path(input_dir)
-    pattern = re.compile(r"^([A-Z])-(.+)\.(xls|xlsx|csv)$")
+    allowed_exts = {".xls", ".xlsx", ".csv"}
     results = []
 
     if not input_path.exists():
@@ -29,13 +29,22 @@ def scan_source_files(input_dir: Union[str, Path]) -> List[Dict]:
         fname = path.name
         if fname.startswith("~$") or fname == SUMMARY_FILE:
             continue
-        m = pattern.match(fname)
-        if not m:
+        if path.suffix.lower() not in allowed_exts:
             continue
-        company = m.group(1)
-        bank_name = m.group(2)
-        if bank_name not in BANK_ABBR:
-            logging.warning(f"未知银行名称 '{bank_name}'，跳过文件: {fname}")
+
+        company = None
+        bank_name = None
+        stem = path.stem
+        for candidate in sorted(BANK_ABBR, key=len, reverse=True):
+            suffix = f"-{candidate}"
+            if stem.endswith(suffix):
+                prefix = stem[: -len(suffix)]
+                if prefix:
+                    company = prefix
+                    bank_name = candidate
+                break
+
+        if company is None or bank_name is None:
             continue
         results.append(
             {
@@ -56,8 +65,8 @@ def scan_source_files_2(input_dir: Union[str, Path]) -> List[Dict]:
     返回列表每项含 company、bank_name、currency、filepath。
     """
     input_path = Path(input_dir)
-    # 贪婪匹配银行名（允许含括号、空格），货币为末尾2-4个大写字母
-    pattern = re.compile(r"^([A-Z])-(.+)-([A-Z]{2,4})\.(?i:xls|xlsx|csv|pdf)$")
+    allowed_exts = {".xls", ".xlsx", ".csv", ".pdf"}
+    currency_pattern = re.compile(r"^(.+)-([A-Z]{2,4})$")
     results = []
 
     if not input_path.exists():
@@ -69,15 +78,28 @@ def scan_source_files_2(input_dir: Union[str, Path]) -> List[Dict]:
         fname = path.name
         if fname.startswith("~$") or fname == SUMMARY_FILE_2:
             continue
-        m = pattern.match(fname)
+        ext = path.suffix.lower().lstrip(".")
+        if f".{ext}" not in allowed_exts:
+            continue
+
+        m = currency_pattern.match(path.stem)
         if not m:
             continue
-        company = m.group(1)
-        bank_name = m.group(2)
-        currency = m.group(3)
-        ext = path.suffix.lower().lstrip(".")
-        if bank_name not in BANK_ABBR_2:
-            logging.warning(f"未知银行名称 '{bank_name}'，跳过文件: {fname}")
+
+        company = None
+        bank_name = None
+        name_without_currency = m.group(1)
+        currency = m.group(2)
+        for candidate in sorted(BANK_ABBR_2, key=len, reverse=True):
+            suffix = f"-{candidate}"
+            if name_without_currency.endswith(suffix):
+                prefix = name_without_currency[: -len(suffix)]
+                if prefix:
+                    company = prefix
+                    bank_name = candidate
+                break
+
+        if company is None or bank_name is None:
             continue
         if ext == "pdf" and bank_name != "华美银行":
             logging.warning(f"仅华美银行支持 PDF 源文件，跳过文件: {fname}")

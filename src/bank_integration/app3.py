@@ -11,7 +11,7 @@
                            │
                   data/output/订单匹配结果_{YYYYMMDD}.xlsx
 
-输出新增列（追加在 admin 原始列末尾，共 6 列）：
+输出新增列（追加在 admin 原始列末尾，共 7 列）：
     平台订单金额  - 各平台匹配到的订单交易金额
     平台币种      - 对应货币
     状态          - 成功 / 失败 / 退款
@@ -36,12 +36,14 @@ import pandas as pd
 from .config import OUTPUT_DIR
 from .config3 import (
     ADMIN_AMOUNT_COL,
+    ADMIN_DATE_COL,
     ADMIN_JOIN_COL,
     ADMIN_PAYMENT_COL,
     ADMIN_REFUND_COL,
     ADMIN_SHEET,
     ADYEN_AMOUNT_COL,
     ADYEN_CURRENCY_COL,
+    ADYEN_DATE_COL,
     ADYEN_INTERCHANGE_COL,
     ADYEN_JOIN_COL,
     ADYEN_MARKUP_COL,
@@ -55,6 +57,7 @@ from .config3 import (
     GOOGLE_BUYER_AMOUNT_COL,
     GOOGLE_BUYER_CURRENCY_COL,
     GOOGLE_CHARGE_TYPE,
+    GOOGLE_DATE_COL,
     GOOGLE_FEE_REFUND_TYPE,
     GOOGLE_FEE_TYPE,
     GOOGLE_JOIN_COL,
@@ -62,6 +65,7 @@ from .config3 import (
     GOOGLE_TRANSACTION_TYPE_COL,
     HUAWEI_AMOUNT_COL,
     HUAWEI_CURRENCY_COL,
+    HUAWEI_DATE_COL,
     HUAWEI_JOIN_COL,
     HUAWEI_SHEET,
     INPUT_DIR_3,
@@ -71,6 +75,7 @@ from .config3 import (
     PLATFORM_CURRENCY_COL,
     SETTLEMENT_AMOUNT_COL,
     STATUS_COL,
+    TRANSACTION_DATE_COL,
 )
 
 
@@ -172,6 +177,7 @@ def build_adyen_lookup(df: pd.DataFrame) -> pd.DataFrame:
     keep_cols = [c for c in [
         ADYEN_JOIN_COL, ADYEN_AMOUNT_COL, ADYEN_CURRENCY_COL,
         ADYEN_PAYABLE_COL, ADYEN_MARKUP_COL, ADYEN_SCHEME_FEES_COL, ADYEN_INTERCHANGE_COL,
+        ADYEN_DATE_COL,
     ] if c in result.columns]
     return result[keep_cols].fillna("").set_index(ADYEN_JOIN_COL)
 
@@ -182,10 +188,18 @@ def build_huawei_lookup(df: pd.DataFrame) -> pd.DataFrame:
     退款行在华为数据中为独立新行（华为订单号不同），正常不存在重复键；
     若出现重复则保留首行（原始成功记录在前）。
     """
-    keep_cols = [c for c in [HUAWEI_JOIN_COL, HUAWEI_AMOUNT_COL, HUAWEI_CURRENCY_COL]
+    keep_cols = [c for c in [HUAWEI_JOIN_COL, HUAWEI_AMOUNT_COL, HUAWEI_CURRENCY_COL, HUAWEI_DATE_COL]
                  if c in df.columns]
     result = _dedup_lookup(df[keep_cols], HUAWEI_JOIN_COL, "华为")
     return result.fillna("").set_index(HUAWEI_JOIN_COL)
+
+
+def _format_date(val) -> str:
+    try:
+        s = str(val).strip()
+        return s[:10] if len(s) >= 10 else ""
+    except Exception:
+        return ""
 
 
 def _to_float(val) -> Optional[float]:
@@ -213,10 +227,15 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
     amt = GOOGLE_BUYER_AMOUNT_COL
     ccy = GOOGLE_BUYER_CURRENCY_COL
 
-    def _pick(type_val, out_amt_col, include_ccy=False):
+    def _pick(type_val, out_amt_col, include_ccy=False, ccy_out_col="ccy",
+              include_date=False, date_out_col="transaction_date"):
         sub = df[df[type_col].str.strip() == type_val].copy()
         sub = sub[sub[join].str.strip() != ""]
-        cols = [join, amt] + ([ccy] if include_ccy else [])
+        cols = (
+            [join, amt]
+            + ([ccy] if include_ccy else [])
+            + ([GOOGLE_DATE_COL] if include_date and GOOGLE_DATE_COL in sub.columns else [])
+        )
         sub = sub[[c for c in cols if c in sub.columns]]
         before = len(sub)
         sub = sub.drop_duplicates(subset=[join], keep="first")
@@ -224,18 +243,38 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
             logging.warning("【Google-%s】发现 %d 条重复流水号，已保留首行", type_val, before - len(sub))
         rename = {amt: out_amt_col}
         if include_ccy:
-            rename[ccy] = "ccy"
+            rename[ccy] = ccy_out_col
+        if include_date and GOOGLE_DATE_COL in sub.columns:
+            rename[GOOGLE_DATE_COL] = date_out_col
         return sub.rename(columns=rename)
 
-    charge = _pick(GOOGLE_CHARGE_TYPE, "charge_amt", include_ccy=True)
+    charge = _pick(GOOGLE_CHARGE_TYPE, "charge_amt", include_ccy=True, include_date=True)
     fee = _pick(GOOGLE_FEE_TYPE, "fee_amt")
-    refund = _pick(GOOGLE_REFUND_TYPE, "refund_amt")
+    refund = _pick(GOOGLE_REFUND_TYPE, "refund_amt",
+                   include_ccy=True, ccy_out_col="refund_ccy",
+                   include_date=True, date_out_col="refund_date")
     fee_refund = _pick(GOOGLE_FEE_REFUND_TYPE, "fee_refund_amt")
 
     result = charge
     for part in (fee, refund, fee_refund):
         if not part.empty:
             result = result.merge(part, on=join, how="outer")
+
+    # 退款订单（无原始 Charge 行）用 refund_date / refund_ccy 补充缺失字段
+    if "refund_date" in result.columns:
+        if "transaction_date" not in result.columns:
+            result["transaction_date"] = None
+        mask = result["transaction_date"].isna() | (result["transaction_date"] == "")
+        result.loc[mask, "transaction_date"] = result.loc[mask, "refund_date"]
+        result = result.drop(columns=["refund_date"])
+
+    if "refund_ccy" in result.columns:
+        if "ccy" not in result.columns:
+            result["ccy"] = None
+        mask = result["ccy"].isna() | (result["ccy"] == "")
+        result.loc[mask, "ccy"] = result.loc[mask, "refund_ccy"]
+        result = result.drop(columns=["refund_ccy"])
+
     return result.fillna("").drop_duplicates(subset=[join]).set_index(join)
 
 
@@ -248,7 +287,7 @@ def _build_platform_only_rows(
 ) -> pd.DataFrame:
     """构建平台有、admin 无对应记录的多余行（回调丢失/网络延迟场景）。
 
-    所有 admin 原始列留空，填充可从平台数据计算的 6 个新增列，状态统一标"失败"。
+    所有 admin 原始列留空，填充可从平台数据计算的 7 个新增列，状态统一标"失败"。
     """
     extra = []
 
@@ -269,6 +308,8 @@ def _build_platform_only_rows(
             itc = _to_float(adyen_lk.at[key, ADYEN_INTERCHANGE_COL])
             if any(x is not None for x in [m, sch, itc]):
                 row[FEE_COL] = str(round((m or 0.0) + (sch or 0.0) + (itc or 0.0), 4))
+            if ADYEN_DATE_COL in adyen_lk.columns:
+                row[TRANSACTION_DATE_COL] = _format_date(adyen_lk.at[key, ADYEN_DATE_COL])
             extra.append(row)
 
     # ── 华为多余行 ────────────────────────────────────────
@@ -284,6 +325,8 @@ def _build_platform_only_rows(
             row[PLATFORM_CURRENCY_COL] = str(huawei_lk.at[key, HUAWEI_CURRENCY_COL]).strip()
             row[SETTLEMENT_AMOUNT_COL] = amt  # 暂无手续费数据
             row[STATUS_COL]            = "成功"
+            if HUAWEI_DATE_COL in huawei_lk.columns:
+                row[TRANSACTION_DATE_COL] = _format_date(huawei_lk.at[key, HUAWEI_DATE_COL])
             extra.append(row)
 
     # ── Google 多余行 ─────────────────────────────────────
@@ -314,6 +357,8 @@ def _build_platform_only_rows(
                 if f is not None:
                     row[FEE_COL] = str(round(abs(f), 2))
                 row[STATUS_COL] = "成功"
+            if "transaction_date" in google_lk.columns:
+                row[TRANSACTION_DATE_COL] = _format_date(google_lk.at[key, "transaction_date"])
             extra.append(row)
 
     if not extra:
@@ -362,21 +407,23 @@ def enrich_admin(
     if google_avail:
         result = _safe_merge(result, google_lk, "_g_", "Google")
 
-    # ── 构建 6 个新列 ─────────────────────────────────────────
-    platform_amt_list  = []
-    platform_ccy_list  = []
-    status_list        = []
-    settlement_list    = []
-    fee_list           = []
-    country_tax_list   = []
+    # ── 构建 7 个新列 ─────────────────────────────────────────
+    platform_amt_list     = []
+    platform_ccy_list     = []
+    status_list           = []
+    settlement_list       = []
+    fee_list              = []
+    country_tax_list      = []
+    transaction_date_list = []
 
     for _, row in result.iterrows():
         src = str(row.get(ADMIN_PAYMENT_COL, "")).strip()
         refund_flag = str(row.get(ADMIN_REFUND_COL, "")).strip()
 
-        settle_amt  = ""
-        fee_amt     = ""
-        country_tax = ""
+        settle_amt       = ""
+        fee_amt          = ""
+        country_tax      = ""
+        transaction_date = ""
 
         if src == "Adyen" and adyen_avail:
             amt = str(row.get(f"_a_{ADYEN_AMOUNT_COL}", "")).strip()
@@ -390,12 +437,14 @@ def enrich_admin(
             itc = _to_float(row.get(f"_a_{ADYEN_INTERCHANGE_COL}", ""))
             if any(x is not None for x in [m, sch, itc]):
                 fee_amt = str(round((m or 0.0) + (sch or 0.0) + (itc or 0.0), 4))
+            transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
         elif src == "华为支付" and huawei_avail:
             amt = str(row.get(f"_h_{HUAWEI_AMOUNT_COL}", "")).strip()
             ccy = str(row.get(f"_h_{HUAWEI_CURRENCY_COL}", "")).strip()
             matched = amt != ""
             settle_amt = amt  # 暂无手续费数据，结算金额 = 平台订单金额
+            transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
         elif "Google" in src and google_avail:
             ccy = str(row.get("_g_ccy", "")).strip()
@@ -426,6 +475,7 @@ def enrich_admin(
                 if admin_amt is not None and c is not None:
                     country_tax = str(round(admin_amt - c, 2))
             matched = amt != ""
+            transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
         else:
             amt = ccy = ""
@@ -436,6 +486,7 @@ def enrich_admin(
         settlement_list.append(settle_amt)
         fee_list.append(fee_amt)
         country_tax_list.append(country_tax)
+        transaction_date_list.append(transaction_date)
 
         if refund_flag == "已退款":
             status_list.append("退款")
@@ -454,6 +505,7 @@ def enrich_admin(
     result.insert(admin_col_count + 3, SETTLEMENT_AMOUNT_COL, settlement_list)
     result.insert(admin_col_count + 4, FEE_COL,               fee_list)
     result.insert(admin_col_count + 5, COUNTRY_TAX_COL,       country_tax_list)
+    result.insert(admin_col_count + 6, TRANSACTION_DATE_COL,  transaction_date_list)
 
     # ── 追加平台多余行（平台有、admin 无对应记录）────────────
     admin_keys = set(admin_df[ADMIN_JOIN_COL].str.strip())

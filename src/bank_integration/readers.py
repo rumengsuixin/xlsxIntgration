@@ -1,9 +1,11 @@
 """Readers for bank source files."""
 
 import re
-from typing import Dict, Optional
+from datetime import date, datetime
+from typing import Dict, Optional, Tuple
 
 import pandas as pd
+from openpyxl import load_workbook
 
 from .config import BANK_DATE_COL, BANK_READ_CONFIG
 from .pdf_daily_balance import read_huamei_daily_balance_pdf
@@ -32,12 +34,17 @@ def read_bank_file(
     cfg = (bank_read_config or BANK_READ_CONFIG)[bank_name]
     date_col_map = bank_date_col or BANK_DATE_COL
     header = cfg["header"]
+    date_range = None
 
     if cfg.get("is_pdf"):
         df = read_huamei_daily_balance_pdf(filepath)
     elif cfg["is_csv"]:
+        if bank_read_config is None and bank_name == "中国银行":
+            date_range = _extract_boc_date_range(filepath, header, cfg)
         df = _read_csv(filepath, header, cfg)
     else:
+        if bank_read_config is None:
+            date_range = _extract_xlsx_date_range(filepath, bank_name)
         df = pd.read_excel(
             filepath,
             header=header,
@@ -82,6 +89,9 @@ def read_bank_file(
         if date_col in df.columns:
             df = df[df[date_col].str.match(r"\d{4}-\d{2}-\d{2}")]
 
+    if date_range is not None:
+        df.attrs["statement_date_range"] = date_range
+
     return df
 
 
@@ -100,3 +110,79 @@ def _read_csv(filepath: str, header, cfg: Dict) -> pd.DataFrame:
     # 去除列名中 [英文] 后缀（中国银行格式，其他银行无影响）
     df.columns = [c.split("[")[0].strip() for c in df.columns]
     return df
+
+
+def _extract_xlsx_date_range(filepath: str, bank_name: str) -> Optional[Tuple[date, date]]:
+    labels = {
+        "招商银行": ("查询开始日期", "查询结束日期"),
+        "中信银行": ("起始日期", "截止日期"),
+    }.get(bank_name)
+    if labels is None:
+        return None
+
+    wb = load_workbook(filepath, read_only=True, data_only=True)
+    try:
+        ws = wb.active
+        values = {}
+        for row in ws.iter_rows(min_row=1, max_row=20, values_only=True):
+            cells = list(row)
+            for idx, cell in enumerate(cells):
+                label = str(cell or "").strip()
+                if label in labels:
+                    next_value = cells[idx + 1] if idx + 1 < len(cells) else None
+                    parsed = _parse_date_value(next_value)
+                    if parsed is not None:
+                        values[label] = parsed
+        start = values.get(labels[0])
+        end = values.get(labels[1])
+        if start is not None and end is not None:
+            return start, end
+        return None
+    finally:
+        wb.close()
+
+
+def _extract_boc_date_range(filepath: str, header, cfg: Dict) -> Optional[Tuple[date, date]]:
+    forced_enc = cfg.get("encoding")
+    encodings = [forced_enc] if forced_enc else ("utf-8-sig", "gbk", "utf-8")
+    for enc in encodings:
+        try:
+            rows = pd.read_csv(filepath, header=None, dtype=str, encoding=enc, nrows=header)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        return None
+
+    for _, row in rows.fillna("").iterrows():
+        label = str(row.iloc[0] if len(row) else "").strip()
+        if label.startswith("查询时间范围"):
+            raw = str(row.iloc[1] if len(row) > 1 else "").strip()
+            m = re.search(r"(\d{8})\s*-\s*(\d{8})", raw)
+            if not m:
+                return None
+            start = _parse_date_value(m.group(1))
+            end = _parse_date_value(m.group(2))
+            if start is not None and end is not None:
+                return start, end
+    return None
+
+
+def _parse_date_value(value) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+
+    text = str(value).strip()
+    m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text)
+    if not m:
+        m = re.search(r"(\d{4})(\d{2})(\d{2})", text)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None

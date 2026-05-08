@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import unittest
 import tempfile
+from datetime import date
 from pathlib import Path
 
+import pandas as pd
 from openpyxl import Workbook
 
 from src.bank_integration.balances import (
@@ -110,6 +112,86 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=2, column=7).value, 456.78)
         self.assertEqual(ws.cell(row=2, column=4).value, "=SUM(E2:G2)")
         self.assertEqual(ws.cell(row=3, column=4).value, "=SUM(E3:G3)")
+
+    def test_boc_date_range_fills_months_before_first_transaction(self):
+        df = pd.DataFrame(
+            [
+                {"交易日期": "20260320", "交易金额": "+0.81", "交易后余额": "6,475.08"},
+                {"交易日期": "20260326", "交易金额": "-400.00", "交易后余额": "6,075.08"},
+            ]
+        )
+        df.attrs["statement_date_range"] = (date(2026, 1, 1), date(2026, 3, 31))
+
+        monthly = get_monthly_balances(df, "中国银行")
+
+        self.assertEqual(monthly[0][0], "2026-01-31")
+        self.assertAlmostEqual(monthly[0][1], 6474.27, places=2)
+        self.assertEqual(monthly[1][0], "2026-02-28")
+        self.assertAlmostEqual(monthly[1][1], 6474.27, places=2)
+        self.assertEqual(monthly[2][0], "2026-03-26")
+        self.assertAlmostEqual(monthly[2][1], 6075.08, places=2)
+
+    def test_cmb_debit_first_transaction_backfills_prior_months(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "交易日": "2026-03-03",
+                    "借方金额": "100.00",
+                    "贷方金额": "",
+                    "余额": "900.00",
+                }
+            ]
+        )
+        df.attrs["statement_date_range"] = (date(2026, 1, 1), date(2026, 3, 31))
+
+        monthly = get_monthly_balances(df, "招商银行")
+
+        self.assertEqual(monthly, [("2026-01-31", 1000.0), ("2026-02-28", 1000.0), ("2026-03-03", 900.0)])
+
+    def test_citic_credit_first_transaction_backfills_prior_months(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "交易日期": "2026-04-10",
+                    "借方发生额": "",
+                    "贷方发生额": "50.00",
+                    "账户余额": "1,050.00",
+                }
+            ]
+        )
+        df.attrs["statement_date_range"] = (date(2026, 2, 1), date(2026, 4, 30))
+
+        monthly = get_monthly_balances(df, "中信银行")
+
+        self.assertEqual(monthly, [("2026-02-28", 1000.0), ("2026-03-31", 1000.0), ("2026-04-10", 1050.0)])
+
+    def test_missing_middle_month_uses_previous_transaction_balance(self):
+        df = pd.DataFrame(
+            [
+                {"交易日": "2026-01-15", "借方金额": "", "贷方金额": "100.00", "余额": "1,000.00"},
+                {"交易日": "2026-03-10", "借方金额": "", "贷方金额": "200.00", "余额": "1,200.00"},
+            ]
+        )
+        df.attrs["statement_date_range"] = (date(2026, 1, 1), date(2026, 3, 31))
+
+        monthly = get_monthly_balances(df, "招商银行")
+
+        self.assertEqual(monthly, [("2026-01-15", 1000.0), ("2026-02-28", 1000.0), ("2026-03-10", 1200.0)])
+
+    def test_missing_month_fill_requires_mode1_default_maps(self):
+        df = pd.DataFrame(
+            [{"交易日": "2026-03-03", "借方金额": "100.00", "贷方金额": "", "余额": "900.00"}]
+        )
+        df.attrs["statement_date_range"] = (date(2026, 1, 1), date(2026, 3, 31))
+
+        monthly = get_monthly_balances(
+            df,
+            "招商银行",
+            balance_col_map=BANK_BALANCE_COL_2,
+            date_col_map=BANK_DATE_COL_2,
+        )
+
+        self.assertEqual(monthly, [("2026-03-03", 900.0)])
 
     def test_mode2_east_asia_has_no_balance_column(self):
         cases = [

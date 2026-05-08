@@ -12,6 +12,8 @@ from openpyxl.utils.datetime import from_excel as excel_to_date
 from .config import BALANCE_BANK_ORDER, BANK_BALANCE_COL, BANK_DATE_COL
 from .config2 import BALANCE_BLOCK_SIZE_2, COMPANY_COL_START_2
 
+FILL_MISSING_BALANCE_BANKS = {"招商银行", "中信银行", "中国银行"}
+
 
 def get_last_balance(df, bank_name: str):
     """
@@ -91,14 +93,11 @@ def get_monthly_balances(
         return []
 
     month_best: dict = {}
+    transactions = []
 
-    for _, row in df.iterrows():
-        bal_str = str(row.get(actual_balance_col, "")).strip().replace(",", "").replace("+", "")
-        if not bal_str:
-            continue
-        try:
-            balance = float(bal_str)
-        except ValueError:
+    for seq, (_, row) in enumerate(df.iterrows()):
+        balance = _parse_amount(row.get(actual_balance_col, ""))
+        if balance is None:
             continue
         if balance == 0.0:
             continue
@@ -113,10 +112,94 @@ def get_monthly_balances(
         if prev is None or row_date >= prev[0]:
             month_best[month_key] = (row_date, balance)
 
+        amount = _extract_net_amount(row, bank_name)
+        if amount is not None:
+            transactions.append((row_date, seq, balance, amount))
+
+    if balance_col_map is None and date_col_map is None:
+        _fill_missing_monthly_balances(df, bank_name, month_best, transactions)
+
     return [
         (d.isoformat(), bal)
         for _, (d, bal) in sorted(month_best.items())
     ]
+
+
+def _fill_missing_monthly_balances(df, bank_name: str, month_best: dict, transactions: list) -> None:
+    if bank_name not in FILL_MISSING_BALANCE_BANKS:
+        return
+
+    date_range = df.attrs.get("statement_date_range")
+    if not date_range:
+        return
+    start_date, end_date = date_range
+    if start_date is None or end_date is None or start_date > end_date:
+        return
+    if not transactions:
+        logging.info(f"  [{bank_name}] 无可推算交易行，跳过缺失月份余额补全")
+        return
+
+    transactions = sorted(transactions, key=lambda item: (item[0], item[1]))
+    first_date, _, first_balance, first_amount = transactions[0]
+    balance_before_first = first_balance - first_amount
+
+    for year, month, month_end in _iter_month_ends(start_date, end_date):
+        month_key = (year, month)
+        if month_key in month_best:
+            continue
+
+        balance = None
+        for row_date, _, row_balance, _ in transactions:
+            if row_date <= month_end:
+                balance = row_balance
+            else:
+                break
+
+        if balance is None and month_end < first_date:
+            balance = balance_before_first
+
+        if balance is None:
+            continue
+
+        month_best[month_key] = (month_end, balance)
+        logging.info(f"  [{bank_name}] 补全 {year}年{month}月 余额: {balance}")
+
+
+def _iter_month_ends(start_date: date, end_date: date):
+    year = start_date.year
+    month = start_date.month
+    while (year, month) <= (end_date.year, end_date.month):
+        last_day = calendar.monthrange(year, month)[1]
+        yield year, month, date(year, month, last_day)
+        if month == 12:
+            year += 1
+            month = 1
+        else:
+            month += 1
+
+
+def _extract_net_amount(row, bank_name: str) -> Optional[float]:
+    if bank_name == "招商银行":
+        debit = _parse_amount(row.get("借方金额", "")) or 0.0
+        credit = _parse_amount(row.get("贷方金额", "")) or 0.0
+        return credit - debit
+    if bank_name == "中信银行":
+        debit = _parse_amount(row.get("借方发生额", "")) or 0.0
+        credit = _parse_amount(row.get("贷方发生额", "")) or 0.0
+        return credit - debit
+    if bank_name == "中国银行":
+        return _parse_amount(row.get("交易金额", ""))
+    return None
+
+
+def _parse_amount(value) -> Optional[float]:
+    text = str(value or "").strip().replace(",", "").replace("\t", "").replace(" ", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _resolve_col(df, col_name: str) -> Optional[str]:

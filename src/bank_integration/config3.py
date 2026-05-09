@@ -6,12 +6,13 @@ INPUT_DIR_3 = DATA_DIR / "input" / "3"
 OUTPUT_FILE_TEMPLATE = "订单匹配结果_{date}.xlsx"
 OUTPUT_SHEET_3 = "订单匹配结果"
 OUTPUT_SUMMARY_SHEET_3 = "交易金额汇总"
+OUTPUT_APPLE_SHEET_3 = "苹果支付"
 
 # ── Admin 主表 ────────────────────────────────────────────
 ADMIN_SHEET = "汇总"
 ADMIN_JOIN_COL = "流水号"
 ADMIN_AMOUNT_COL = "金额"        # 用于 Google 国家税费计算
-ADMIN_PAYMENT_COL = "支付方式"   # 值为 Adyen / 华为支付 / Google支付
+ADMIN_PAYMENT_COL = "支付方式"   # 值为 Adyen / 华为支付 / Google支付 / 苹果支付Lua（苹果不做平台关联）
 ADMIN_REFUND_COL = "是否退款"    # 值为 正常 / 已退款
 
 # ── Adyen 平台 ────────────────────────────────────────────

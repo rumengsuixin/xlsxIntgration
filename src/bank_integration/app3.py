@@ -72,6 +72,7 @@ from .config3 import (
     HUAWEI_JOIN_COL,
     HUAWEI_SHEET,
     INPUT_DIR_3,
+    OUTPUT_APPLE_SHEET_3,
     OUTPUT_FILE_TEMPLATE,
     OUTPUT_SHEET_3,
     OUTPUT_SUMMARY_SHEET_3,
@@ -92,36 +93,33 @@ def scan_source_files_3(input_dir: Path) -> dict:
         adyen-  → Adyen 文件（含连字符以避免误匹配）
         华为    → 华为文件
         googol- 或 google-  → Google Play 文件
+        苹果    → 苹果文件
 
-    返回 {"admin": Path|None, "adyen": Path|None, "huawei": Path|None, "google": Path|None}
+    返回 {"admin": [Path, ...], ...}，同平台多文件时全部收录，由调用方合并。
     """
-    result = {"admin": None, "adyen": None, "huawei": None, "google": None}
-    buckets = {k: [] for k in result}  # type: dict
+    result: dict = {"admin": [], "adyen": [], "huawei": [], "google": [], "apple": []}
 
     for f in sorted(input_dir.glob("*.xlsx")):
         if f.name.startswith("~$"):
             continue
         stem = f.stem.lower()
         if stem.startswith("admin"):
-            buckets["admin"].append(f)
+            result["admin"].append(f)
         elif stem.startswith("adyen-"):
-            buckets["adyen"].append(f)
+            result["adyen"].append(f)
         elif stem.startswith("华为"):
-            buckets["huawei"].append(f)
+            result["huawei"].append(f)
         elif stem.startswith("googol-") or stem.startswith("google-"):
-            buckets["google"].append(f)
+            result["google"].append(f)
+        elif stem.startswith("苹果"):
+            result["apple"].append(f)
 
-    for key, files in buckets.items():
-        if not files:
-            continue
-        if len(files) > 1:
-            logging.warning(
-                "在 %s 发现多个 %s 文件，将使用第一个：%s",
-                input_dir,
-                key,
-                files[0].name,
+    for key, file_list in result.items():
+        if len(file_list) > 1:
+            logging.info(
+                "发现 %d 个 %s 文件，将合并读取：%s",
+                len(file_list), key, [f.name for f in file_list],
             )
-        result[key] = files[0]
 
     return result
 
@@ -147,6 +145,12 @@ def read_google(filepath: Path) -> pd.DataFrame:
     """读取 Google Play 报告（第一个工作表），返回全部行。"""
     df = pd.read_excel(filepath, sheet_name=0, dtype=str)
     return df.fillna("")
+
+
+def read_apple(filepath: Path) -> pd.DataFrame:
+    """读取 App Store Connect 报表（header 在第 4 行，即 header=3），全列字符串。"""
+    df = pd.read_excel(filepath, header=3, dtype=str)
+    return df.dropna(how="all").fillna("")
 
 
 def _dedup_lookup(df: pd.DataFrame, key_col: str, label: str) -> pd.DataFrame:
@@ -553,6 +557,14 @@ def enrich_admin(
             matched = amt != ""
             transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
+        elif "苹果支付" in src:
+            amt        = str(row.get(ADMIN_AMOUNT_COL, "")).strip()
+            ccy        = ""   # Admin 无币种列，留空
+            settle_ccy = ""
+            matched    = True  # Admin 中已确认付款，无需平台文件验证
+            settle_amt = amt   # 暂无苹果手续费数据，结算金额取 Admin 金额
+            transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
+
         else:
             amt = ccy = ""
             settle_ccy = ""
@@ -610,7 +622,7 @@ def log_match_stats(result_df: pd.DataFrame) -> None:
     if ADMIN_PAYMENT_COL not in result_df.columns:
         return
 
-    platform_map = [("Adyen", "Adyen"), ("华为支付", "华为支付"), ("Google支付", "Google支付")]
+    platform_map = [("Adyen", "Adyen"), ("华为支付", "华为支付"), ("Google支付", "Google支付"), ("苹果支付Lua", "苹果支付Lua")]
     for label, pay_val in platform_map:
         rows = result_df[result_df[ADMIN_PAYMENT_COL].str.strip() == pay_val]
         if rows.empty:
@@ -672,17 +684,372 @@ def build_summary_sheet(result_df: pd.DataFrame) -> pd.DataFrame:
     return summary[summary_cols]
 
 
-def write_output(result_df: pd.DataFrame, output_dir: Path) -> Path:
+def build_apple_platform_summary(apple_raw_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """从苹果平台报表数据构建交易金额汇总行。
+
+    以 Settlement Date × 结算货币 分组，按 Quantity 正负区分成功/退款。
+    """
+    summary_cols = [
+        TRANSACTION_DATE_COL, ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL,
+        "成功笔数", "成功金额", "退款笔数", "退款金额", "净交易金额",
+    ]
+    if apple_raw_df is None or apple_raw_df.empty:
+        return pd.DataFrame(columns=summary_cols)
+
+    df = apple_raw_df.copy()
+
+    date_col = next(
+        (c for c in ["Settlement Date", "Transaction Date"] if c in df.columns), None
+    )
+    if date_col is None:
+        logging.warning("苹果平台报表未找到日期列，跳过苹果汇总")
+        return pd.DataFrame(columns=summary_cols)
+    df["_date"] = (
+        pd.to_datetime(df[date_col].astype(str).str.strip(), errors="coerce")
+        .dt.strftime("%Y-%m-%d").fillna("")
+    )
+    df = df[df["_date"] != ""]
+
+    currency_col = next(
+        (c for c in ["Currency of Proceeds", "Partner Share Currency"] if c in df.columns), None
+    )
+    df["_currency"] = df[currency_col].astype(str).str.strip() if currency_col else ""
+
+    if "Extended Partner Share" not in df.columns:
+        logging.warning("苹果平台报表未找到 Extended Partner Share 列，跳过苹果汇总")
+        return pd.DataFrame(columns=summary_cols)
+    df["_eps"] = pd.to_numeric(
+        df["Extended Partner Share"].astype(str).str.replace(",", "", regex=False),
+        errors="coerce",
+    ).fillna(0.0)
+
+    if "Quantity" in df.columns:
+        df["_qty"] = pd.to_numeric(
+            df["Quantity"].astype(str).str.replace(",", "", regex=False), errors="coerce"
+        ).fillna(0.0)
+    else:
+        df["_qty"] = df["_eps"].apply(lambda x: 1.0 if x >= 0 else -1.0)
+
+    df["_is_success"] = df["_qty"] > 0
+    df["_is_refund"]  = df["_qty"] < 0
+
+    rows = []
+    for (dt, cur), grp in df.groupby(["_date", "_currency"], sort=True):
+        rows.append({
+            TRANSACTION_DATE_COL:    dt,
+            ADMIN_PAYMENT_COL:       "苹果支付Lua",
+            SETTLEMENT_CURRENCY_COL: cur,
+            "成功笔数": int(grp.loc[grp["_is_success"], "_qty"].sum()),
+            "成功金额": round(grp.loc[grp["_is_success"], "_eps"].sum(), 2),
+            "退款笔数": int(grp.loc[grp["_is_refund"], "_qty"].abs().sum()),
+            "退款金额": round(grp.loc[grp["_is_refund"], "_eps"].abs().sum(), 2),
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=summary_cols)
+
+    result = pd.DataFrame(rows)
+    result["净交易金额"] = result["成功金额"] - result["退款金额"]
+    return result[summary_cols]
+
+
+def _write_apple_sheet(
+    writer: pd.ExcelWriter,
+    apple_admin_df: pd.DataFrame,
+    apple_raw_df: Optional[pd.DataFrame],
+) -> None:
+    """在 ExcelWriter 中写入苹果支付 Sheet。
+
+    布局（从上到下）：
+      合并日期汇总：admin 与平台同结算日期数据并排，一行一个日期
+      Admin 苹果订单详情 + 统计
+      苹果平台报表详情 + 合计
+    """
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    ws = writer.book.create_sheet(OUTPUT_APPLE_SHEET_3)
+    writer.sheets[OUTPUT_APPLE_SHEET_3] = ws
+
+    row = 1
+
+    def _title(r, text, size=12):
+        ws.cell(r, 1).value = text
+        ws.cell(r, 1).font = Font(bold=True, size=size)
+
+    def _header(r, headers):
+        for ci, h in enumerate(headers, 1):
+            c = ws.cell(r, ci)
+            c.value = h
+            c.font = Font(bold=True)
+
+    def _coerce(val):
+        """将字符串型数字转为 float，非数字保持字符串，供公式正常计算。"""
+        s = str(val).strip()
+        if s == "":
+            return ""
+        try:
+            return float(s.replace(",", ""))
+        except ValueError:
+            return s
+
+    def _sum_col(r, ci, r_start, r_end):
+        if r_end >= r_start:
+            cl = get_column_letter(ci)
+            ws.cell(r, ci).value = f"=SUM({cl}{r_start}:{cl}{r_end})"
+        else:
+            ws.cell(r, ci).value = 0
+
+    # ══════════════════════════════════════════════════════════════
+    # 合并日期汇总（admin 与平台同行并排）
+    # ══════════════════════════════════════════════════════════════
+    _title(row, "苹果订单日期汇总")
+    row += 1
+
+    merged_headers = [
+        "日期",
+        "笔数", "正常笔数", "退款笔数", "正常金额", "退款金额", "合计金额",
+        "Quantity合计", "Extended Partner Share合计", "客户支付合计", "手续费合计",
+    ]
+    _header(row, merged_headers)
+    row += 1
+
+    # -- Admin 按支付日期聚合 --
+    admin_summary: dict = {}
+    if not apple_admin_df.empty:
+        adf = apple_admin_df.copy()
+        adf["_date"] = (
+            pd.to_datetime(adf[ADMIN_DATE_COL].astype(str).str.strip(), errors="coerce")
+            .dt.strftime("%Y-%m-%d").fillna("")
+            if ADMIN_DATE_COL in adf.columns else ""
+        )
+        adf["_amount"] = (
+            pd.to_numeric(
+                adf[ADMIN_AMOUNT_COL].astype(str).str.replace(",", "", regex=False),
+                errors="coerce",
+            ).fillna(0.0)
+            if ADMIN_AMOUNT_COL in adf.columns else 0.0
+        )
+        flag = (
+            adf[ADMIN_REFUND_COL].astype(str).str.strip()
+            if ADMIN_REFUND_COL in adf.columns
+            else pd.Series("正常", index=adf.index)
+        )
+        adf["_normal"] = flag == "正常"
+        adf["_refund"] = flag == "已退款"
+        for dt, grp in adf.groupby("_date", sort=True):
+            n_amt = round(grp.loc[grp["_normal"], "_amount"].sum(), 2)
+            r_amt = round(grp.loc[grp["_refund"], "_amount"].sum(), 2)
+            admin_summary[dt] = [
+                len(grp), int(grp["_normal"].sum()), int(grp["_refund"].sum()),
+                n_amt, r_amt, round(n_amt - r_amt, 2),
+            ]
+
+    # -- 平台 按结算日期聚合 --
+    platform_summary: dict = {}
+    if apple_raw_df is not None and not apple_raw_df.empty:
+        plat_date_col = next(
+            (c for c in ["Settlement Date", "Transaction Date", "Begin Date", "End Date", "Report Date", "Date", "日期"]
+             if c in apple_raw_df.columns),
+            None,
+        )
+        if plat_date_col:
+            pdf = apple_raw_df.copy()
+            pdf["_date"] = (
+                pd.to_datetime(pdf[plat_date_col].astype(str).str.strip(), errors="coerce")
+                .dt.strftime("%Y-%m-%d").fillna("")
+            )
+            pdf = pdf[pdf["_date"] != ""]
+
+            def _num(col):
+                if col not in pdf.columns:
+                    return pd.Series(0.0, index=pdf.index)
+                return pd.to_numeric(
+                    pdf[col].astype(str).str.replace(",", "", regex=False), errors="coerce"
+                ).fillna(0.0)
+
+            pdf["_qty"] = _num("Quantity")
+            pdf["_eps"] = _num("Extended Partner Share")
+            pdf["_tcp"] = pdf["_qty"] * _num("Customer Price")
+            pdf["_fee"] = pdf["_tcp"] - pdf["_eps"]
+
+            for dt, grp in pdf.groupby("_date", sort=True):
+                platform_summary[dt] = [
+                    int(grp["_qty"].sum()),
+                    round(grp["_eps"].sum(), 2),
+                    round(grp["_tcp"].sum(), 2),
+                    round(grp["_fee"].sum(), 2),
+                ]
+
+    # -- 合并写出：admin 与平台 outer join 按日期排序 --
+    all_dates = sorted(set(admin_summary) | set(platform_summary))
+    summary_start = row
+    for dt in all_dates:
+        a = admin_summary.get(dt, ["", "", "", "", "", ""])
+        p = platform_summary.get(dt, ["", "", "", ""])
+        vals = [dt] + a + p
+        for ci, v in enumerate(vals, 1):
+            ws.cell(row, ci).value = v
+        row += 1
+    summary_end = row - 1
+
+    ws.cell(row, 1).value = "合计"
+    ws.cell(row, 1).font = Font(bold=True)
+    for ci in range(2, len(merged_headers) + 1):
+        _sum_col(row, ci, summary_start, summary_end)
+    row += 2
+
+    # ══════════════════════════════════════════════════════════════
+    # Admin 苹果订单详情
+    # ══════════════════════════════════════════════════════════════
+    _title(row, "Admin 苹果订单详情")
+    row += 1
+
+    admin_cols = list(apple_admin_df.columns)
+    _header(row, admin_cols)
+    row += 1
+
+    admin_data_start = row
+    for _, dr in apple_admin_df.iterrows():
+        for ci, val in enumerate(dr, 1):
+            ws.cell(row, ci).value = _coerce(val)
+        row += 1
+    admin_data_end = row - 1
+    row += 1
+
+    ws.cell(row, 1).value = "统计"
+    ws.cell(row, 1).font = Font(bold=True)
+    row += 1
+    _header(row, ["", "笔数", "合计金额"])
+    row += 1
+
+    ridx = (admin_cols.index(ADMIN_REFUND_COL) + 1) if ADMIN_REFUND_COL in admin_cols else None
+    aidx = (admin_cols.index(ADMIN_AMOUNT_COL) + 1) if ADMIN_AMOUNT_COL in admin_cols else None
+
+    if admin_data_end >= admin_data_start and ridx and aidx:
+        rc = get_column_letter(ridx)
+        ac = get_column_letter(aidx)
+        rng_r = f"{rc}{admin_data_start}:{rc}{admin_data_end}"
+        rng_a = f"{ac}{admin_data_start}:{ac}{admin_data_end}"
+
+        normal_stat_row = row
+        ws.cell(row, 1).value = "正常订单"
+        ws.cell(row, 2).value = f'=COUNTIF({rng_r},"正常")'
+        ws.cell(row, 3).value = f'=SUMIF({rng_r},"正常",{rng_a})'
+        row += 1
+        refund_stat_row = row
+        ws.cell(row, 1).value = "退款订单"
+        ws.cell(row, 2).value = f'=COUNTIF({rng_r},"已退款")'
+        ws.cell(row, 3).value = f'=SUMIF({rng_r},"已退款",{rng_a})'
+        row += 1
+        ws.cell(row, 1).value = "合计"
+        ws.cell(row, 1).font = Font(bold=True)
+        ws.cell(row, 2).value = f"=SUM(B{normal_stat_row}:B{refund_stat_row})"
+        ws.cell(row, 3).value = f"=SUM(C{normal_stat_row}:C{refund_stat_row})"
+        row += 2
+    else:
+        row += 1
+
+    # ══════════════════════════════════════════════════════════════
+    # 苹果平台报表详情
+    # ══════════════════════════════════════════════════════════════
+    _title(row, "苹果平台报表详情")
+    row += 1
+
+    if apple_raw_df is None or apple_raw_df.empty:
+        ws.cell(row, 1).value = "（未找到苹果平台文件）"
+        return
+
+    # 追加手续费计算列（= Customer Price × Quantity - Extended Partner Share）
+    def _to_num_s(series):
+        return pd.to_numeric(
+            series.astype(str).str.replace(",", "", regex=False), errors="coerce"
+        ).fillna(0.0)
+
+    plat_df = apple_raw_df.copy()
+    if all(c in plat_df.columns for c in ["Quantity", "Customer Price", "Extended Partner Share"]):
+        plat_df["手续费"] = (
+            _to_num_s(plat_df["Quantity"]) * _to_num_s(plat_df["Customer Price"])
+            - _to_num_s(plat_df["Extended Partner Share"])
+        ).round(4)
+    else:
+        plat_df["手续费"] = ""
+
+    pcols = list(plat_df.columns)
+    _header(row, pcols)
+    row += 1
+
+    plat_data_start = row
+    for _, dr in plat_df.iterrows():
+        for ci, val in enumerate(dr, 1):
+            ws.cell(row, ci).value = _coerce(val)
+        row += 1
+    plat_data_end = row - 1
+    row += 1
+
+    # 平台数据合计行
+    ps_idx  = (pcols.index("Partner Share") + 1) if "Partner Share" in pcols else None
+    ext_idx = (pcols.index("Extended Partner Share") + 1) if "Extended Partner Share" in pcols else None
+    cp_idx  = (pcols.index("Customer Price") + 1) if "Customer Price" in pcols else None
+    fee_idx = (pcols.index("手续费") + 1) if "手续费" in pcols else None
+
+    ws.cell(row, 2).value = "Partner Share（结算单价）"
+    ws.cell(row, 3).value = "Extended Partner Share（合计结算）"
+    ws.cell(row, 4).value = "Customer Price（客户单价）"
+    ws.cell(row, 5).value = "手续费合计（客户支付-结算）"
+    for ci in (2, 3, 4, 5):
+        ws.cell(row, ci).font = Font(bold=True)
+    row += 1
+
+    ws.cell(row, 1).value = "合计"
+    ws.cell(row, 1).font = Font(bold=True)
+    for out_ci, src_idx in ((2, ps_idx), (3, ext_idx), (4, cp_idx)):
+        if src_idx and plat_data_end >= plat_data_start:
+            data_col = get_column_letter(src_idx)
+            ws.cell(row, out_ci).value = f"=SUM({data_col}{plat_data_start}:{data_col}{plat_data_end})"
+    if fee_idx and plat_data_end >= plat_data_start:
+        fee_col = get_column_letter(fee_idx)
+        ws.cell(row, 5).value = f"=SUM({fee_col}{plat_data_start}:{fee_col}{plat_data_end})"
+
+
+def write_output(
+    result_df: pd.DataFrame,
+    output_dir: Path,
+    apple_raw_df: Optional[pd.DataFrame] = None,
+) -> Path:
     """将结果写入 data/output/订单匹配结果_{YYYYMMDD}.xlsx。"""
     today = date.today().strftime("%Y%m%d")
     filename = OUTPUT_FILE_TEMPLATE.format(date=today)
     output_path = output_dir / filename
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    summary_df = build_summary_sheet(result_df)
+    # 苹果行单独写入苹果支付 Sheet，从主表剔除
+    apple_mask = result_df[ADMIN_PAYMENT_COL].str.strip().str.contains("苹果支付", na=False)
+    main_df = result_df[~apple_mask].reset_index(drop=True)
+
+    _extra_cols = [
+        PLATFORM_AMOUNT_COL, PLATFORM_CURRENCY_COL, SETTLEMENT_CURRENCY_COL,
+        STATUS_COL, SETTLEMENT_AMOUNT_COL, FEE_COL, COUNTRY_TAX_COL, TRANSACTION_DATE_COL,
+    ]
+    admin_orig_cols = [c for c in result_df.columns if c not in _extra_cols]
+    apple_admin_df = result_df[apple_mask][admin_orig_cols].reset_index(drop=True)
+
+    # 非苹果行用 result_df 汇总；苹果行用平台数据汇总（admin 无法匹配，结算金额为空）
+    non_apple_summary = build_summary_sheet(result_df[~apple_mask].reset_index(drop=True))
+    apple_summary     = build_apple_platform_summary(apple_raw_df)
+    summary_df = (
+        pd.concat([non_apple_summary, apple_summary], ignore_index=True)
+        .sort_values(
+            [TRANSACTION_DATE_COL, ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL],
+            kind="stable",
+        )
+        .reset_index(drop=True)
+    )
+
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        result_df.to_excel(writer, sheet_name=OUTPUT_SHEET_3, index=False)
+        main_df.to_excel(writer, sheet_name=OUTPUT_SHEET_3, index=False)
         summary_df.to_excel(writer, sheet_name=OUTPUT_SUMMARY_SHEET_3, index=False)
+        _write_apple_sheet(writer, apple_admin_df, apple_raw_df)
 
     return output_path
 
@@ -695,7 +1062,7 @@ def main() -> int:
     )
 
     files = scan_source_files_3(INPUT_DIR_3)
-    if files["admin"] is None:
+    if not files["admin"]:
         logging.error(
             "未找到 admin 订单文件。请将文件放入 %s，文件名须以 'admin'（不区分大小写）开头，"
             "例如：admin收入订单明细-xxx.xlsx",
@@ -703,51 +1070,84 @@ def main() -> int:
         )
         return 1
 
-    logging.info("读取 admin 文件: %s", files["admin"].name)
-    try:
-        admin_df = read_admin(files["admin"])
-    except Exception:
-        logging.error("读取 admin 文件失败", exc_info=True)
-        return 1
+    admin_frames = []
+    for fp in files["admin"]:
+        logging.info("读取 admin 文件: %s", fp.name)
+        try:
+            admin_frames.append(read_admin(fp))
+        except Exception:
+            logging.error("读取 admin 文件失败: %s", fp.name, exc_info=True)
+            return 1
+    admin_df = pd.concat(admin_frames, ignore_index=True) if len(admin_frames) > 1 else admin_frames[0]
     logging.info("  admin 共 %d 条记录", len(admin_df))
 
     adyen_lk = huawei_lk = google_lk = None
 
     if files["adyen"]:
-        logging.info("读取 Adyen 文件: %s", files["adyen"].name)
-        try:
-            adyen_lk = build_adyen_lookup(read_adyen(files["adyen"]))
+        adyen_frames = []
+        for fp in files["adyen"]:
+            logging.info("读取 Adyen 文件: %s", fp.name)
+            try:
+                adyen_frames.append(read_adyen(fp))
+            except Exception:
+                logging.error("读取 Adyen 文件失败: %s", fp.name, exc_info=True)
+        if adyen_frames:
+            raw = pd.concat(adyen_frames, ignore_index=True) if len(adyen_frames) > 1 else adyen_frames[0]
+            adyen_lk = build_adyen_lookup(raw)
             logging.info("  Adyen 去重后共 %d 个唯一 PSP Reference", len(adyen_lk))
-        except Exception:
-            logging.error("读取 Adyen 文件失败", exc_info=True)
     else:
         logging.warning("未找到 Adyen 文件，跳过 Adyen 匹配")
 
     if files["huawei"]:
-        logging.info("读取华为文件: %s", files["huawei"].name)
-        try:
-            huawei_lk = build_huawei_lookup(read_huawei(files["huawei"]))
+        huawei_frames = []
+        for fp in files["huawei"]:
+            logging.info("读取华为文件: %s", fp.name)
+            try:
+                huawei_frames.append(read_huawei(fp))
+            except Exception:
+                logging.error("读取华为文件失败: %s", fp.name, exc_info=True)
+        if huawei_frames:
+            raw = pd.concat(huawei_frames, ignore_index=True) if len(huawei_frames) > 1 else huawei_frames[0]
+            huawei_lk = build_huawei_lookup(raw)
             logging.info("  华为共 %d 条记录", len(huawei_lk))
-        except Exception:
-            logging.error("读取华为文件失败", exc_info=True)
     else:
         logging.warning("未找到华为文件，跳过华为匹配")
 
     if files["google"]:
-        logging.info("读取 Google Play 文件: %s", files["google"].name)
-        try:
-            google_lk = build_google_lookup(read_google(files["google"]))
+        google_frames = []
+        for fp in files["google"]:
+            logging.info("读取 Google Play 文件: %s", fp.name)
+            try:
+                google_frames.append(read_google(fp))
+            except Exception:
+                logging.error("读取 Google Play 文件失败: %s", fp.name, exc_info=True)
+        if google_frames:
+            raw = pd.concat(google_frames, ignore_index=True) if len(google_frames) > 1 else google_frames[0]
+            google_lk = build_google_lookup(raw)
             logging.info("  Google Play 共 %d 个唯一订单", len(google_lk))
-        except Exception:
-            logging.error("读取 Google Play 文件失败", exc_info=True)
     else:
         logging.warning("未找到 Google Play 文件，跳过 Google 匹配")
+
+    apple_raw_df = None
+    if files["apple"]:
+        apple_frames = []
+        for fp in files["apple"]:
+            logging.info("读取苹果文件: %s", fp.name)
+            try:
+                apple_frames.append(read_apple(fp))
+            except Exception:
+                logging.error("读取苹果文件失败: %s", fp.name, exc_info=True)
+        if apple_frames:
+            apple_raw_df = pd.concat(apple_frames, ignore_index=True) if len(apple_frames) > 1 else apple_frames[0]
+            logging.info("  苹果平台报表共 %d 行", len(apple_raw_df))
+    else:
+        logging.info("未找到苹果文件（苹果 Sheet 的平台数据部分将为空）")
 
     result_df = enrich_admin(admin_df, adyen_lk, huawei_lk, google_lk)
     log_match_stats(result_df)
 
     try:
-        output_path = write_output(result_df, OUTPUT_DIR)
+        output_path = write_output(result_df, OUTPUT_DIR, apple_raw_df)
         logging.info("结果文件已写入: %s", output_path)
     except PermissionError:
         logging.error("无法写入输出文件，请确认文件未在 Excel 中打开后重试。")

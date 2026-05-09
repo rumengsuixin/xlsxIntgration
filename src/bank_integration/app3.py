@@ -51,6 +51,7 @@ from .config3 import (
     ADYEN_RECORD_TYPE_COL,
     ADYEN_RECORD_TYPE_PRIORITY,
     ADYEN_SCHEME_FEES_COL,
+    ADYEN_SETTLEMENT_CURRENCY_COL,
     ADYEN_SHEET,
     COUNTRY_TAX_COL,
     FEE_COL,
@@ -61,6 +62,8 @@ from .config3 import (
     GOOGLE_FEE_REFUND_TYPE,
     GOOGLE_FEE_TYPE,
     GOOGLE_JOIN_COL,
+    GOOGLE_MERCHANT_AMOUNT_COL,
+    GOOGLE_MERCHANT_CURRENCY_COL,
     GOOGLE_REFUND_TYPE,
     GOOGLE_TRANSACTION_TYPE_COL,
     HUAWEI_AMOUNT_COL,
@@ -71,8 +74,10 @@ from .config3 import (
     INPUT_DIR_3,
     OUTPUT_FILE_TEMPLATE,
     OUTPUT_SHEET_3,
+    OUTPUT_SUMMARY_SHEET_3,
     PLATFORM_AMOUNT_COL,
     PLATFORM_CURRENCY_COL,
+    SETTLEMENT_CURRENCY_COL,
     SETTLEMENT_AMOUNT_COL,
     STATUS_COL,
     TRANSACTION_DATE_COL,
@@ -159,16 +164,29 @@ def build_adyen_lookup(df: pd.DataFrame) -> pd.DataFrame:
     """构建以 Psp Reference 为索引的 Adyen 查找表（每个 PSP 一行）。
 
     同一 Psp Reference 有多行（Received/Authorised/SentForSettle 等），
-    按 ADYEN_RECORD_TYPE_PRIORITY 优先取最准确的行，其余丢弃。
+    只要任一行是 Refused，则该 PSP 不计入成功匹配；其余 PSP 按
+    ADYEN_RECORD_TYPE_PRIORITY 优先取最准确的成功行。
     """
     priority_map = {rt: i for i, rt in enumerate(ADYEN_RECORD_TYPE_PRIORITY)}
-    fallback = len(ADYEN_RECORD_TYPE_PRIORITY)
 
     df2 = df[df[ADYEN_JOIN_COL].str.strip() != ""].copy()
-    df2["_p"] = df2[ADYEN_RECORD_TYPE_COL].map(priority_map).fillna(fallback).astype(int)
+    record_types = df2[ADYEN_RECORD_TYPE_COL].str.strip()
+
+    refused_keys = set(df2.loc[record_types == "Refused", ADYEN_JOIN_COL].str.strip())
+    if refused_keys:
+        logging.warning("【Adyen】%d 个 PSP Reference 存在 Refused，已按失败处理并排除成功匹配", len(refused_keys))
+        df2 = df2[~df2[ADYEN_JOIN_COL].str.strip().isin(refused_keys)].copy()
+        record_types = df2[ADYEN_RECORD_TYPE_COL].str.strip()
+
+    success_mask = record_types.isin(ADYEN_RECORD_TYPE_PRIORITY)
+    filtered_count = len(df2) - int(success_mask.sum())
+    if filtered_count > 0:
+        logging.info("【Adyen】过滤 %d 条非成功状态记录（Received/Cancelled 等），不计入匹配", filtered_count)
+    df2 = df2[success_mask].copy()
+
+    df2["_p"] = df2[ADYEN_RECORD_TYPE_COL].str.strip().map(priority_map).astype(int)
     df2 = df2.sort_values([ADYEN_JOIN_COL, "_p"])
 
-    before = len(df2[ADYEN_JOIN_COL].unique())
     result = df2.drop_duplicates(subset=[ADYEN_JOIN_COL], keep="first")
     dupes = len(df2) - len(result)
     if dupes > 0:
@@ -176,6 +194,7 @@ def build_adyen_lookup(df: pd.DataFrame) -> pd.DataFrame:
 
     keep_cols = [c for c in [
         ADYEN_JOIN_COL, ADYEN_AMOUNT_COL, ADYEN_CURRENCY_COL,
+        ADYEN_SETTLEMENT_CURRENCY_COL,
         ADYEN_PAYABLE_COL, ADYEN_MARKUP_COL, ADYEN_SCHEME_FEES_COL, ADYEN_INTERCHANGE_COL,
         ADYEN_DATE_COL,
     ] if c in result.columns]
@@ -225,15 +244,21 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
     type_col = GOOGLE_TRANSACTION_TYPE_COL
     join = GOOGLE_JOIN_COL
     amt = GOOGLE_BUYER_AMOUNT_COL
+    merchant_amt = GOOGLE_MERCHANT_AMOUNT_COL
     ccy = GOOGLE_BUYER_CURRENCY_COL
+    merchant_ccy = GOOGLE_MERCHANT_CURRENCY_COL
 
-    def _pick(type_val, out_amt_col, include_ccy=False, ccy_out_col="ccy",
+    def _pick(type_val, out_amt_col, include_merchant_amt=False, merchant_amt_out_col="merchant_amt",
+              include_ccy=False, ccy_out_col="ccy",
+              include_merchant_ccy=False, merchant_ccy_out_col="merchant_ccy",
               include_date=False, date_out_col="transaction_date"):
         sub = df[df[type_col].str.strip() == type_val].copy()
         sub = sub[sub[join].str.strip() != ""]
         cols = (
             [join, amt]
+            + ([merchant_amt] if include_merchant_amt and merchant_amt in sub.columns else [])
             + ([ccy] if include_ccy else [])
+            + ([merchant_ccy] if include_merchant_ccy and merchant_ccy in sub.columns else [])
             + ([GOOGLE_DATE_COL] if include_date and GOOGLE_DATE_COL in sub.columns else [])
         )
         sub = sub[[c for c in cols if c in sub.columns]]
@@ -242,18 +267,42 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
         if len(sub) < before:
             logging.warning("【Google-%s】发现 %d 条重复流水号，已保留首行", type_val, before - len(sub))
         rename = {amt: out_amt_col}
+        if include_merchant_amt and merchant_amt in sub.columns:
+            rename[merchant_amt] = merchant_amt_out_col
         if include_ccy:
             rename[ccy] = ccy_out_col
+        if include_merchant_ccy and merchant_ccy in sub.columns:
+            rename[merchant_ccy] = merchant_ccy_out_col
         if include_date and GOOGLE_DATE_COL in sub.columns:
             rename[GOOGLE_DATE_COL] = date_out_col
         return sub.rename(columns=rename)
 
-    charge = _pick(GOOGLE_CHARGE_TYPE, "charge_amt", include_ccy=True, include_date=True)
-    fee = _pick(GOOGLE_FEE_TYPE, "fee_amt")
+    charge = _pick(
+        GOOGLE_CHARGE_TYPE,
+        "charge_amt",
+        include_merchant_amt=True,
+        merchant_amt_out_col="merchant_charge_amt",
+        include_ccy=True,
+        include_merchant_ccy=True,
+        include_date=True,
+    )
+    fee = _pick(
+        GOOGLE_FEE_TYPE,
+        "fee_amt",
+        include_merchant_amt=True,
+        merchant_amt_out_col="merchant_fee_amt",
+    )
     refund = _pick(GOOGLE_REFUND_TYPE, "refund_amt",
+                   include_merchant_amt=True, merchant_amt_out_col="merchant_refund_amt",
                    include_ccy=True, ccy_out_col="refund_ccy",
+                   include_merchant_ccy=True, merchant_ccy_out_col="refund_merchant_ccy",
                    include_date=True, date_out_col="refund_date")
-    fee_refund = _pick(GOOGLE_FEE_REFUND_TYPE, "fee_refund_amt")
+    fee_refund = _pick(
+        GOOGLE_FEE_REFUND_TYPE,
+        "fee_refund_amt",
+        include_merchant_amt=True,
+        merchant_amt_out_col="merchant_fee_refund_amt",
+    )
 
     result = charge
     for part in (fee, refund, fee_refund):
@@ -274,6 +323,13 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
         mask = result["ccy"].isna() | (result["ccy"] == "")
         result.loc[mask, "ccy"] = result.loc[mask, "refund_ccy"]
         result = result.drop(columns=["refund_ccy"])
+
+    if "refund_merchant_ccy" in result.columns:
+        if "merchant_ccy" not in result.columns:
+            result["merchant_ccy"] = None
+        mask = result["merchant_ccy"].isna() | (result["merchant_ccy"] == "")
+        result.loc[mask, "merchant_ccy"] = result.loc[mask, "refund_merchant_ccy"]
+        result = result.drop(columns=["refund_merchant_ccy"])
 
     return result.fillna("").drop_duplicates(subset=[join]).set_index(join)
 
@@ -301,6 +357,7 @@ def _build_platform_only_rows(
             row[ADMIN_PAYMENT_COL]  = "Adyen"
             row[PLATFORM_AMOUNT_COL]   = str(adyen_lk.at[key, ADYEN_AMOUNT_COL]).strip()
             row[PLATFORM_CURRENCY_COL] = str(adyen_lk.at[key, ADYEN_CURRENCY_COL]).strip()
+            row[SETTLEMENT_CURRENCY_COL] = str(adyen_lk.at[key, ADYEN_SETTLEMENT_CURRENCY_COL]).strip()
             row[STATUS_COL]            = "成功"
             row[SETTLEMENT_AMOUNT_COL] = str(adyen_lk.at[key, ADYEN_PAYABLE_COL]).strip()
             m   = _to_float(adyen_lk.at[key, ADYEN_MARKUP_COL])
@@ -323,6 +380,7 @@ def _build_platform_only_rows(
             amt = str(huawei_lk.at[key, HUAWEI_AMOUNT_COL]).strip()
             row[PLATFORM_AMOUNT_COL]   = amt
             row[PLATFORM_CURRENCY_COL] = str(huawei_lk.at[key, HUAWEI_CURRENCY_COL]).strip()
+            row[SETTLEMENT_CURRENCY_COL] = row[PLATFORM_CURRENCY_COL]
             row[SETTLEMENT_AMOUNT_COL] = amt  # 暂无手续费数据
             row[STATUS_COL]            = "成功"
             if HUAWEI_DATE_COL in huawei_lk.columns:
@@ -341,21 +399,30 @@ def _build_platform_only_rows(
             c_ = _to_float(google_lk.at[key, "charge_amt"])
             f  = _to_float(google_lk.at[key, "fee_amt"])
             fr = _to_float(google_lk.at[key, "fee_refund_amt"])
+            mr  = _to_float(google_lk.at[key, "merchant_refund_amt"])
+            mc  = _to_float(google_lk.at[key, "merchant_charge_amt"])
+            mf  = _to_float(google_lk.at[key, "merchant_fee_amt"])
+            mfr = _to_float(google_lk.at[key, "merchant_fee_refund_amt"])
             row[PLATFORM_CURRENCY_COL] = str(google_lk.at[key, "ccy"]).strip()
+            row[SETTLEMENT_CURRENCY_COL] = str(google_lk.at[key, "merchant_ccy"]).strip()
             if r is not None:  # 有退款记录 → 退款
                 row[PLATFORM_AMOUNT_COL]   = str(round(abs(r or 0.0) + abs(fr or 0.0), 2))
-                row[SETTLEMENT_AMOUNT_COL] = str(round(abs(r or 0.0) - abs(fr or 0.0), 2))
-                if fr is not None:
-                    row[FEE_COL] = str(round(abs(fr), 2))
+                if mr is not None:
+                    row[SETTLEMENT_AMOUNT_COL] = str(round(abs(mr or 0.0) - abs(mfr or 0.0), 2))
+                if mfr is not None:
+                    row[FEE_COL] = str(round(abs(mfr), 2))
                 row[STATUS_COL] = "退款"
             else:              # 无退款记录 → 成功
                 if c_ is not None:
                     row[PLATFORM_AMOUNT_COL]   = str(round(abs(c_ or 0.0) + abs(f or 0.0), 2))
-                    row[SETTLEMENT_AMOUNT_COL] = str(round((c_ or 0.0) - abs(f or 0.0), 2))
-                    # 国家税费：倒推 admin.金额 = Charge × 1.2，国家税费 = admin.金额 - Charge = Charge × 0.2
-                    row[COUNTRY_TAX_COL] = str(round(abs(c_) * 0.2, 2))
-                if f is not None:
-                    row[FEE_COL] = str(round(abs(f), 2))
+                if mc is not None:
+                    row[SETTLEMENT_AMOUNT_COL] = str(round((mc or 0.0) - abs(mf or 0.0), 2))
+                if mc is not None:
+                    # 国家税费：按 Merchant Currency 的 Charge 金额倒推。
+                    merchant_charge = abs(mc or 0.0)
+                    row[COUNTRY_TAX_COL] = str(round((merchant_charge * 1.2) - merchant_charge, 2))
+                if mf is not None:
+                    row[FEE_COL] = str(round(abs(mf), 2))
                 row[STATUS_COL] = "成功"
             if "transaction_date" in google_lk.columns:
                 row[TRANSACTION_DATE_COL] = _format_date(google_lk.at[key, "transaction_date"])
@@ -410,6 +477,7 @@ def enrich_admin(
     # ── 构建 7 个新列 ─────────────────────────────────────────
     platform_amt_list     = []
     platform_ccy_list     = []
+    settlement_ccy_list   = []
     status_list           = []
     settlement_list       = []
     fee_list              = []
@@ -421,6 +489,7 @@ def enrich_admin(
         refund_flag = str(row.get(ADMIN_REFUND_COL, "")).strip()
 
         settle_amt       = ""
+        settle_ccy       = ""
         fee_amt          = ""
         country_tax      = ""
         transaction_date = ""
@@ -428,6 +497,7 @@ def enrich_admin(
         if src == "Adyen" and adyen_avail:
             amt = str(row.get(f"_a_{ADYEN_AMOUNT_COL}", "")).strip()
             ccy = str(row.get(f"_a_{ADYEN_CURRENCY_COL}", "")).strip()
+            settle_ccy = str(row.get(f"_a_{ADYEN_SETTLEMENT_CURRENCY_COL}", "")).strip()
             matched = amt != ""
             # 结算金额：Payable (SC)
             settle_amt = str(row.get(f"_a_{ADYEN_PAYABLE_COL}", "")).strip()
@@ -442,47 +512,55 @@ def enrich_admin(
         elif src == "华为支付" and huawei_avail:
             amt = str(row.get(f"_h_{HUAWEI_AMOUNT_COL}", "")).strip()
             ccy = str(row.get(f"_h_{HUAWEI_CURRENCY_COL}", "")).strip()
+            settle_ccy = ccy
             matched = amt != ""
             settle_amt = amt  # 暂无手续费数据，结算金额 = 平台订单金额
             transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
         elif "Google" in src and google_avail:
             ccy = str(row.get("_g_ccy", "")).strip()
+            settle_ccy = str(row.get("_g_merchant_ccy", "")).strip()
             if refund_flag == "已退款":
                 # 平台订单金额：|Charge refund| + |fee refund|
                 r  = _to_float(row.get("_g_refund_amt", ""))
                 fr = _to_float(row.get("_g_fee_refund_amt", ""))
+                mr  = _to_float(row.get("_g_merchant_refund_amt", ""))
+                mfr = _to_float(row.get("_g_merchant_fee_refund_amt", ""))
                 amt = str(round(abs(r or 0.0) + abs(fr or 0.0), 2)) if (r is not None or fr is not None) else ""
-                # 结算金额：|refund| - |fee_refund|
-                if r is not None:
-                    settle_amt = str(round(abs(r or 0.0) - abs(fr or 0.0), 2))
-                # 手续费：|fee_refund|
-                if fr is not None:
-                    fee_amt = str(round(abs(fr), 2))
+                # 结算金额：|merchant refund| - |merchant fee_refund|
+                if mr is not None:
+                    settle_amt = str(round(abs(mr or 0.0) - abs(mfr or 0.0), 2))
+                # 手续费：|merchant fee_refund|
+                if mfr is not None:
+                    fee_amt = str(round(abs(mfr), 2))
             else:
                 # 平台订单金额：|Charge| + |Google fee|
                 c = _to_float(row.get("_g_charge_amt", ""))
                 f = _to_float(row.get("_g_fee_amt", ""))
+                mc = _to_float(row.get("_g_merchant_charge_amt", ""))
+                mf = _to_float(row.get("_g_merchant_fee_amt", ""))
                 amt = str(round(abs(c or 0.0) + abs(f or 0.0), 2)) if c is not None else ""
-                # 结算金额：Charge(TRY) - |fee(TRY)|
-                if c is not None:
-                    settle_amt = str(round((c or 0.0) - abs(f or 0.0), 2))
-                # 手续费：|Google fee|
-                if f is not None:
-                    fee_amt = str(round(abs(f), 2))
-                # 国家税费：admin.金额 - Charge(TRY)
-                admin_amt = _to_float(row.get(ADMIN_AMOUNT_COL, ""))
-                if admin_amt is not None and c is not None:
-                    country_tax = str(round(admin_amt - c, 2))
+                # 结算金额：merchant charge - |merchant fee|
+                if mc is not None:
+                    settle_amt = str(round((mc or 0.0) - abs(mf or 0.0), 2))
+                # 手续费：|merchant Google fee|
+                if mf is not None:
+                    fee_amt = str(round(abs(mf), 2))
+                # 国家税费：按 Merchant Currency 的 Charge 金额倒推。
+                if mc is not None:
+                    merchant_charge = abs(mc or 0.0)
+                    country_tax = str(round((merchant_charge * 1.2) - merchant_charge, 2))
             matched = amt != ""
             transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
         else:
             amt = ccy = ""
+            settle_ccy = ""
             matched = False
 
         platform_amt_list.append(amt)
         platform_ccy_list.append(ccy)
+        settlement_ccy_list.append(settle_ccy)
         settlement_list.append(settle_amt)
         fee_list.append(fee_amt)
         country_tax_list.append(country_tax)
@@ -501,11 +579,12 @@ def enrich_admin(
 
     result.insert(admin_col_count + 0, PLATFORM_AMOUNT_COL,   platform_amt_list)
     result.insert(admin_col_count + 1, PLATFORM_CURRENCY_COL, platform_ccy_list)
-    result.insert(admin_col_count + 2, STATUS_COL,            status_list)
-    result.insert(admin_col_count + 3, SETTLEMENT_AMOUNT_COL, settlement_list)
-    result.insert(admin_col_count + 4, FEE_COL,               fee_list)
-    result.insert(admin_col_count + 5, COUNTRY_TAX_COL,       country_tax_list)
-    result.insert(admin_col_count + 6, TRANSACTION_DATE_COL,  transaction_date_list)
+    result.insert(admin_col_count + 2, SETTLEMENT_CURRENCY_COL, settlement_ccy_list)
+    result.insert(admin_col_count + 3, STATUS_COL,            status_list)
+    result.insert(admin_col_count + 4, SETTLEMENT_AMOUNT_COL, settlement_list)
+    result.insert(admin_col_count + 5, FEE_COL,               fee_list)
+    result.insert(admin_col_count + 6, COUNTRY_TAX_COL,       country_tax_list)
+    result.insert(admin_col_count + 7, TRANSACTION_DATE_COL,  transaction_date_list)
 
     # ── 追加平台多余行（平台有、admin 无对应记录）────────────
     admin_keys = set(admin_df[ADMIN_JOIN_COL].str.strip())
@@ -545,15 +624,65 @@ def log_match_stats(result_df: pd.DataFrame) -> None:
             logging.warning("【%s】未匹配流水号: %s", label, ids)
 
 
+def build_summary_sheet(result_df: pd.DataFrame) -> pd.DataFrame:
+    """按交易日期、平台、结算币种汇总结算金额。"""
+    summary_cols = [
+        TRANSACTION_DATE_COL,
+        ADMIN_PAYMENT_COL,
+        SETTLEMENT_CURRENCY_COL,
+        "成功笔数",
+        "成功金额",
+        "退款笔数",
+        "退款金额",
+        "净交易金额",
+    ]
+
+    if result_df.empty:
+        return pd.DataFrame(columns=summary_cols)
+
+    df = result_df.copy()
+    df[STATUS_COL] = df[STATUS_COL].astype(str).str.strip()
+    df = df[df[STATUS_COL].isin(["成功", "退款"])].copy()
+    if df.empty:
+        return pd.DataFrame(columns=summary_cols)
+
+    group_cols = [TRANSACTION_DATE_COL, ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL]
+    for col in group_cols:
+        df[col] = df[col].fillna("").astype(str).str.strip()
+
+    amount = df[SETTLEMENT_AMOUNT_COL].fillna("").astype(str).str.strip().str.replace(",", "", regex=False)
+    df["_amount"] = pd.to_numeric(amount, errors="coerce").fillna(0.0)
+    df["_success_count"] = (df[STATUS_COL] == "成功").astype(int)
+    df["_refund_count"] = (df[STATUS_COL] == "退款").astype(int)
+    df["_success_amount"] = df["_amount"].where(df[STATUS_COL] == "成功", 0.0)
+    df["_refund_amount"] = df["_amount"].where(df[STATUS_COL] == "退款", 0.0)
+
+    summary = (
+        df.groupby(group_cols, as_index=False)
+        .agg(
+            成功笔数=("_success_count", "sum"),
+            成功金额=("_success_amount", "sum"),
+            退款笔数=("_refund_count", "sum"),
+            退款金额=("_refund_amount", "sum"),
+        )
+        .sort_values(group_cols, kind="stable")
+        .reset_index(drop=True)
+    )
+    summary["净交易金额"] = summary["成功金额"] - summary["退款金额"]
+    return summary[summary_cols]
+
+
 def write_output(result_df: pd.DataFrame, output_dir: Path) -> Path:
-    """将结果写入 data/output/订单匹配结果_{YYYYMMDD}.xlsx，单工作表。"""
+    """将结果写入 data/output/订单匹配结果_{YYYYMMDD}.xlsx。"""
     today = date.today().strftime("%Y%m%d")
     filename = OUTPUT_FILE_TEMPLATE.format(date=today)
     output_path = output_dir / filename
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    summary_df = build_summary_sheet(result_df)
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         result_df.to_excel(writer, sheet_name=OUTPUT_SHEET_3, index=False)
+        summary_df.to_excel(writer, sheet_name=OUTPUT_SUMMARY_SHEET_3, index=False)
 
     return output_path
 

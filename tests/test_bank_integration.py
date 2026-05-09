@@ -18,6 +18,44 @@ from src.bank_integration.config2 import (
     BANK_DATE_COL_2,
     BANK_READ_CONFIG_2,
 )
+from src.bank_integration.app3 import build_adyen_lookup, build_google_lookup, build_summary_sheet, enrich_admin, write_output
+from src.bank_integration.config3 import (
+    ADMIN_AMOUNT_COL,
+    ADMIN_DATE_COL,
+    ADMIN_JOIN_COL,
+    ADMIN_PAYMENT_COL,
+    ADMIN_REFUND_COL,
+    ADYEN_AMOUNT_COL,
+    ADYEN_CURRENCY_COL,
+    ADYEN_DATE_COL,
+    ADYEN_INTERCHANGE_COL,
+    ADYEN_JOIN_COL,
+    ADYEN_MARKUP_COL,
+    ADYEN_PAYABLE_COL,
+    ADYEN_RECORD_TYPE_COL,
+    ADYEN_SCHEME_FEES_COL,
+    ADYEN_SETTLEMENT_CURRENCY_COL,
+    COUNTRY_TAX_COL,
+    GOOGLE_BUYER_AMOUNT_COL,
+    GOOGLE_BUYER_CURRENCY_COL,
+    GOOGLE_FEE_REFUND_TYPE,
+    GOOGLE_MERCHANT_AMOUNT_COL,
+    GOOGLE_JOIN_COL,
+    GOOGLE_MERCHANT_CURRENCY_COL,
+    GOOGLE_REFUND_TYPE,
+    GOOGLE_TRANSACTION_TYPE_COL,
+    HUAWEI_AMOUNT_COL,
+    HUAWEI_CURRENCY_COL,
+    HUAWEI_DATE_COL,
+    HUAWEI_JOIN_COL,
+    OUTPUT_SHEET_3,
+    OUTPUT_SUMMARY_SHEET_3,
+    PLATFORM_AMOUNT_COL,
+    PLATFORM_CURRENCY_COL,
+    SETTLEMENT_CURRENCY_COL,
+    STATUS_COL,
+    TRANSACTION_DATE_COL,
+)
 from src.bank_integration.readers import read_bank_file
 from src.bank_integration.scanner import scan_source_files, scan_source_files_2
 
@@ -29,6 +67,358 @@ HUAMEI_PDF = ROOT / "华美银行电子对账单-2025.02.pdf"
 
 
 class BankIntegrationSampleTests(unittest.TestCase):
+    def _adyen_df(self, rows):
+        defaults = {
+            ADYEN_AMOUNT_COL: "10.00",
+            ADYEN_CURRENCY_COL: "USD",
+            ADYEN_SETTLEMENT_CURRENCY_COL: "HKD",
+            ADYEN_PAYABLE_COL: "9.50",
+            ADYEN_MARKUP_COL: "0.10",
+            ADYEN_SCHEME_FEES_COL: "0.20",
+            ADYEN_INTERCHANGE_COL: "0.20",
+            ADYEN_DATE_COL: "2026-03-01",
+        }
+        return pd.DataFrame([{**defaults, **row} for row in rows])
+
+    def _admin_df(self, psp):
+        return pd.DataFrame(
+            [
+                {
+                    ADMIN_JOIN_COL: psp,
+                    ADMIN_AMOUNT_COL: "10.00",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    ADMIN_REFUND_COL: "正常",
+                    ADMIN_DATE_COL: "2026-03-01 12:00:00",
+                }
+            ]
+        )
+
+    def _adyen_status_for(self, psp, rows):
+        lookup = build_adyen_lookup(self._adyen_df(rows))
+        result = enrich_admin(self._admin_df(psp), lookup, None, None)
+        return result.loc[0, STATUS_COL], result.loc[0, PLATFORM_AMOUNT_COL], lookup
+
+    def test_adyen_refused_overrides_sent_for_settle(self):
+        status, amount, lookup = self._adyen_status_for(
+            "PSP-REFUSED-SETTLED",
+            [
+                {ADYEN_JOIN_COL: "PSP-REFUSED-SETTLED", ADYEN_RECORD_TYPE_COL: "SentForSettle"},
+                {ADYEN_JOIN_COL: "PSP-REFUSED-SETTLED", ADYEN_RECORD_TYPE_COL: "Refused"},
+            ],
+        )
+
+        self.assertNotIn("PSP-REFUSED-SETTLED", lookup.index)
+        self.assertEqual(status, "失败")
+        self.assertEqual(amount, "")
+
+    def test_adyen_refused_overrides_authorised(self):
+        status, amount, lookup = self._adyen_status_for(
+            "PSP-REFUSED-AUTH",
+            [
+                {ADYEN_JOIN_COL: "PSP-REFUSED-AUTH", ADYEN_RECORD_TYPE_COL: "Authorised"},
+                {ADYEN_JOIN_COL: "PSP-REFUSED-AUTH", ADYEN_RECORD_TYPE_COL: "Refused"},
+            ],
+        )
+
+        self.assertNotIn("PSP-REFUSED-AUTH", lookup.index)
+        self.assertEqual(status, "失败")
+        self.assertEqual(amount, "")
+
+    def test_adyen_received_and_refused_is_failed(self):
+        status, amount, lookup = self._adyen_status_for(
+            "PSP-RECEIVED-REFUSED",
+            [
+                {ADYEN_JOIN_COL: "PSP-RECEIVED-REFUSED", ADYEN_RECORD_TYPE_COL: "Received"},
+                {ADYEN_JOIN_COL: "PSP-RECEIVED-REFUSED", ADYEN_RECORD_TYPE_COL: "Refused"},
+            ],
+        )
+
+        self.assertNotIn("PSP-RECEIVED-REFUSED", lookup.index)
+        self.assertEqual(status, "失败")
+        self.assertEqual(amount, "")
+
+    def test_adyen_success_types_still_match_without_refused(self):
+        status, amount, lookup = self._adyen_status_for(
+            "PSP-SUCCESS",
+            [
+                {ADYEN_JOIN_COL: "PSP-SUCCESS", ADYEN_RECORD_TYPE_COL: "Authorised", ADYEN_AMOUNT_COL: "8.00"},
+                {ADYEN_JOIN_COL: "PSP-SUCCESS", ADYEN_RECORD_TYPE_COL: "SentForSettle", ADYEN_AMOUNT_COL: "10.00"},
+            ],
+        )
+
+        self.assertIn("PSP-SUCCESS", lookup.index)
+        self.assertEqual(lookup.at["PSP-SUCCESS", ADYEN_AMOUNT_COL], "10.00")
+        self.assertEqual(status, "成功")
+        self.assertEqual(amount, "10.00")
+
+    def test_enrich_admin_adds_settlement_currency_after_platform_currency(self):
+        lookup = build_adyen_lookup(
+            self._adyen_df(
+                [
+                    {
+                        ADYEN_JOIN_COL: "PSP-SETTLEMENT-CCY",
+                        ADYEN_RECORD_TYPE_COL: "SentForSettle",
+                        ADYEN_CURRENCY_COL: "TRY",
+                        ADYEN_SETTLEMENT_CURRENCY_COL: "USD",
+                    }
+                ]
+            )
+        )
+
+        result = enrich_admin(self._admin_df("PSP-SETTLEMENT-CCY"), lookup, None, None)
+        columns = list(result.columns)
+
+        self.assertEqual(result.loc[0, PLATFORM_CURRENCY_COL], "TRY")
+        self.assertEqual(result.loc[0, SETTLEMENT_CURRENCY_COL], "USD")
+        self.assertEqual(columns.index(SETTLEMENT_CURRENCY_COL), columns.index(PLATFORM_CURRENCY_COL) + 1)
+        self.assertEqual(columns.index(STATUS_COL), columns.index(SETTLEMENT_CURRENCY_COL) + 1)
+
+    def test_enrich_admin_defaults_settlement_currency_for_huawei_and_google(self):
+        admin = pd.DataFrame(
+            [
+                {
+                    ADMIN_JOIN_COL: "HUAWEI-1",
+                    ADMIN_AMOUNT_COL: "10.00",
+                    ADMIN_PAYMENT_COL: "华为支付",
+                    ADMIN_REFUND_COL: "正常",
+                    ADMIN_DATE_COL: "2026-03-01 12:00:00",
+                },
+                {
+                    ADMIN_JOIN_COL: "GOOGLE-1",
+                    ADMIN_AMOUNT_COL: "12.00",
+                    ADMIN_PAYMENT_COL: "Google支付",
+                    ADMIN_REFUND_COL: "正常",
+                    ADMIN_DATE_COL: "2026-03-01 12:00:00",
+                },
+            ]
+        )
+        huawei_lk = pd.DataFrame(
+            [
+                {
+                    HUAWEI_JOIN_COL: "HUAWEI-1",
+                    HUAWEI_AMOUNT_COL: "10.00",
+                    HUAWEI_CURRENCY_COL: "HKD",
+                    HUAWEI_DATE_COL: "2026-03-01",
+                }
+            ]
+        ).set_index(HUAWEI_JOIN_COL)
+        google_lk = pd.DataFrame(
+            [
+                {
+                    GOOGLE_JOIN_COL: "GOOGLE-1",
+                    "charge_amt": "10.00",
+                    "fee_amt": "-1.00",
+                    "refund_amt": "",
+                    "fee_refund_amt": "",
+                    "merchant_charge_amt": "2.00",
+                    "merchant_fee_amt": "-0.30",
+                    "merchant_refund_amt": "",
+                    "merchant_fee_refund_amt": "",
+                    "ccy": "TRY",
+                    "merchant_ccy": "HKD",
+                    "transaction_date": "2026-03-01",
+                }
+            ]
+        ).set_index(GOOGLE_JOIN_COL)
+
+        result = enrich_admin(admin, None, huawei_lk, google_lk)
+
+        self.assertEqual(result.loc[0, PLATFORM_CURRENCY_COL], "HKD")
+        self.assertEqual(result.loc[0, SETTLEMENT_CURRENCY_COL], "HKD")
+        self.assertEqual(result.loc[1, PLATFORM_CURRENCY_COL], "TRY")
+        self.assertEqual(result.loc[1, SETTLEMENT_CURRENCY_COL], "HKD")
+        self.assertEqual(result.loc[1, PLATFORM_AMOUNT_COL], "11.0")
+        self.assertEqual(result.loc[1, "结算金额"], "1.7")
+        self.assertEqual(result.loc[1, "手续费"], "0.3")
+        self.assertEqual(result.loc[1, COUNTRY_TAX_COL], "0.4")
+
+    def test_google_lookup_uses_refund_merchant_currency_when_charge_missing(self):
+        lookup = build_google_lookup(
+            pd.DataFrame(
+                [
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-REFUND-ONLY",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_REFUND_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "-10.00",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "-2.00",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    }
+                ]
+            )
+        )
+
+        self.assertEqual(lookup.at["GOOGLE-REFUND-ONLY", "ccy"], "TRY")
+        self.assertEqual(lookup.at["GOOGLE-REFUND-ONLY", "merchant_ccy"], "HKD")
+        self.assertEqual(lookup.at["GOOGLE-REFUND-ONLY", "merchant_refund_amt"], "-2.00")
+
+    def test_google_refund_uses_merchant_amount_for_settlement(self):
+        admin = pd.DataFrame(
+            [
+                {
+                    ADMIN_JOIN_COL: "GOOGLE-REFUND-ONLY",
+                    ADMIN_AMOUNT_COL: "10.00",
+                    ADMIN_PAYMENT_COL: "Google支付",
+                    ADMIN_REFUND_COL: "已退款",
+                    ADMIN_DATE_COL: "2026-03-01 12:00:00",
+                }
+            ]
+        )
+        lookup = build_google_lookup(
+            pd.DataFrame(
+                [
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-REFUND-ONLY",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_REFUND_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "-10.00",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "-2.00",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-REFUND-ONLY",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_FEE_REFUND_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "1.00",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "0.30",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                ]
+            )
+        )
+
+        result = enrich_admin(admin, None, None, lookup)
+
+        self.assertEqual(result.loc[0, PLATFORM_AMOUNT_COL], "11.0")
+        self.assertEqual(result.loc[0, PLATFORM_CURRENCY_COL], "TRY")
+        self.assertEqual(result.loc[0, SETTLEMENT_CURRENCY_COL], "HKD")
+        self.assertEqual(result.loc[0, "结算金额"], "1.7")
+        self.assertEqual(result.loc[0, "手续费"], "0.3")
+
+    def test_build_summary_sheet_groups_platform_amounts(self):
+        detail = pd.DataFrame(
+            [
+                {
+                    TRANSACTION_DATE_COL: "2026-03-01",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    PLATFORM_CURRENCY_COL: "TRY",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    STATUS_COL: "成功",
+                    PLATFORM_AMOUNT_COL: "100.50",
+                    "结算金额": "10.50",
+                },
+                {
+                    TRANSACTION_DATE_COL: "2026-03-01",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    PLATFORM_CURRENCY_COL: "TRY",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    STATUS_COL: "成功",
+                    PLATFORM_AMOUNT_COL: "200.25",
+                    "结算金额": "20.25",
+                },
+                {
+                    TRANSACTION_DATE_COL: "2026-03-01",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    PLATFORM_CURRENCY_COL: "TRY",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    STATUS_COL: "退款",
+                    PLATFORM_AMOUNT_COL: "50.00",
+                    "结算金额": "5.00",
+                },
+                {
+                    TRANSACTION_DATE_COL: "2026-03-01",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    PLATFORM_CURRENCY_COL: "TRY",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    STATUS_COL: "失败",
+                    PLATFORM_AMOUNT_COL: "999.00",
+                    "结算金额": "999.00",
+                },
+                {
+                    TRANSACTION_DATE_COL: "2026-03-01",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    PLATFORM_CURRENCY_COL: "TRY",
+                    SETTLEMENT_CURRENCY_COL: "HKD",
+                    STATUS_COL: "成功",
+                    PLATFORM_AMOUNT_COL: "70.00",
+                    "结算金额": "7.00",
+                },
+                {
+                    TRANSACTION_DATE_COL: "2026-03-02",
+                    ADMIN_PAYMENT_COL: "Google支付",
+                    PLATFORM_CURRENCY_COL: "TRY",
+                    SETTLEMENT_CURRENCY_COL: "HKD",
+                    STATUS_COL: "成功",
+                    PLATFORM_AMOUNT_COL: "80.00",
+                    "结算金额": "8.00",
+                },
+                {
+                    TRANSACTION_DATE_COL: "2026-03-02",
+                    ADMIN_PAYMENT_COL: "Google支付",
+                    PLATFORM_CURRENCY_COL: "USD",
+                    SETTLEMENT_CURRENCY_COL: "HKD",
+                    STATUS_COL: "成功",
+                    PLATFORM_AMOUNT_COL: "999.00",
+                    "结算金额": "2.00",
+                },
+                {
+                    TRANSACTION_DATE_COL: "2026-03-02",
+                    ADMIN_PAYMENT_COL: "Google支付",
+                    PLATFORM_CURRENCY_COL: "USD",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    STATUS_COL: "成功",
+                    PLATFORM_AMOUNT_COL: "20.00",
+                    "结算金额": "2.00",
+                },
+            ]
+        )
+
+        summary = build_summary_sheet(detail)
+
+        self.assertEqual(len(summary), 4)
+        self.assertIn(SETTLEMENT_CURRENCY_COL, summary.columns)
+        self.assertNotIn(PLATFORM_CURRENCY_COL, summary.columns)
+        adyen = summary[
+            (summary[TRANSACTION_DATE_COL] == "2026-03-01")
+            & (summary[ADMIN_PAYMENT_COL] == "Adyen")
+            & (summary[SETTLEMENT_CURRENCY_COL] == "USD")
+        ].iloc[0]
+        self.assertEqual(adyen["成功笔数"], 2)
+        self.assertAlmostEqual(adyen["成功金额"], 30.75, places=2)
+        self.assertEqual(adyen["退款笔数"], 1)
+        self.assertAlmostEqual(adyen["退款金额"], 5.00, places=2)
+        self.assertAlmostEqual(adyen["净交易金额"], 25.75, places=2)
+        google_hkd = summary[
+            (summary[TRANSACTION_DATE_COL] == "2026-03-02")
+            & (summary[ADMIN_PAYMENT_COL] == "Google支付")
+            & (summary[SETTLEMENT_CURRENCY_COL] == "HKD")
+        ].iloc[0]
+        self.assertEqual(google_hkd["成功笔数"], 2)
+        self.assertAlmostEqual(google_hkd["成功金额"], 10.00, places=2)
+
+    def test_write_output_includes_summary_sheet(self):
+        detail = pd.DataFrame(
+            [
+                {
+                    TRANSACTION_DATE_COL: "2026-03-01",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    PLATFORM_CURRENCY_COL: "TRY",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    STATUS_COL: "成功",
+                    PLATFORM_AMOUNT_COL: "100.00",
+                    "结算金额": "10.00",
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = write_output(detail, Path(tmp))
+            workbook = pd.ExcelFile(output_path)
+            sheet_names = workbook.sheet_names
+            workbook.close()
+
+        self.assertEqual(sheet_names, [OUTPUT_SHEET_3, OUTPUT_SUMMARY_SHEET_3])
+
     def test_scan_source_files_only_recognizes_prefixed_samples(self):
         sources = scan_source_files(INPUT_DIR)
         names = sorted(path.name for path in (Path(item["filepath"]) for item in sources))

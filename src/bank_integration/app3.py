@@ -71,6 +71,12 @@ from .config3 import (
     HUAWEI_DATE_COL,
     HUAWEI_JOIN_COL,
     HUAWEI_SHEET,
+    HUAWEI_SETTLE_AMOUNT_COL,
+    HUAWEI_SETTLE_CURRENCY_COL,
+    HUAWEI_SETTLE_DATE_COL,
+    HUAWEI_SETTLE_RATE_COL,
+    HUAWEI_SETTLE_TOTAL_TRX_COL,
+    HUAWEI_SETTLE_VAT_COL,
     INPUT_DIR_3,
     OUTPUT_APPLE_SHEET_3,
     OUTPUT_FILE_TEMPLATE,
@@ -97,7 +103,7 @@ def scan_source_files_3(input_dir: Path) -> dict:
 
     返回 {"admin": [Path, ...], ...}，同平台多文件时全部收录，由调用方合并。
     """
-    result: dict = {"admin": [], "adyen": [], "huawei": [], "google": [], "apple": []}
+    result: dict = {"admin": [], "adyen": [], "huawei": [], "huawei_settlement": [], "google": [], "apple": []}
 
     for f in sorted(input_dir.glob("*.xlsx")):
         if f.name.startswith("~$"):
@@ -107,7 +113,9 @@ def scan_source_files_3(input_dir: Path) -> dict:
             result["admin"].append(f)
         elif stem.startswith("adyen-"):
             result["adyen"].append(f)
-        elif stem.startswith("华为") and not stem.startswith("华为平台结算"):
+        elif stem.startswith("华为平台结算"):
+            result["huawei_settlement"].append(f)
+        elif stem.startswith("华为"):
             result["huawei"].append(f)
         elif stem.startswith("googol-") or stem.startswith("google-"):
             result["google"].append(f)
@@ -138,6 +146,15 @@ def read_adyen(filepath: Path) -> pd.DataFrame:
 def read_huawei(filepath: Path) -> pd.DataFrame:
     """读取华为平台文件（工作表：Sheet0），全列字符串。"""
     df = pd.read_excel(filepath, sheet_name=HUAWEI_SHEET, dtype=str)
+    return df.dropna(how="all").fillna("")
+
+
+def read_huawei_settlement(filepath: Path) -> pd.DataFrame:
+    """读取华为月度结算文件。
+
+    文件格式：第1行=中文列名，第2行=英文列名（header=1），第3行起=数据。
+    """
+    df = pd.read_excel(filepath, sheet_name=0, header=1, dtype=str)
     return df.dropna(how="all").fillna("")
 
 
@@ -215,6 +232,72 @@ def build_huawei_lookup(df: pd.DataFrame) -> pd.DataFrame:
                  if c in df.columns]
     result = _dedup_lookup(df[keep_cols], HUAWEI_JOIN_COL, "华为")
     return result.fillna("").set_index(HUAWEI_JOIN_COL)
+
+
+def build_huawei_fee_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """从华为结算文件按(月份, 结算货币)计算手续费与结算总额。
+
+    手续费 = 结算金额(结算货币) - ((总交易额(交易货币) - 销项税额(交易货币)) * 汇率)
+    End Date 列为 YYYYMM 格式，转换为 YYYY-MM。
+    """
+    summary_cols = [
+        TRANSACTION_DATE_COL, ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL,
+        "成功笔数", "成功金额", "退款笔数", "退款金额", "净交易金额", "手续费",
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=summary_cols)
+
+    def _col_to_float(col_name: str) -> "pd.Series":
+        return pd.to_numeric(
+            df[col_name].astype(str).str.replace(",", "", regex=False),
+            errors="coerce",
+        ).fillna(0.0)
+
+    missing = [c for c in [
+        HUAWEI_SETTLE_DATE_COL, HUAWEI_SETTLE_AMOUNT_COL, HUAWEI_SETTLE_CURRENCY_COL,
+        HUAWEI_SETTLE_TOTAL_TRX_COL, HUAWEI_SETTLE_VAT_COL, HUAWEI_SETTLE_RATE_COL,
+    ] if c not in df.columns]
+    if missing:
+        logging.warning("华为结算文件缺少列: %s，跳过手续费计算", missing)
+        return pd.DataFrame(columns=summary_cols)
+
+    work = df.copy()
+    settle_amt = _col_to_float(HUAWEI_SETTLE_AMOUNT_COL)
+    total_trx  = _col_to_float(HUAWEI_SETTLE_TOTAL_TRX_COL)
+    vat        = _col_to_float(HUAWEI_SETTLE_VAT_COL)
+    rate       = _col_to_float(HUAWEI_SETTLE_RATE_COL)
+
+    work["_fee"]        = settle_amt - (total_trx - vat) * rate
+    work["_settle_amt"] = settle_amt
+    work["_settle_ccy"] = work[HUAWEI_SETTLE_CURRENCY_COL].astype(str).str.strip()
+
+    def _to_month(val: str) -> str:
+        v = val.strip()
+        if len(v) == 6 and v.isdigit():
+            return f"{v[:4]}-{v[4:6]}"
+        return v[:7]
+
+    work["_month"] = work[HUAWEI_SETTLE_DATE_COL].astype(str).apply(_to_month)
+
+    grouped = (
+        work.groupby(["_month", "_settle_ccy"], as_index=False)
+        .agg(成功金额=("_settle_amt", "sum"), 手续费=("_fee", "sum"))
+    )
+    grouped["成功金额"] = grouped["成功金额"].round(2)
+    grouped["手续费"]   = grouped["手续费"].round(2)
+
+    result = pd.DataFrame({
+        TRANSACTION_DATE_COL:    grouped["_month"],
+        ADMIN_PAYMENT_COL:       "华为支付",
+        SETTLEMENT_CURRENCY_COL: grouped["_settle_ccy"],
+        "成功笔数":  0,
+        "成功金额":  grouped["成功金额"],
+        "退款笔数":  0,
+        "退款金额":  0.0,
+        "净交易金额": grouped["成功金额"],
+        "手续费":    grouped["手续费"],
+    })
+    return result[summary_cols]
 
 
 def _format_date(val) -> str:
@@ -636,8 +719,16 @@ def log_match_stats(result_df: pd.DataFrame) -> None:
             logging.warning("【%s】未匹配流水号: %s", label, ids)
 
 
-def build_summary_sheet(result_df: pd.DataFrame) -> pd.DataFrame:
-    """按交易日期、平台、结算币种汇总结算金额。"""
+def build_summary_sheet(
+    result_df: pd.DataFrame,
+    huawei_settle_df: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """按交易日期、平台、结算币种汇总结算金额，附手续费列。
+
+    手续费来源：
+        Adyen/Google — 聚合 result_df 中的 FEE_COL（已含于 SentForSettle / Merchant 行）
+        华为          — 来自 huawei_settle_df（月度结算文件），追加为单独的 HKD 结算行
+    """
     summary_cols = [
         TRANSACTION_DATE_COL,
         ADMIN_PAYMENT_COL,
@@ -647,6 +738,7 @@ def build_summary_sheet(result_df: pd.DataFrame) -> pd.DataFrame:
         "退款笔数",
         "退款金额",
         "净交易金额",
+        "手续费",
     ]
 
     if result_df.empty:
@@ -670,6 +762,14 @@ def build_summary_sheet(result_df: pd.DataFrame) -> pd.DataFrame:
     df["_success_amount"] = df["_amount"].where(df[STATUS_COL] == "成功", 0.0)
     df["_refund_amount"] = df["_amount"].where(df[STATUS_COL] == "退款", 0.0)
 
+    if FEE_COL in df.columns:
+        fee_raw = df[FEE_COL].fillna("").astype(str).str.strip().str.replace(",", "", regex=False)
+        df["_fee"] = pd.to_numeric(fee_raw, errors="coerce").fillna(0.0)
+    else:
+        df["_fee"] = 0.0
+    df["_fee_success"] = df["_fee"].where(df[STATUS_COL] == "成功", 0.0)
+    df["_fee_refund"]  = df["_fee"].where(df[STATUS_COL] == "退款", 0.0)
+
     summary = (
         df.groupby(group_cols, as_index=False)
         .agg(
@@ -677,11 +777,44 @@ def build_summary_sheet(result_df: pd.DataFrame) -> pd.DataFrame:
             成功金额=("_success_amount", "sum"),
             退款笔数=("_refund_count", "sum"),
             退款金额=("_refund_amount", "sum"),
+            _fee_success=("_fee_success", "sum"),
+            _fee_refund=("_fee_refund", "sum"),
         )
         .sort_values(group_cols, kind="stable")
         .reset_index(drop=True)
     )
     summary["净交易金额"] = summary["成功金额"] - summary["退款金额"]
+    summary["手续费"] = (summary["_fee_success"] - summary["_fee_refund"]).round(4)
+    summary = summary.drop(columns=["_fee_success", "_fee_refund"])
+
+    if huawei_settle_df is not None and not huawei_settle_df.empty:
+        huawei_settle_rows = build_huawei_fee_summary(huawei_settle_df)
+        if not huawei_settle_rows.empty:
+            # 用结算文件 HKD 行替换原有华为 TRY 订单行，避免同日期双行
+            hw_mask = summary[ADMIN_PAYMENT_COL].str.strip() == "华为支付"
+            non_huawei_summary = summary[~hw_mask]
+            huawei_order_rows  = summary[hw_mask]
+
+            # 从订单匹配行取笔数（按月合并所有交易货币），填入 HKD 结算行
+            if not huawei_order_rows.empty:
+                count_by_month = (
+                    huawei_order_rows
+                    .groupby(TRANSACTION_DATE_COL, as_index=False)
+                    .agg(_cnt_s=("成功笔数", "sum"), _cnt_r=("退款笔数", "sum"))
+                )
+                huawei_settle_rows = huawei_settle_rows.merge(
+                    count_by_month, on=TRANSACTION_DATE_COL, how="left"
+                )
+                huawei_settle_rows["成功笔数"] = huawei_settle_rows["_cnt_s"].fillna(0).astype(int)
+                huawei_settle_rows["退款笔数"] = huawei_settle_rows["_cnt_r"].fillna(0).astype(int)
+                huawei_settle_rows = huawei_settle_rows.drop(columns=["_cnt_s", "_cnt_r"])
+
+            summary = (
+                pd.concat([non_huawei_summary, huawei_settle_rows], ignore_index=True)
+                .sort_values(group_cols, kind="stable")
+                .reset_index(drop=True)
+            )
+
     return summary[summary_cols]
 
 
@@ -692,7 +825,7 @@ def build_apple_platform_summary(apple_raw_df: Optional[pd.DataFrame]) -> pd.Dat
     """
     summary_cols = [
         TRANSACTION_DATE_COL, ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL,
-        "成功笔数", "成功金额", "退款笔数", "退款金额", "净交易金额",
+        "成功笔数", "成功金额", "退款笔数", "退款金额", "净交易金额", "手续费",
     ]
     if apple_raw_df is None or apple_raw_df.empty:
         return pd.DataFrame(columns=summary_cols)
@@ -744,6 +877,7 @@ def build_apple_platform_summary(apple_raw_df: Optional[pd.DataFrame]) -> pd.Dat
             "成功金额": round(grp.loc[grp["_is_success"], "_eps"].sum(), 2),
             "退款笔数": int(grp.loc[grp["_is_refund"], "_qty"].abs().sum()),
             "退款金额": round(grp.loc[grp["_is_refund"], "_eps"].abs().sum(), 2),
+            "手续费": "",
         })
 
     if not rows:
@@ -778,11 +912,12 @@ def build_monthly_comparison(
     ].copy()
     if not non_apple.empty:
         non_apple["月份"] = non_apple[TRANSACTION_DATE_COL].astype(str).str[:7]
-        grp_cols = ["月份", ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL]
+        plat_grp_cols  = ["月份", ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL]
+        admin_grp_cols = ["月份", ADMIN_PAYMENT_COL]  # admin侧不含结算币种，避免与平台币种不匹配
 
         # 平台侧：平台净到账 来自 summary_df
         plat_monthly = (
-            non_apple.groupby(grp_cols, as_index=False, sort=True)
+            non_apple.groupby(plat_grp_cols, as_index=False, sort=True)
             .agg(平台净到账=("净交易金额", "sum"))
         )
 
@@ -798,7 +933,7 @@ def build_monthly_comparison(
                 errors="coerce",
             ).fillna(0.0)
             admin_monthly = (
-                matched.groupby(grp_cols, as_index=False, sort=True)
+                matched.groupby(admin_grp_cols, as_index=False, sort=True)
                 .agg(
                     Admin结算币种=(PLATFORM_CURRENCY_COL, "first"),
                     Admin结算金额=("_amt", "sum"),
@@ -806,9 +941,9 @@ def build_monthly_comparison(
             )
             admin_monthly["Admin结算金额"] = admin_monthly["Admin结算金额"].round(2)
         else:
-            admin_monthly = pd.DataFrame(columns=grp_cols + ["Admin结算币种", "Admin结算金额"])
+            admin_monthly = pd.DataFrame(columns=admin_grp_cols + ["Admin结算币种", "Admin结算金额"])
 
-        monthly = plat_monthly.merge(admin_monthly, on=grp_cols, how="left")
+        monthly = plat_monthly.merge(admin_monthly, on=admin_grp_cols, how="left")
         monthly["Admin结算币种"] = monthly["Admin结算币种"].fillna("")
         monthly["Admin结算金额"] = monthly["Admin结算金额"].fillna(0.0).round(2)
         monthly["平台净到账"] = monthly["平台净到账"].round(2)
@@ -1183,6 +1318,7 @@ def write_output(
     result_df: pd.DataFrame,
     output_dir: Path,
     apple_raw_df: Optional[pd.DataFrame] = None,
+    huawei_settle_df: Optional[pd.DataFrame] = None,
 ) -> Path:
     """将结果写入 data/output/订单匹配结果_{YYYYMMDD}.xlsx。"""
     today = date.today().strftime("%Y%m%d")
@@ -1202,7 +1338,10 @@ def write_output(
     apple_admin_df = result_df[apple_mask][admin_orig_cols].reset_index(drop=True)
 
     # 非苹果行用 result_df 汇总；苹果行用平台数据汇总（admin 无法匹配，结算金额为空）
-    non_apple_summary = build_summary_sheet(result_df[~apple_mask].reset_index(drop=True))
+    non_apple_summary = build_summary_sheet(
+        result_df[~apple_mask].reset_index(drop=True),
+        huawei_settle_df,
+    )
     apple_summary     = build_apple_platform_summary(apple_raw_df)
     summary_df = (
         pd.concat([non_apple_summary, apple_summary], ignore_index=True)
@@ -1289,6 +1428,21 @@ def main() -> int:
     else:
         logging.warning("未找到华为文件，跳过华为匹配")
 
+    huawei_settle_df = None
+    if files["huawei_settlement"]:
+        settle_frames = []
+        for fp in files["huawei_settlement"]:
+            logging.info("读取华为结算文件: %s", fp.name)
+            try:
+                settle_frames.append(read_huawei_settlement(fp))
+            except Exception:
+                logging.error("读取华为结算文件失败: %s", fp.name, exc_info=True)
+        if settle_frames:
+            huawei_settle_df = pd.concat(settle_frames, ignore_index=True) if len(settle_frames) > 1 else settle_frames[0]
+            logging.info("  华为结算文件共 %d 行", len(huawei_settle_df))
+    else:
+        logging.info("未找到华为结算文件（华为平台结算-*.xlsx），手续费HKD行将不生成")
+
     if files["google"]:
         google_frames = []
         for fp in files["google"]:
@@ -1323,7 +1477,7 @@ def main() -> int:
     log_match_stats(result_df)
 
     try:
-        output_path = write_output(result_df, OUTPUT_DIR, apple_raw_df)
+        output_path = write_output(result_df, OUTPUT_DIR, apple_raw_df, huawei_settle_df)
         logging.info("结果文件已写入: %s", output_path)
     except PermissionError:
         logging.error("无法写入输出文件，请确认文件未在 Excel 中打开后重试。")

@@ -63,3 +63,12 @@ ADYEN_DATE_COL       = "Booking Date"
 HUAWEI_DATE_COL      = "支付时间 (基于UTC+8)"
 GOOGLE_DATE_COL      = "Transaction Date"
 TRANSACTION_DATE_COL = "交易日期"
+
+# ── 华为结算文件（月度聚合，header=1读取英文列名）────────────
+# 文件格式：第1行=中文列名，第2行=英文列名（作为列头），第3行起=数据
+HUAWEI_SETTLE_DATE_COL      = "End Date"                                          # YYYYMM格式
+HUAWEI_SETTLE_AMOUNT_COL    = "Settlement Amount (Settlement currency)"            # 结算金额（HKD）
+HUAWEI_SETTLE_CURRENCY_COL  = "Settlement Currency"                               # 结算货币（HKD）
+HUAWEI_SETTLE_TOTAL_TRX_COL = "Total Transaction Amount (Transaction Currency)"   # 总交易额（交易货币）
+HUAWEI_SETTLE_VAT_COL       = "Output VAT (Transaction Currency)"                 # 销项税额（交易货币）
+HUAWEI_SETTLE_RATE_COL      = "Exchange Rate for Settlement"                      # 结算汇率

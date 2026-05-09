@@ -107,7 +107,7 @@ def scan_source_files_3(input_dir: Path) -> dict:
             result["admin"].append(f)
         elif stem.startswith("adyen-"):
             result["adyen"].append(f)
-        elif stem.startswith("华为"):
+        elif stem.startswith("华为") and not stem.startswith("华为平台结算"):
             result["huawei"].append(f)
         elif stem.startswith("googol-") or stem.startswith("google-"):
             result["google"].append(f)

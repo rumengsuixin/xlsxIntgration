@@ -661,6 +661,7 @@ def build_summary_sheet(result_df: pd.DataFrame) -> pd.DataFrame:
     group_cols = [TRANSACTION_DATE_COL, ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL]
     for col in group_cols:
         df[col] = df[col].fillna("").astype(str).str.strip()
+    df[TRANSACTION_DATE_COL] = df[TRANSACTION_DATE_COL].str[:7]
 
     amount = df[SETTLEMENT_AMOUNT_COL].fillna("").astype(str).str.strip().str.replace(",", "", regex=False)
     df["_amount"] = pd.to_numeric(amount, errors="coerce").fillna(0.0)
@@ -706,7 +707,7 @@ def build_apple_platform_summary(apple_raw_df: Optional[pd.DataFrame]) -> pd.Dat
         return pd.DataFrame(columns=summary_cols)
     df["_date"] = (
         pd.to_datetime(df[date_col].astype(str).str.strip(), errors="coerce")
-        .dt.strftime("%Y-%m-%d").fillna("")
+        .dt.strftime("%Y-%m").fillna("")
     )
     df = df[df["_date"] != ""]
 
@@ -751,6 +752,172 @@ def build_apple_platform_summary(apple_raw_df: Optional[pd.DataFrame]) -> pd.Dat
     result = pd.DataFrame(rows)
     result["净交易金额"] = result["成功金额"] - result["退款金额"]
     return result[summary_cols]
+
+
+def build_monthly_comparison(
+    summary_df: pd.DataFrame,
+    apple_admin_df: pd.DataFrame,
+    result_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """按月汇总对账差异：Admin结算金额（匹配成功的 admin 订单毛额）vs 平台净到账（成功-退款）。
+
+    返回列：月份, 支付方式, 结算币种, Admin笔数, Admin结算金额, 退款笔数, 退款金额, 平台净到账, 差异
+    苹果行：Admin侧取 apple_admin_df 正常订单金额，同月多币种时仅填第一个币种行。
+    """
+    comp_cols = [
+        "月份", ADMIN_PAYMENT_COL, "Admin结算币种", "Admin结算金额", SETTLEMENT_CURRENCY_COL, "平台净到账",
+    ]
+    if summary_df.empty:
+        return pd.DataFrame(columns=comp_cols)
+
+    segments = []
+
+    # ── 非苹果部分 ──────────────────────────────────────────
+    non_apple = summary_df[
+        summary_df[ADMIN_PAYMENT_COL].astype(str).str.strip() != "苹果支付Lua"
+    ].copy()
+    if not non_apple.empty:
+        non_apple["月份"] = non_apple[TRANSACTION_DATE_COL].astype(str).str[:7]
+        grp_cols = ["月份", ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL]
+
+        # 平台侧：平台净到账 来自 summary_df
+        plat_monthly = (
+            non_apple.groupby(grp_cols, as_index=False, sort=True)
+            .agg(平台净到账=("净交易金额", "sum"))
+        )
+
+        # Admin侧：有结算金额的非苹果行即为匹配成功，使用 admin 订单原始金额（毛额）
+        matched = result_df[
+            result_df[SETTLEMENT_AMOUNT_COL].astype(str).str.strip().ne("") &
+            result_df[ADMIN_PAYMENT_COL].astype(str).str.strip().ne("苹果支付Lua")
+        ].copy()
+        if not matched.empty:
+            matched["月份"] = matched[TRANSACTION_DATE_COL].astype(str).str[:7]
+            matched["_amt"] = pd.to_numeric(
+                matched[ADMIN_AMOUNT_COL].astype(str).str.replace(",", "", regex=False),
+                errors="coerce",
+            ).fillna(0.0)
+            admin_monthly = (
+                matched.groupby(grp_cols, as_index=False, sort=True)
+                .agg(
+                    Admin结算币种=(PLATFORM_CURRENCY_COL, "first"),
+                    Admin结算金额=("_amt", "sum"),
+                )
+            )
+            admin_monthly["Admin结算金额"] = admin_monthly["Admin结算金额"].round(2)
+        else:
+            admin_monthly = pd.DataFrame(columns=grp_cols + ["Admin结算币种", "Admin结算金额"])
+
+        monthly = plat_monthly.merge(admin_monthly, on=grp_cols, how="left")
+        monthly["Admin结算币种"] = monthly["Admin结算币种"].fillna("")
+        monthly["Admin结算金额"] = monthly["Admin结算金额"].fillna(0.0).round(2)
+        monthly["平台净到账"] = monthly["平台净到账"].round(2)
+        segments.append(monthly[comp_cols])
+
+    # ── 苹果部分 ─────────────────────────────────────────────
+    apple_plat = summary_df[
+        summary_df[ADMIN_PAYMENT_COL].astype(str).str.strip() == "苹果支付Lua"
+    ].copy()
+    if not apple_plat.empty:
+        apple_plat["月份"] = apple_plat[TRANSACTION_DATE_COL].astype(str).str[:7]
+        plat_grp = (
+            apple_plat.groupby(["月份", SETTLEMENT_CURRENCY_COL], as_index=False, sort=True)
+            .agg(平台净到账=("净交易金额", "sum"))
+        )
+        plat_grp[ADMIN_PAYMENT_COL] = "苹果支付Lua"
+
+        # Admin侧：按月份聚合 apple_admin_df 正常订单金额
+        apple_admin_monthly: dict = {}
+        if not apple_admin_df.empty and ADMIN_DATE_COL in apple_admin_df.columns and ADMIN_AMOUNT_COL in apple_admin_df.columns:
+            adf = apple_admin_df.copy()
+            adf["_月份"] = (
+                pd.to_datetime(adf[ADMIN_DATE_COL].astype(str).str.strip(), errors="coerce")
+                .dt.strftime("%Y-%m").fillna("")
+            )
+            adf["_金额"] = pd.to_numeric(
+                adf[ADMIN_AMOUNT_COL].astype(str).str.replace(",", "", regex=False),
+                errors="coerce",
+            ).fillna(0.0)
+            flag = (
+                adf[ADMIN_REFUND_COL].astype(str).str.strip()
+                if ADMIN_REFUND_COL in adf.columns
+                else pd.Series("正常", index=adf.index)
+            )
+            for month, grp in adf[adf["_月份"] != ""].groupby("_月份", sort=True):
+                normal_mask = flag.reindex(grp.index) == "正常"
+                apple_admin_monthly[month] = round(grp.loc[normal_mask, "_金额"].sum(), 2)
+
+        # 将 admin 月汇总金额填入苹果平台行（同月多币种：仅填第一个币种行）
+        filled: set = set()
+        admin_amts = []
+        for _, r in plat_grp.iterrows():
+            month = r["月份"]
+            if month not in filled and month in apple_admin_monthly:
+                admin_amts.append(apple_admin_monthly[month])
+                filled.add(month)
+            else:
+                admin_amts.append(0.0)
+        plat_grp["Admin结算币种"] = ""
+        plat_grp["Admin结算金额"] = admin_amts
+        plat_grp["平台净到账"] = plat_grp["平台净到账"].round(2)
+        segments.append(plat_grp[comp_cols])
+
+    if not segments:
+        return pd.DataFrame(columns=comp_cols)
+
+    result = pd.concat(segments, ignore_index=True)
+    result = result.sort_values(
+        ["月份", ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL], kind="stable"
+    ).reset_index(drop=True)
+    return result[comp_cols]
+
+
+def _append_comparison_table(
+    ws,
+    comparison_df: pd.DataFrame,
+    start_row: int,
+) -> None:
+    """将月度对比表追加到 openpyxl worksheet 的 start_row 行位置。"""
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    headers = list(comparison_df.columns)
+    numeric_headers = {"Admin结算金额", "平台净到账"}
+    numeric_ci = [i + 1 for i, h in enumerate(headers) if h in numeric_headers]
+
+    row = start_row
+    ws.cell(row, 1).value = "月度对比（对账差异）"
+    ws.cell(row, 1).font = Font(bold=True, size=12)
+    row += 1
+
+    for ci, h in enumerate(headers, 1):
+        c = ws.cell(row, ci)
+        c.value = h
+        c.font = Font(bold=True)
+    row += 1
+
+    data_start = row
+    for _, dr in comparison_df.iterrows():
+        for ci, val in enumerate(dr, 1):
+            cell = ws.cell(row, ci)
+            if headers[ci - 1] in numeric_headers:
+                try:
+                    cell.value = float(val)
+                except (ValueError, TypeError):
+                    cell.value = val
+            else:
+                cell.value = str(val) if pd.notna(val) else ""
+        row += 1
+    data_end = row - 1
+
+    ws.cell(row, 1).value = "合计"
+    ws.cell(row, 1).font = Font(bold=True)
+    for ci in numeric_ci:
+        col_letter = get_column_letter(ci)
+        if data_end >= data_start:
+            ws.cell(row, ci).value = f"=SUM({col_letter}{data_start}:{col_letter}{data_end})"
+        else:
+            ws.cell(row, ci).value = 0
 
 
 def _write_apple_sheet(
@@ -1046,9 +1213,18 @@ def write_output(
         .reset_index(drop=True)
     )
 
+    comparison_df = build_monthly_comparison(
+        summary_df,
+        apple_admin_df,
+        result_df[~apple_mask].reset_index(drop=True),
+    )
+
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         main_df.to_excel(writer, sheet_name=OUTPUT_SHEET_3, index=False)
         summary_df.to_excel(writer, sheet_name=OUTPUT_SUMMARY_SHEET_3, index=False)
+        if not comparison_df.empty:
+            ws = writer.sheets[OUTPUT_SUMMARY_SHEET_3]
+            _append_comparison_table(ws, comparison_df, ws.max_row + 3)
         _write_apple_sheet(writer, apple_admin_df, apple_raw_df)
 
     return output_path

@@ -560,11 +560,24 @@ class BankIntegrationSampleTests(unittest.TestCase):
             output_path = write_output(detail, Path(tmp))
             wb = load_workbook(output_path, read_only=True)
             sheet_names = wb.sheetnames
+            summary_values = [
+                cell
+                for row in wb[OUTPUT_SUMMARY_SHEET_3].iter_rows(values_only=True)
+                for cell in row
+            ]
             wb.close()
 
-        self.assertEqual(sheet_names, [OUTPUT_SHEET_3, OUTPUT_DIFF_SHEET_3, OUTPUT_FAILED_SHEET_3])
-        self.assertNotIn(OUTPUT_SUMMARY_SHEET_3, sheet_names)
-        self.assertNotIn(OUTPUT_APPLE_SHEET_3, sheet_names)
+        self.assertEqual(
+            sheet_names,
+            [
+                OUTPUT_SHEET_3,
+                OUTPUT_DIFF_SHEET_3,
+                OUTPUT_FAILED_SHEET_3,
+                OUTPUT_SUMMARY_SHEET_3,
+                OUTPUT_APPLE_SHEET_3,
+            ],
+        )
+        self.assertNotIn("月度对比（对账差异）", summary_values)
 
     def test_write_output_filters_reconciliation_sheets_and_formats_headers(self):
         detail = pd.DataFrame(
@@ -608,6 +621,12 @@ class BankIntegrationSampleTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp:
+            detail[TRANSACTION_DATE_COL] = "2026-03-01"
+            detail[ADMIN_PAYMENT_COL] = "Adyen"
+            detail[PLATFORM_CURRENCY_COL] = "TRY"
+            detail[SETTLEMENT_CURRENCY_COL] = "USD"
+            detail["结算金额"] = detail[PLATFORM_AMOUNT_COL]
+
             output_path = write_output(detail, Path(tmp))
             main = pd.read_excel(output_path, sheet_name=OUTPUT_SHEET_3, dtype=str).fillna("")
             diff = pd.read_excel(output_path, sheet_name=OUTPUT_DIFF_SHEET_3, dtype=str).fillna("")

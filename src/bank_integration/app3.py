@@ -1396,9 +1396,17 @@ def write_output(
     diff_df = main_df.loc[match_status.eq("是") & amount_diff.gt(1.0)].copy()
     failed_df = main_df.loc[match_status.eq("否")].copy()
 
-    # 按当前需求禁用“交易金额汇总”和“苹果支付”两个 Sheet 的生成路径。
-    # 保留 build_summary_sheet / build_apple_platform_summary / build_monthly_comparison /
-    # _write_apple_sheet 等辅助函数，后续如需恢复可重新接回这里。
+    summary_df = build_summary_sheet(main_df, huawei_settle_df)
+    apple_summary_df = build_apple_platform_summary(apple_raw_df)
+    if not apple_summary_df.empty:
+        summary_df = pd.concat([summary_df, apple_summary_df], ignore_index=True)
+
+    if ADMIN_PAYMENT_COL in main_df.columns:
+        apple_admin_df = main_df.loc[
+            main_df[ADMIN_PAYMENT_COL].astype(str).str.strip().eq("苹果支付Lua")
+        ].copy()
+    else:
+        apple_admin_df = pd.DataFrame()
 
     def _format_detail_sheet(writer: pd.ExcelWriter, sheet_name: str) -> None:
         ws = writer.sheets[sheet_name]
@@ -1411,8 +1419,8 @@ def write_output(
         failed_df.to_excel(writer, sheet_name=OUTPUT_FAILED_SHEET_3, index=False)
         for sheet_name in (OUTPUT_SHEET_3, OUTPUT_DIFF_SHEET_3, OUTPUT_FAILED_SHEET_3):
             _format_detail_sheet(writer, sheet_name)
-        # summary_df.to_excel(writer, sheet_name=OUTPUT_SUMMARY_SHEET_3, index=False)
-        # _write_apple_sheet(writer, apple_admin_df, apple_raw_df)
+        summary_df.to_excel(writer, sheet_name=OUTPUT_SUMMARY_SHEET_3, index=False)
+        _write_apple_sheet(writer, apple_admin_df, apple_raw_df)
 
     return output_path
 

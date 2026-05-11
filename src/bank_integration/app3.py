@@ -11,9 +11,10 @@
                            │
                   data/output/订单匹配结果_{YYYYMMDD}.xlsx
 
-输出新增列（追加在 admin 原始列末尾，共 7 列）：
+输出新增列（追加在 admin 原始列末尾，共 8 列）：
     平台订单金额  - 各平台匹配到的订单交易金额
     平台币种      - 对应货币
+    是否匹配      - 是 / 否 / 平台多余
     状态          - 成功 / 失败 / 退款
     结算金额      - 扣除平台手续费后实际到账金额
                     Adyen: Payable(SC) [USD/HKD]
@@ -78,6 +79,7 @@ from .config3 import (
     HUAWEI_SETTLE_TOTAL_TRX_COL,
     HUAWEI_SETTLE_VAT_COL,
     INPUT_DIR_3,
+    MATCH_STATUS_COL,
     OUTPUT_APPLE_SHEET_3,
     OUTPUT_FILE_TEMPLATE,
     OUTPUT_SHEET_3,
@@ -430,7 +432,7 @@ def _build_platform_only_rows(
 ) -> pd.DataFrame:
     """构建平台有、admin 无对应记录的多余行（回调丢失/网络延迟场景）。
 
-    所有 admin 原始列留空，填充可从平台数据计算的 7 个新增列，状态统一标"失败"。
+    所有 admin 原始列留空，填充可从平台数据计算的新增列，标记为平台多余。
     """
     extra = []
 
@@ -445,6 +447,7 @@ def _build_platform_only_rows(
             row[PLATFORM_AMOUNT_COL]   = str(adyen_lk.at[key, ADYEN_AMOUNT_COL]).strip()
             row[PLATFORM_CURRENCY_COL] = str(adyen_lk.at[key, ADYEN_CURRENCY_COL]).strip()
             row[SETTLEMENT_CURRENCY_COL] = str(adyen_lk.at[key, ADYEN_SETTLEMENT_CURRENCY_COL]).strip()
+            row[MATCH_STATUS_COL]      = "平台多余"
             row[STATUS_COL]            = "成功"
             row[SETTLEMENT_AMOUNT_COL] = str(adyen_lk.at[key, ADYEN_PAYABLE_COL]).strip()
             m   = _to_float(adyen_lk.at[key, ADYEN_MARKUP_COL])
@@ -468,6 +471,7 @@ def _build_platform_only_rows(
             row[PLATFORM_AMOUNT_COL]   = amt
             row[PLATFORM_CURRENCY_COL] = str(huawei_lk.at[key, HUAWEI_CURRENCY_COL]).strip()
             row[SETTLEMENT_CURRENCY_COL] = row[PLATFORM_CURRENCY_COL]
+            row[MATCH_STATUS_COL] = "平台多余"
             row[SETTLEMENT_AMOUNT_COL] = amt  # 暂无手续费数据
             row[STATUS_COL]            = "成功"
             if HUAWEI_DATE_COL in huawei_lk.columns:
@@ -492,6 +496,7 @@ def _build_platform_only_rows(
             mfr = _to_float(google_lk.at[key, "merchant_fee_refund_amt"])
             row[PLATFORM_CURRENCY_COL] = str(google_lk.at[key, "ccy"]).strip()
             row[SETTLEMENT_CURRENCY_COL] = str(google_lk.at[key, "merchant_ccy"]).strip()
+            row[MATCH_STATUS_COL] = "平台多余"
             if r is not None:  # 有退款记录 → 退款
                 row[PLATFORM_AMOUNT_COL]   = str(round(abs(r or 0.0) + abs(fr or 0.0), 2))
                 if mr is not None:
@@ -526,7 +531,7 @@ def enrich_admin(
     huawei_lk: Optional[pd.DataFrame],
     google_lk: Optional[pd.DataFrame],
 ) -> pd.DataFrame:
-    """以 admin 为主表，通过流水号与三个平台查找表 left-join，追加 3 列。"""
+    """以 admin 为主表，通过流水号与三个平台查找表 left-join，追加平台匹配列。"""
     result = admin_df.copy()
     admin_col_count = len(admin_df.columns)
 
@@ -561,10 +566,11 @@ def enrich_admin(
     if google_avail:
         result = _safe_merge(result, google_lk, "_g_", "Google")
 
-    # ── 构建 7 个新列 ─────────────────────────────────────────
+    # ── 构建新增列 ────────────────────────────────────────────
     platform_amt_list     = []
     platform_ccy_list     = []
     settlement_ccy_list   = []
+    match_status_list     = []
     status_list           = []
     settlement_list       = []
     fee_list              = []
@@ -656,6 +662,7 @@ def enrich_admin(
         platform_amt_list.append(amt)
         platform_ccy_list.append(ccy)
         settlement_ccy_list.append(settle_ccy)
+        match_status_list.append("是" if matched else "否")
         settlement_list.append(settle_amt)
         fee_list.append(fee_amt)
         country_tax_list.append(country_tax)
@@ -668,18 +675,19 @@ def enrich_admin(
         else:
             status_list.append("失败")
 
-    # ── 清理临时列，插入 6 个新列 ─────────────────────────────
+    # ── 清理临时列，插入新增列 ────────────────────────────────
     tmp_cols = [c for c in result.columns if c.startswith(("_a_", "_h_", "_g_"))]
     result = result.drop(columns=tmp_cols)
 
     result.insert(admin_col_count + 0, PLATFORM_AMOUNT_COL,   platform_amt_list)
     result.insert(admin_col_count + 1, PLATFORM_CURRENCY_COL, platform_ccy_list)
     result.insert(admin_col_count + 2, SETTLEMENT_CURRENCY_COL, settlement_ccy_list)
-    result.insert(admin_col_count + 3, STATUS_COL,            status_list)
-    result.insert(admin_col_count + 4, SETTLEMENT_AMOUNT_COL, settlement_list)
-    result.insert(admin_col_count + 5, FEE_COL,               fee_list)
-    result.insert(admin_col_count + 6, COUNTRY_TAX_COL,       country_tax_list)
-    result.insert(admin_col_count + 7, TRANSACTION_DATE_COL,  transaction_date_list)
+    result.insert(admin_col_count + 3, MATCH_STATUS_COL,      match_status_list)
+    result.insert(admin_col_count + 4, STATUS_COL,            status_list)
+    result.insert(admin_col_count + 5, SETTLEMENT_AMOUNT_COL, settlement_list)
+    result.insert(admin_col_count + 6, FEE_COL,               fee_list)
+    result.insert(admin_col_count + 7, COUNTRY_TAX_COL,       country_tax_list)
+    result.insert(admin_col_count + 8, TRANSACTION_DATE_COL,  transaction_date_list)
 
     # ── 追加平台多余行（平台有、admin 无对应记录）────────────
     admin_keys = set(admin_df[ADMIN_JOIN_COL].str.strip())
@@ -910,7 +918,7 @@ def build_monthly_comparison(
 ) -> pd.DataFrame:
     """按月汇总对账差异：Admin结算金额（匹配成功的 admin 订单毛额）vs 平台净到账（成功-退款）。
 
-    返回列：月份, 支付方式, 结算币种, Admin笔数, Admin结算金额, 退款笔数, 退款金额, 平台净到账, 差异
+    返回列：月份, 支付方式, Admin结算币种, Admin结算金额, 结算币种, 平台净到账
     苹果行：Admin侧取 apple_admin_df 正常订单金额，同月多币种时仅填第一个币种行。
     """
     comp_cols = [
@@ -927,28 +935,31 @@ def build_monthly_comparison(
     ].copy()
     if not non_apple.empty:
         non_apple["月份"] = non_apple[TRANSACTION_DATE_COL].astype(str).str[:7]
-        plat_grp_cols  = ["月份", ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL]
-        admin_grp_cols = ["月份", ADMIN_PAYMENT_COL]  # admin侧不含结算币种，避免与平台币种不匹配
+        grp_cols = ["月份", ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL]
 
         # 平台侧：平台净到账 来自 summary_df
         plat_monthly = (
-            non_apple.groupby(plat_grp_cols, as_index=False, sort=True)
+            non_apple.groupby(grp_cols, as_index=False, sort=True)
             .agg(平台净到账=("净交易金额", "sum"))
         )
 
-        # Admin侧：有结算金额的非苹果行即为匹配成功，使用 admin 订单原始金额（毛额）
+        # Admin侧：仅统计 admin 行中已经匹配平台的订单，使用 admin 订单原始金额（毛额）。
+        if MATCH_STATUS_COL in result_df.columns:
+            matched_mask = result_df[MATCH_STATUS_COL].astype(str).str.strip().eq("是")
+        else:
+            matched_mask = result_df[SETTLEMENT_AMOUNT_COL].astype(str).str.strip().ne("")
         matched = result_df[
-            result_df[SETTLEMENT_AMOUNT_COL].astype(str).str.strip().ne("") &
+            matched_mask &
             result_df[ADMIN_PAYMENT_COL].astype(str).str.strip().ne("苹果支付Lua")
         ].copy()
-        if not matched.empty:
+        if not matched.empty and ADMIN_AMOUNT_COL in matched.columns:
             matched["月份"] = matched[TRANSACTION_DATE_COL].astype(str).str[:7]
             matched["_amt"] = pd.to_numeric(
                 matched[ADMIN_AMOUNT_COL].astype(str).str.replace(",", "", regex=False),
                 errors="coerce",
             ).fillna(0.0)
             admin_monthly = (
-                matched.groupby(admin_grp_cols, as_index=False, sort=True)
+                matched.groupby(grp_cols, as_index=False, sort=True)
                 .agg(
                     Admin结算币种=(PLATFORM_CURRENCY_COL, "first"),
                     Admin结算金额=("_amt", "sum"),
@@ -956,9 +967,9 @@ def build_monthly_comparison(
             )
             admin_monthly["Admin结算金额"] = admin_monthly["Admin结算金额"].round(2)
         else:
-            admin_monthly = pd.DataFrame(columns=admin_grp_cols + ["Admin结算币种", "Admin结算金额"])
+            admin_monthly = pd.DataFrame(columns=grp_cols + ["Admin结算币种", "Admin结算金额"])
 
-        monthly = plat_monthly.merge(admin_monthly, on=admin_grp_cols, how="left")
+        monthly = plat_monthly.merge(admin_monthly, on=grp_cols, how="left")
         monthly["Admin结算币种"] = monthly["Admin结算币种"].fillna("")
         monthly["Admin结算金额"] = monthly["Admin结算金额"].fillna(0.0).round(2)
         monthly["平台净到账"] = monthly["平台净到账"].round(2)
@@ -1334,7 +1345,7 @@ def write_output(
 
     _extra_cols = [
         PLATFORM_AMOUNT_COL, PLATFORM_CURRENCY_COL, SETTLEMENT_CURRENCY_COL,
-        STATUS_COL, SETTLEMENT_AMOUNT_COL, FEE_COL, COUNTRY_TAX_COL, TRANSACTION_DATE_COL,
+        MATCH_STATUS_COL, STATUS_COL, SETTLEMENT_AMOUNT_COL, FEE_COL, COUNTRY_TAX_COL, TRANSACTION_DATE_COL,
     ]
     admin_orig_cols = [c for c in result_df.columns if c not in _extra_cols]
     apple_admin_df = result_df[apple_mask][admin_orig_cols].reset_index(drop=True)

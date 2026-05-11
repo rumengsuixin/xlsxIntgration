@@ -22,6 +22,7 @@ from src.bank_integration.app3 import (
     build_adyen_lookup,
     build_apple_platform_summary,
     build_google_lookup,
+    build_monthly_comparison,
     build_summary_sheet,
     enrich_admin,
     write_output,
@@ -55,6 +56,7 @@ from src.bank_integration.config3 import (
     HUAWEI_CURRENCY_COL,
     HUAWEI_DATE_COL,
     HUAWEI_JOIN_COL,
+    MATCH_STATUS_COL,
     OUTPUT_SHEET_3,
     OUTPUT_APPLE_SHEET_3,
     OUTPUT_SUMMARY_SHEET_3,
@@ -179,7 +181,43 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(result.loc[0, PLATFORM_CURRENCY_COL], "TRY")
         self.assertEqual(result.loc[0, SETTLEMENT_CURRENCY_COL], "USD")
         self.assertEqual(columns.index(SETTLEMENT_CURRENCY_COL), columns.index(PLATFORM_CURRENCY_COL) + 1)
-        self.assertEqual(columns.index(STATUS_COL), columns.index(SETTLEMENT_CURRENCY_COL) + 1)
+        self.assertEqual(columns.index(MATCH_STATUS_COL), columns.index(SETTLEMENT_CURRENCY_COL) + 1)
+        self.assertEqual(columns.index(STATUS_COL), columns.index(MATCH_STATUS_COL) + 1)
+
+    def test_enrich_admin_marks_match_status_for_admin_and_platform_only_rows(self):
+        lookup = build_adyen_lookup(
+            self._adyen_df(
+                [
+                    {ADYEN_JOIN_COL: "PSP-MATCH", ADYEN_RECORD_TYPE_COL: "SentForSettle"},
+                    {ADYEN_JOIN_COL: "PSP-PLATFORM-ONLY", ADYEN_RECORD_TYPE_COL: "SentForSettle"},
+                ]
+            )
+        )
+        admin = pd.DataFrame(
+            [
+                {
+                    ADMIN_JOIN_COL: "PSP-MATCH",
+                    ADMIN_AMOUNT_COL: "10.00",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    ADMIN_REFUND_COL: "正常",
+                    ADMIN_DATE_COL: "2026-03-01 12:00:00",
+                },
+                {
+                    ADMIN_JOIN_COL: "PSP-NO-MATCH",
+                    ADMIN_AMOUNT_COL: "12.00",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    ADMIN_REFUND_COL: "正常",
+                    ADMIN_DATE_COL: "2026-03-01 12:00:00",
+                },
+            ]
+        )
+
+        result = enrich_admin(admin, lookup, None, None)
+        by_key = result.set_index(ADMIN_JOIN_COL)
+
+        self.assertEqual(by_key.at["PSP-MATCH", MATCH_STATUS_COL], "是")
+        self.assertEqual(by_key.at["PSP-NO-MATCH", MATCH_STATUS_COL], "否")
+        self.assertEqual(by_key.at["PSP-PLATFORM-ONLY", MATCH_STATUS_COL], "平台多余")
 
     def test_enrich_admin_defaults_settlement_currency_for_huawei_and_google(self):
         admin = pd.DataFrame(
@@ -397,7 +435,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertIn(SETTLEMENT_CURRENCY_COL, summary.columns)
         self.assertNotIn(PLATFORM_CURRENCY_COL, summary.columns)
         adyen = summary[
-            (summary[TRANSACTION_DATE_COL] == "2026-03-01")
+            (summary[TRANSACTION_DATE_COL] == "2026-03")
             & (summary[ADMIN_PAYMENT_COL] == "Adyen")
             & (summary[SETTLEMENT_CURRENCY_COL] == "USD")
         ].iloc[0]
@@ -408,7 +446,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertAlmostEqual(adyen["净交易金额"], 25.75, places=2)
         self.assertAlmostEqual(adyen["手续费"], 3.50, places=2)
         google_hkd = summary[
-            (summary[TRANSACTION_DATE_COL] == "2026-03-02")
+            (summary[TRANSACTION_DATE_COL] == "2026-03")
             & (summary[ADMIN_PAYMENT_COL] == "Google支付")
             & (summary[SETTLEMENT_CURRENCY_COL] == "HKD")
         ].iloc[0]
@@ -498,6 +536,75 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         self.assertIn("月度对比（对账差异）", values)
         self.assertNotIn("合计", values)
+
+    def test_monthly_comparison_uses_match_status_and_settlement_currency(self):
+        summary = pd.DataFrame(
+            [
+                {
+                    TRANSACTION_DATE_COL: "2026-03",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    "净交易金额": 14.0,
+                },
+                {
+                    TRANSACTION_DATE_COL: "2026-03",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    SETTLEMENT_CURRENCY_COL: "HKD",
+                    "净交易金额": 7.0,
+                },
+            ]
+        )
+        detail = pd.DataFrame(
+            [
+                {
+                    ADMIN_AMOUNT_COL: "100.00",
+                    TRANSACTION_DATE_COL: "2026-03-01",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    PLATFORM_CURRENCY_COL: "TRY",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    MATCH_STATUS_COL: "是",
+                },
+                {
+                    ADMIN_AMOUNT_COL: "70.00",
+                    TRANSACTION_DATE_COL: "2026-03-02",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    PLATFORM_CURRENCY_COL: "HKD",
+                    SETTLEMENT_CURRENCY_COL: "HKD",
+                    MATCH_STATUS_COL: "是",
+                },
+                {
+                    ADMIN_AMOUNT_COL: "999.00",
+                    TRANSACTION_DATE_COL: "2026-03-03",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    PLATFORM_CURRENCY_COL: "",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    MATCH_STATUS_COL: "否",
+                },
+                {
+                    ADMIN_AMOUNT_COL: "",
+                    TRANSACTION_DATE_COL: "2026-03-04",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    PLATFORM_CURRENCY_COL: "TRY",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    MATCH_STATUS_COL: "平台多余",
+                },
+            ]
+        )
+
+        comparison = build_monthly_comparison(summary, pd.DataFrame(), detail)
+        usd = comparison[
+            (comparison[ADMIN_PAYMENT_COL] == "Adyen")
+            & (comparison[SETTLEMENT_CURRENCY_COL] == "USD")
+        ].iloc[0]
+        hkd = comparison[
+            (comparison[ADMIN_PAYMENT_COL] == "Adyen")
+            & (comparison[SETTLEMENT_CURRENCY_COL] == "HKD")
+        ].iloc[0]
+
+        self.assertAlmostEqual(usd["Admin结算金额"], 100.00, places=2)
+        self.assertAlmostEqual(usd["平台净到账"], 14.00, places=2)
+        self.assertAlmostEqual(hkd["Admin结算金额"], 70.00, places=2)
+        self.assertAlmostEqual(hkd["平台净到账"], 7.00, places=2)
 
     def test_scan_source_files_only_recognizes_prefixed_samples(self):
         sources = scan_source_files(INPUT_DIR)

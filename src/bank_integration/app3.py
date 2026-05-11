@@ -11,20 +11,21 @@
                            │
                   data/output/订单匹配结果_{YYYYMMDD}.xlsx
 
-输出新增列（追加在 admin 原始列末尾，共 8 列）：
-    平台订单金额  - 各平台匹配到的订单交易金额
+输出新增列（追加在 admin 原始列末尾，共 10 列）：
+    原Charge金额  - Google 原始 Charge / Charge refund 的 Amount (Buyer Currency) 绝对值
+    平台订单金额  - 各平台匹配到的订单交易金额；Google 为平台币种含税总额
     平台币种      - 对应货币
     是否匹配      - 是 / 否 / 平台多余
     状态          - 成功 / 失败 / 退款
     结算金额      - 扣除平台手续费后实际到账金额
                     Adyen: Payable(SC) [USD/HKD]
-                    Google: Charge(TRY) - |fee(TRY)|；退款: |refund| - |fee_refund|
+                    Google: Merchant Charge - |Merchant fee|；退款: |Merchant refund| - |Merchant fee_refund|
                     华为: 空（平台报表无手续费数据）
     手续费        - 平台收取的手续费
                     Adyen: Markup+Scheme Fees+Interchange [USD/HKD]
-                    Google: |Google fee Amount(Buyer Currency)| [TRY]
+                    Google: |Google fee Amount(Merchant Currency)|
                     华为: 空
-    国家税费      - Google 专属，= admin.金额 - Charge(TRY)（反映 Google 代扣当地税额）
+    国家税费      - Google 专属，= abs(Charge Amount (Buyer Currency)) * 0.2 * Currency Conversion Rate
 """
 
 import logging
@@ -59,6 +60,7 @@ from .config3 import (
     GOOGLE_BUYER_AMOUNT_COL,
     GOOGLE_BUYER_CURRENCY_COL,
     GOOGLE_CHARGE_TYPE,
+    GOOGLE_CONVERSION_RATE_COL,
     GOOGLE_DATE_COL,
     GOOGLE_FEE_REFUND_TYPE,
     GOOGLE_FEE_TYPE,
@@ -80,6 +82,7 @@ from .config3 import (
     HUAWEI_SETTLE_VAT_COL,
     INPUT_DIR_3,
     MATCH_STATUS_COL,
+    ORIGINAL_CHARGE_AMOUNT_COL,
     OUTPUT_APPLE_SHEET_3,
     OUTPUT_FILE_TEMPLATE,
     OUTPUT_SHEET_3,
@@ -327,8 +330,8 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
       Google fee refund → 手续费退回（正数）
 
     对应 admin.是否退款：
-      正常   → 平台金额 = Charge + Google fee（商户净收入，两者求和）
-      已退款 → 平台金额 = |Charge refund + Google fee refund|（净退款金额）
+      正常   → 平台金额 = |Charge| * 1.2；国家税费 = |Charge| * 0.2 * 汇率（Merchant Currency）
+      已退款 → 平台金额 = |Charge refund| * 1.2；国家税费 = |Charge refund| * 0.2 * 汇率（Merchant Currency）
     """
     type_col = GOOGLE_TRANSACTION_TYPE_COL
     join = GOOGLE_JOIN_COL
@@ -336,11 +339,13 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
     merchant_amt = GOOGLE_MERCHANT_AMOUNT_COL
     ccy = GOOGLE_BUYER_CURRENCY_COL
     merchant_ccy = GOOGLE_MERCHANT_CURRENCY_COL
+    conversion_rate = GOOGLE_CONVERSION_RATE_COL
 
     def _pick(type_val, out_amt_col, include_merchant_amt=False, merchant_amt_out_col="merchant_amt",
               include_ccy=False, ccy_out_col="ccy",
               include_merchant_ccy=False, merchant_ccy_out_col="merchant_ccy",
-              include_date=False, date_out_col="transaction_date"):
+              include_date=False, date_out_col="transaction_date",
+              include_conversion_rate=False, conversion_rate_out_col="conversion_rate"):
         sub = df[df[type_col].str.strip() == type_val].copy()
         sub = sub[sub[join].str.strip() != ""]
         cols = (
@@ -349,6 +354,7 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
             + ([ccy] if include_ccy else [])
             + ([merchant_ccy] if include_merchant_ccy and merchant_ccy in sub.columns else [])
             + ([GOOGLE_DATE_COL] if include_date and GOOGLE_DATE_COL in sub.columns else [])
+            + ([conversion_rate] if include_conversion_rate and conversion_rate in sub.columns else [])
         )
         sub = sub[[c for c in cols if c in sub.columns]]
         before = len(sub)
@@ -364,6 +370,8 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
             rename[merchant_ccy] = merchant_ccy_out_col
         if include_date and GOOGLE_DATE_COL in sub.columns:
             rename[GOOGLE_DATE_COL] = date_out_col
+        if include_conversion_rate and conversion_rate in sub.columns:
+            rename[conversion_rate] = conversion_rate_out_col
         return sub.rename(columns=rename)
 
     charge = _pick(
@@ -374,6 +382,7 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
         include_ccy=True,
         include_merchant_ccy=True,
         include_date=True,
+        include_conversion_rate=True,
     )
     fee = _pick(
         GOOGLE_FEE_TYPE,
@@ -385,7 +394,8 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
                    include_merchant_amt=True, merchant_amt_out_col="merchant_refund_amt",
                    include_ccy=True, ccy_out_col="refund_ccy",
                    include_merchant_ccy=True, merchant_ccy_out_col="refund_merchant_ccy",
-                   include_date=True, date_out_col="refund_date")
+                   include_date=True, date_out_col="refund_date",
+                   include_conversion_rate=True, conversion_rate_out_col="refund_conversion_rate")
     fee_refund = _pick(
         GOOGLE_FEE_REFUND_TYPE,
         "fee_refund_amt",
@@ -419,6 +429,13 @@ def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
         mask = result["merchant_ccy"].isna() | (result["merchant_ccy"] == "")
         result.loc[mask, "merchant_ccy"] = result.loc[mask, "refund_merchant_ccy"]
         result = result.drop(columns=["refund_merchant_ccy"])
+
+    if "refund_conversion_rate" in result.columns:
+        if "conversion_rate" not in result.columns:
+            result["conversion_rate"] = None
+        mask = result["conversion_rate"].isna() | (result["conversion_rate"] == "")
+        result.loc[mask, "conversion_rate"] = result.loc[mask, "refund_conversion_rate"]
+        result = result.drop(columns=["refund_conversion_rate"])
 
     return result.fillna("").drop_duplicates(subset=[join]).set_index(join)
 
@@ -488,17 +505,20 @@ def _build_platform_only_rows(
             row[ADMIN_PAYMENT_COL] = "Google支付"
             r  = _to_float(google_lk.at[key, "refund_amt"])
             c_ = _to_float(google_lk.at[key, "charge_amt"])
-            f  = _to_float(google_lk.at[key, "fee_amt"])
-            fr = _to_float(google_lk.at[key, "fee_refund_amt"])
             mr  = _to_float(google_lk.at[key, "merchant_refund_amt"])
             mc  = _to_float(google_lk.at[key, "merchant_charge_amt"])
             mf  = _to_float(google_lk.at[key, "merchant_fee_amt"])
             mfr = _to_float(google_lk.at[key, "merchant_fee_refund_amt"])
+            rate = _to_float(google_lk.at[key, "conversion_rate"]) if "conversion_rate" in google_lk.columns else None
             row[PLATFORM_CURRENCY_COL] = str(google_lk.at[key, "ccy"]).strip()
             row[SETTLEMENT_CURRENCY_COL] = str(google_lk.at[key, "merchant_ccy"]).strip()
             row[MATCH_STATUS_COL] = "平台多余"
             if r is not None:  # 有退款记录 → 退款
-                row[PLATFORM_AMOUNT_COL]   = str(round(abs(r or 0.0) + abs(fr or 0.0), 2))
+                refund_amount = abs(r or 0.0)
+                row[ORIGINAL_CHARGE_AMOUNT_COL] = str(round(refund_amount, 2))
+                row[PLATFORM_AMOUNT_COL] = str(round(refund_amount * 1.2, 2))
+                if rate is not None:
+                    row[COUNTRY_TAX_COL] = str(round(refund_amount * 0.2 * rate, 2))
                 if mr is not None:
                     row[SETTLEMENT_AMOUNT_COL] = str(round(abs(mr or 0.0) - abs(mfr or 0.0), 2))
                 if mfr is not None:
@@ -506,13 +526,13 @@ def _build_platform_only_rows(
                 row[STATUS_COL] = "退款"
             else:              # 无退款记录 → 成功
                 if c_ is not None:
-                    row[PLATFORM_AMOUNT_COL]   = str(round(abs(c_ or 0.0) + abs(f or 0.0), 2))
+                    charge_amount = abs(c_ or 0.0)
+                    row[ORIGINAL_CHARGE_AMOUNT_COL] = str(round(charge_amount, 2))
+                    row[PLATFORM_AMOUNT_COL] = str(round(charge_amount * 1.2, 2))
+                    if rate is not None:
+                        row[COUNTRY_TAX_COL] = str(round(charge_amount * 0.2 * rate, 2))
                 if mc is not None:
                     row[SETTLEMENT_AMOUNT_COL] = str(round((mc or 0.0) - abs(mf or 0.0), 2))
-                if mc is not None:
-                    # 国家税费：按 Merchant Currency 的 Charge 金额倒推。
-                    merchant_charge = abs(mc or 0.0)
-                    row[COUNTRY_TAX_COL] = str(round((merchant_charge * 1.2) - merchant_charge, 2))
                 if mf is not None:
                     row[FEE_COL] = str(round(abs(mf), 2))
                 row[STATUS_COL] = "成功"
@@ -567,6 +587,7 @@ def enrich_admin(
         result = _safe_merge(result, google_lk, "_g_", "Google")
 
     # ── 构建新增列 ────────────────────────────────────────────
+    original_charge_amt_list = []
     platform_amt_list     = []
     platform_ccy_list     = []
     settlement_ccy_list   = []
@@ -586,6 +607,7 @@ def enrich_admin(
         fee_amt          = ""
         country_tax      = ""
         transaction_date = ""
+        original_charge_amt = ""
 
         if src == "Adyen" and adyen_avail:
             amt = str(row.get(f"_a_{ADYEN_AMOUNT_COL}", "")).strip()
@@ -613,13 +635,20 @@ def enrich_admin(
         elif "Google" in src and google_avail:
             ccy = str(row.get("_g_ccy", "")).strip()
             settle_ccy = str(row.get("_g_merchant_ccy", "")).strip()
+            rate = _to_float(row.get("_g_conversion_rate", ""))
             if refund_flag == "已退款":
-                # 平台订单金额：|Charge refund| + |fee refund|
+                # 平台订单金额：|Charge refund| * 1.2（含 Google 代扣税费）
                 r  = _to_float(row.get("_g_refund_amt", ""))
-                fr = _to_float(row.get("_g_fee_refund_amt", ""))
                 mr  = _to_float(row.get("_g_merchant_refund_amt", ""))
                 mfr = _to_float(row.get("_g_merchant_fee_refund_amt", ""))
-                amt = str(round(abs(r or 0.0) + abs(fr or 0.0), 2)) if (r is not None or fr is not None) else ""
+                if r is not None:
+                    refund_amount = abs(r or 0.0)
+                    original_charge_amt = str(round(refund_amount, 2))
+                    amt = str(round(refund_amount * 1.2, 2))
+                    if rate is not None:
+                        country_tax = str(round(refund_amount * 0.2 * rate, 2))
+                else:
+                    amt = ""
                 # 结算金额：|merchant refund| - |merchant fee_refund|
                 if mr is not None:
                     settle_amt = str(round(abs(mr or 0.0) - abs(mfr or 0.0), 2))
@@ -627,22 +656,24 @@ def enrich_admin(
                 if mfr is not None:
                     fee_amt = str(round(abs(mfr), 2))
             else:
-                # 平台订单金额：|Charge| + |Google fee|
+                # 平台订单金额：|Charge| * 1.2（含 Google 代扣税费）
                 c = _to_float(row.get("_g_charge_amt", ""))
-                f = _to_float(row.get("_g_fee_amt", ""))
                 mc = _to_float(row.get("_g_merchant_charge_amt", ""))
                 mf = _to_float(row.get("_g_merchant_fee_amt", ""))
-                amt = str(round(abs(c or 0.0) + abs(f or 0.0), 2)) if c is not None else ""
+                if c is not None:
+                    charge_amount = abs(c or 0.0)
+                    original_charge_amt = str(round(charge_amount, 2))
+                    amt = str(round(charge_amount * 1.2, 2))
+                    if rate is not None:
+                        country_tax = str(round(charge_amount * 0.2 * rate, 2))
+                else:
+                    amt = ""
                 # 结算金额：merchant charge - |merchant fee|
                 if mc is not None:
                     settle_amt = str(round((mc or 0.0) - abs(mf or 0.0), 2))
                 # 手续费：|merchant Google fee|
                 if mf is not None:
                     fee_amt = str(round(abs(mf), 2))
-                # 国家税费：按 Merchant Currency 的 Charge 金额倒推。
-                if mc is not None:
-                    merchant_charge = abs(mc or 0.0)
-                    country_tax = str(round((merchant_charge * 1.2) - merchant_charge, 2))
             matched = amt != ""
             transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
@@ -659,6 +690,7 @@ def enrich_admin(
             settle_ccy = ""
             matched = False
 
+        original_charge_amt_list.append(original_charge_amt)
         platform_amt_list.append(amt)
         platform_ccy_list.append(ccy)
         settlement_ccy_list.append(settle_ccy)
@@ -679,15 +711,16 @@ def enrich_admin(
     tmp_cols = [c for c in result.columns if c.startswith(("_a_", "_h_", "_g_"))]
     result = result.drop(columns=tmp_cols)
 
-    result.insert(admin_col_count + 0, PLATFORM_AMOUNT_COL,   platform_amt_list)
-    result.insert(admin_col_count + 1, PLATFORM_CURRENCY_COL, platform_ccy_list)
-    result.insert(admin_col_count + 2, SETTLEMENT_CURRENCY_COL, settlement_ccy_list)
-    result.insert(admin_col_count + 3, MATCH_STATUS_COL,      match_status_list)
-    result.insert(admin_col_count + 4, STATUS_COL,            status_list)
-    result.insert(admin_col_count + 5, SETTLEMENT_AMOUNT_COL, settlement_list)
-    result.insert(admin_col_count + 6, FEE_COL,               fee_list)
-    result.insert(admin_col_count + 7, COUNTRY_TAX_COL,       country_tax_list)
-    result.insert(admin_col_count + 8, TRANSACTION_DATE_COL,  transaction_date_list)
+    result.insert(admin_col_count + 0, ORIGINAL_CHARGE_AMOUNT_COL, original_charge_amt_list)
+    result.insert(admin_col_count + 1, PLATFORM_AMOUNT_COL,   platform_amt_list)
+    result.insert(admin_col_count + 2, PLATFORM_CURRENCY_COL, platform_ccy_list)
+    result.insert(admin_col_count + 3, SETTLEMENT_CURRENCY_COL, settlement_ccy_list)
+    result.insert(admin_col_count + 4, MATCH_STATUS_COL,      match_status_list)
+    result.insert(admin_col_count + 5, STATUS_COL,            status_list)
+    result.insert(admin_col_count + 6, SETTLEMENT_AMOUNT_COL, settlement_list)
+    result.insert(admin_col_count + 7, FEE_COL,               fee_list)
+    result.insert(admin_col_count + 8, COUNTRY_TAX_COL,       country_tax_list)
+    result.insert(admin_col_count + 9, TRANSACTION_DATE_COL,  transaction_date_list)
 
     # ── 追加平台多余行（平台有、admin 无对应记录）────────────
     admin_keys = set(admin_df[ADMIN_JOIN_COL].str.strip())
@@ -1339,45 +1372,16 @@ def write_output(
     output_path = output_dir / filename
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 苹果行单独写入苹果支付 Sheet，从主表剔除
-    apple_mask = result_df[ADMIN_PAYMENT_COL].str.strip().str.contains("苹果支付", na=False)
-    main_df = result_df[~apple_mask].reset_index(drop=True)
+    main_df = result_df.reset_index(drop=True)
 
-    _extra_cols = [
-        PLATFORM_AMOUNT_COL, PLATFORM_CURRENCY_COL, SETTLEMENT_CURRENCY_COL,
-        MATCH_STATUS_COL, STATUS_COL, SETTLEMENT_AMOUNT_COL, FEE_COL, COUNTRY_TAX_COL, TRANSACTION_DATE_COL,
-    ]
-    admin_orig_cols = [c for c in result_df.columns if c not in _extra_cols]
-    apple_admin_df = result_df[apple_mask][admin_orig_cols].reset_index(drop=True)
-
-    # 非苹果行用 result_df 汇总；苹果行用平台数据汇总（admin 无法匹配，结算金额为空）
-    non_apple_summary = build_summary_sheet(
-        result_df[~apple_mask].reset_index(drop=True),
-        huawei_settle_df,
-    )
-    apple_summary     = build_apple_platform_summary(apple_raw_df)
-    summary_df = (
-        pd.concat([non_apple_summary, apple_summary], ignore_index=True)
-        .sort_values(
-            [TRANSACTION_DATE_COL, ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL],
-            kind="stable",
-        )
-        .reset_index(drop=True)
-    )
-
-    comparison_df = build_monthly_comparison(
-        summary_df,
-        apple_admin_df,
-        result_df[~apple_mask].reset_index(drop=True),
-    )
+    # 按当前需求禁用“交易金额汇总”和“苹果支付”两个 Sheet 的生成路径。
+    # 保留 build_summary_sheet / build_apple_platform_summary / build_monthly_comparison /
+    # _write_apple_sheet 等辅助函数，后续如需恢复可重新接回这里。
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         main_df.to_excel(writer, sheet_name=OUTPUT_SHEET_3, index=False)
-        summary_df.to_excel(writer, sheet_name=OUTPUT_SUMMARY_SHEET_3, index=False)
-        if not comparison_df.empty:
-            ws = writer.sheets[OUTPUT_SUMMARY_SHEET_3]
-            _append_comparison_table(ws, comparison_df, ws.max_row + 3)
-        _write_apple_sheet(writer, apple_admin_df, apple_raw_df)
+        # summary_df.to_excel(writer, sheet_name=OUTPUT_SUMMARY_SHEET_3, index=False)
+        # _write_apple_sheet(writer, apple_admin_df, apple_raw_df)
 
     return output_path
 

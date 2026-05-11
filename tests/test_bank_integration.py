@@ -46,6 +46,7 @@ from src.bank_integration.config3 import (
     COUNTRY_TAX_COL,
     GOOGLE_BUYER_AMOUNT_COL,
     GOOGLE_BUYER_CURRENCY_COL,
+    GOOGLE_CONVERSION_RATE_COL,
     GOOGLE_FEE_REFUND_TYPE,
     GOOGLE_MERCHANT_AMOUNT_COL,
     GOOGLE_JOIN_COL,
@@ -57,6 +58,7 @@ from src.bank_integration.config3 import (
     HUAWEI_DATE_COL,
     HUAWEI_JOIN_COL,
     MATCH_STATUS_COL,
+    ORIGINAL_CHARGE_AMOUNT_COL,
     OUTPUT_SHEET_3,
     OUTPUT_APPLE_SHEET_3,
     OUTPUT_SUMMARY_SHEET_3,
@@ -180,6 +182,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         self.assertEqual(result.loc[0, PLATFORM_CURRENCY_COL], "TRY")
         self.assertEqual(result.loc[0, SETTLEMENT_CURRENCY_COL], "USD")
+        self.assertEqual(columns.index(ORIGINAL_CHARGE_AMOUNT_COL), columns.index(PLATFORM_AMOUNT_COL) - 1)
         self.assertEqual(columns.index(SETTLEMENT_CURRENCY_COL), columns.index(PLATFORM_CURRENCY_COL) + 1)
         self.assertEqual(columns.index(MATCH_STATUS_COL), columns.index(SETTLEMENT_CURRENCY_COL) + 1)
         self.assertEqual(columns.index(STATUS_COL), columns.index(MATCH_STATUS_COL) + 1)
@@ -260,6 +263,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     "merchant_fee_amt": "-0.30",
                     "merchant_refund_amt": "",
                     "merchant_fee_refund_amt": "",
+                    "conversion_rate": "0.2",
                     "ccy": "TRY",
                     "merchant_ccy": "HKD",
                     "transaction_date": "2026-03-01",
@@ -269,11 +273,13 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         result = enrich_admin(admin, None, huawei_lk, google_lk)
 
+        self.assertEqual(result.loc[0, ORIGINAL_CHARGE_AMOUNT_COL], "")
         self.assertEqual(result.loc[0, PLATFORM_CURRENCY_COL], "HKD")
         self.assertEqual(result.loc[0, SETTLEMENT_CURRENCY_COL], "HKD")
         self.assertEqual(result.loc[1, PLATFORM_CURRENCY_COL], "TRY")
         self.assertEqual(result.loc[1, SETTLEMENT_CURRENCY_COL], "HKD")
-        self.assertEqual(result.loc[1, PLATFORM_AMOUNT_COL], "11.0")
+        self.assertEqual(result.loc[1, ORIGINAL_CHARGE_AMOUNT_COL], "10.0")
+        self.assertEqual(result.loc[1, PLATFORM_AMOUNT_COL], "12.0")
         self.assertEqual(result.loc[1, "结算金额"], "1.7")
         self.assertEqual(result.loc[1, "手续费"], "0.3")
         self.assertEqual(result.loc[1, COUNTRY_TAX_COL], "0.4")
@@ -287,6 +293,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                         GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_REFUND_TYPE,
                         GOOGLE_BUYER_AMOUNT_COL: "-10.00",
                         GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_CONVERSION_RATE_COL: "0.2",
                         GOOGLE_MERCHANT_AMOUNT_COL: "-2.00",
                         GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
                     }
@@ -296,6 +303,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         self.assertEqual(lookup.at["GOOGLE-REFUND-ONLY", "ccy"], "TRY")
         self.assertEqual(lookup.at["GOOGLE-REFUND-ONLY", "merchant_ccy"], "HKD")
+        self.assertEqual(lookup.at["GOOGLE-REFUND-ONLY", "conversion_rate"], "0.2")
         self.assertEqual(lookup.at["GOOGLE-REFUND-ONLY", "merchant_refund_amt"], "-2.00")
 
     def test_google_refund_uses_merchant_amount_for_settlement(self):
@@ -318,6 +326,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                         GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_REFUND_TYPE,
                         GOOGLE_BUYER_AMOUNT_COL: "-10.00",
                         GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_CONVERSION_RATE_COL: "0.2",
                         GOOGLE_MERCHANT_AMOUNT_COL: "-2.00",
                         GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
                     },
@@ -335,11 +344,53 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         result = enrich_admin(admin, None, None, lookup)
 
-        self.assertEqual(result.loc[0, PLATFORM_AMOUNT_COL], "11.0")
+        self.assertEqual(result.loc[0, ORIGINAL_CHARGE_AMOUNT_COL], "10.0")
+        self.assertEqual(result.loc[0, PLATFORM_AMOUNT_COL], "12.0")
         self.assertEqual(result.loc[0, PLATFORM_CURRENCY_COL], "TRY")
         self.assertEqual(result.loc[0, SETTLEMENT_CURRENCY_COL], "HKD")
         self.assertEqual(result.loc[0, "结算金额"], "1.7")
         self.assertEqual(result.loc[0, "手续费"], "0.3")
+        self.assertEqual(result.loc[0, COUNTRY_TAX_COL], "0.4")
+
+    def test_google_platform_only_uses_buyer_amount_total_for_platform_amount(self):
+        admin = pd.DataFrame(
+            [
+                {
+                    ADMIN_JOIN_COL: "GOOGLE-ADMIN-ONLY",
+                    ADMIN_AMOUNT_COL: "10.00",
+                    ADMIN_PAYMENT_COL: "Google支付",
+                    ADMIN_REFUND_COL: "正常",
+                    ADMIN_DATE_COL: "2026-03-01 12:00:00",
+                }
+            ]
+        )
+        google_lk = pd.DataFrame(
+            [
+                {
+                    GOOGLE_JOIN_COL: "GOOGLE-PLATFORM-ONLY",
+                    "charge_amt": "10.00",
+                    "fee_amt": "-1.00",
+                    "refund_amt": "",
+                    "fee_refund_amt": "",
+                    "merchant_charge_amt": "2.00",
+                    "merchant_fee_amt": "-0.30",
+                    "merchant_refund_amt": "",
+                    "merchant_fee_refund_amt": "",
+                    "conversion_rate": "0.2",
+                    "ccy": "TRY",
+                    "merchant_ccy": "HKD",
+                    "transaction_date": "2026-03-01",
+                }
+            ]
+        ).set_index(GOOGLE_JOIN_COL)
+
+        result = enrich_admin(admin, None, None, google_lk)
+        extra = result[result[ADMIN_JOIN_COL] == "GOOGLE-PLATFORM-ONLY"].iloc[0]
+
+        self.assertEqual(extra[MATCH_STATUS_COL], "平台多余")
+        self.assertEqual(extra[ORIGINAL_CHARGE_AMOUNT_COL], "10.0")
+        self.assertEqual(extra[PLATFORM_AMOUNT_COL], "12.0")
+        self.assertEqual(extra[COUNTRY_TAX_COL], "0.4")
 
     def test_build_summary_sheet_groups_platform_amounts(self):
         detail = pd.DataFrame(
@@ -486,7 +537,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertAlmostEqual(row["退款金额"], 29.00, places=2)
         self.assertAlmostEqual(row["手续费"], 6.00, places=2)
 
-    def test_write_output_includes_summary_sheet(self):
+    def test_write_output_includes_only_result_sheet(self):
         detail = pd.DataFrame(
             [
                 {
@@ -503,13 +554,15 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             output_path = write_output(detail, Path(tmp))
-            workbook = pd.ExcelFile(output_path)
-            sheet_names = workbook.sheet_names
-            workbook.close()
+            wb = load_workbook(output_path, read_only=True)
+            sheet_names = wb.sheetnames
+            wb.close()
 
-        self.assertEqual(sheet_names, [OUTPUT_SHEET_3, OUTPUT_SUMMARY_SHEET_3, OUTPUT_APPLE_SHEET_3])
+        self.assertEqual(sheet_names, [OUTPUT_SHEET_3])
+        self.assertNotIn(OUTPUT_SUMMARY_SHEET_3, sheet_names)
+        self.assertNotIn(OUTPUT_APPLE_SHEET_3, sheet_names)
 
-    def test_write_output_monthly_comparison_has_no_total_row(self):
+    def test_write_output_keeps_apple_rows_in_result_sheet(self):
         detail = pd.DataFrame(
             [
                 {
@@ -523,19 +576,28 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     PLATFORM_AMOUNT_COL: "100.00",
                     "结算金额": "10.00",
                     "手续费": "-1.00",
-                }
+                },
+                {
+                    ADMIN_AMOUNT_COL: "50.00",
+                    ADMIN_DATE_COL: "2026-03-01 11:00:00",
+                    TRANSACTION_DATE_COL: "2026-03-01",
+                    ADMIN_PAYMENT_COL: "苹果支付Lua",
+                    PLATFORM_CURRENCY_COL: "",
+                    SETTLEMENT_CURRENCY_COL: "",
+                    STATUS_COL: "成功",
+                    PLATFORM_AMOUNT_COL: "50.00",
+                    "结算金额": "50.00",
+                    "手续费": "",
+                },
             ]
         )
 
         with tempfile.TemporaryDirectory() as tmp:
             output_path = write_output(detail, Path(tmp))
-            wb = load_workbook(output_path, data_only=False)
-            ws = wb[OUTPUT_SUMMARY_SHEET_3]
-            values = [cell.value for row in ws.iter_rows() for cell in row]
-            wb.close()
+            result = pd.read_excel(output_path, sheet_name=OUTPUT_SHEET_3, dtype=str).fillna("")
 
-        self.assertIn("月度对比（对账差异）", values)
-        self.assertNotIn("合计", values)
+        self.assertEqual(len(result), 2)
+        self.assertIn("苹果支付Lua", set(result[ADMIN_PAYMENT_COL]))
 
     def test_monthly_comparison_uses_match_status_and_settlement_currency(self):
         summary = pd.DataFrame(

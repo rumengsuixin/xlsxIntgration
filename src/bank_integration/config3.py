@@ -11,7 +11,7 @@ OUTPUT_APPLE_SHEET_3 = "苹果支付"
 # ── Admin 主表 ────────────────────────────────────────────
 ADMIN_SHEET = "汇总"
 ADMIN_JOIN_COL = "流水号"
-ADMIN_AMOUNT_COL = "金额"        # 用于 Google 国家税费计算
+ADMIN_AMOUNT_COL = "金额"        # admin 原始订单金额
 ADMIN_PAYMENT_COL = "支付方式"   # 值为 Adyen / 华为支付 / Google支付 / 苹果支付Lua（苹果不做平台关联）
 ADMIN_REFUND_COL = "是否退款"    # 值为 正常 / 已退款
 
@@ -45,10 +45,12 @@ GOOGLE_REFUND_TYPE = "Charge refund"
 GOOGLE_FEE_REFUND_TYPE = "Google fee refund"
 GOOGLE_BUYER_AMOUNT_COL = "Amount (Buyer Currency)"
 GOOGLE_BUYER_CURRENCY_COL = "Buyer Currency"
+GOOGLE_CONVERSION_RATE_COL = "Currency Conversion Rate"
 GOOGLE_MERCHANT_AMOUNT_COL = "Amount (Merchant Currency)"
 GOOGLE_MERCHANT_CURRENCY_COL = "Merchant Currency"
 
-# ── 输出新增列（共 8 列）────────────────────────────────────
+# ── 输出新增列（共 10 列）───────────────────────────────────
+ORIGINAL_CHARGE_AMOUNT_COL = "原Charge金额"
 PLATFORM_AMOUNT_COL   = "平台订单金额"
 PLATFORM_CURRENCY_COL = "平台币种"
 SETTLEMENT_CURRENCY_COL = "结算币种"
@@ -56,7 +58,7 @@ MATCH_STATUS_COL      = "是否匹配"           # 是 / 否 / 平台多余
 STATUS_COL            = "状态"               # 成功 / 失败 / 退款
 SETTLEMENT_AMOUNT_COL = "结算金额"           # 扣除手续费后到账金额
 FEE_COL               = "手续费"             # 平台手续费
-COUNTRY_TAX_COL       = "国家税费"           # Google 专属：admin.金额 - Charge(TRY)
+COUNTRY_TAX_COL       = "国家税费"           # Google 专属：abs(Charge Amount (Buyer Currency)) * 0.2 * 汇率
 
 # ── 日期列与第7输出列 ─────────────────────────────────────
 ADMIN_DATE_COL       = "支付时间"

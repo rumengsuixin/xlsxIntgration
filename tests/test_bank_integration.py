@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from src.bank_integration.balances import (
     get_last_balance,
@@ -18,7 +18,14 @@ from src.bank_integration.config2 import (
     BANK_DATE_COL_2,
     BANK_READ_CONFIG_2,
 )
-from src.bank_integration.app3 import build_adyen_lookup, build_google_lookup, build_summary_sheet, enrich_admin, write_output
+from src.bank_integration.app3 import (
+    build_adyen_lookup,
+    build_apple_platform_summary,
+    build_google_lookup,
+    build_summary_sheet,
+    enrich_admin,
+    write_output,
+)
 from src.bank_integration.config3 import (
     ADMIN_AMOUNT_COL,
     ADMIN_DATE_COL,
@@ -49,6 +56,7 @@ from src.bank_integration.config3 import (
     HUAWEI_DATE_COL,
     HUAWEI_JOIN_COL,
     OUTPUT_SHEET_3,
+    OUTPUT_APPLE_SHEET_3,
     OUTPUT_SUMMARY_SHEET_3,
     PLATFORM_AMOUNT_COL,
     PLATFORM_CURRENCY_COL,
@@ -299,6 +307,8 @@ class BankIntegrationSampleTests(unittest.TestCase):
         detail = pd.DataFrame(
             [
                 {
+                    ADMIN_AMOUNT_COL: "100.00",
+                    ADMIN_DATE_COL: "2026-03-01 10:00:00",
                     TRANSACTION_DATE_COL: "2026-03-01",
                     ADMIN_PAYMENT_COL: "Adyen",
                     PLATFORM_CURRENCY_COL: "TRY",
@@ -306,6 +316,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "100.50",
                     "结算金额": "10.50",
+                    "手续费": "-1.00",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-01",
@@ -315,6 +326,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "200.25",
                     "结算金额": "20.25",
+                    "手续费": "-2.00",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-01",
@@ -324,6 +336,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     STATUS_COL: "退款",
                     PLATFORM_AMOUNT_COL: "50.00",
                     "结算金额": "5.00",
+                    "手续费": "0.50",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-01",
@@ -333,6 +346,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     STATUS_COL: "失败",
                     PLATFORM_AMOUNT_COL: "999.00",
                     "结算金额": "999.00",
+                    "手续费": "-99.00",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-01",
@@ -342,6 +356,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "70.00",
                     "结算金额": "7.00",
+                    "手续费": "-0.70",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-02",
@@ -351,6 +366,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "80.00",
                     "结算金额": "8.00",
+                    "手续费": "-0.80",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-02",
@@ -360,6 +376,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "999.00",
                     "结算金额": "2.00",
+                    "手续费": "-0.20",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-02",
@@ -369,6 +386,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "20.00",
                     "结算金额": "2.00",
+                    "手续费": "-0.20",
                 },
             ]
         )
@@ -388,6 +406,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(adyen["退款笔数"], 1)
         self.assertAlmostEqual(adyen["退款金额"], 5.00, places=2)
         self.assertAlmostEqual(adyen["净交易金额"], 25.75, places=2)
+        self.assertAlmostEqual(adyen["手续费"], 3.50, places=2)
         google_hkd = summary[
             (summary[TRANSACTION_DATE_COL] == "2026-03-02")
             & (summary[ADMIN_PAYMENT_COL] == "Google支付")
@@ -395,6 +414,39 @@ class BankIntegrationSampleTests(unittest.TestCase):
         ].iloc[0]
         self.assertEqual(google_hkd["成功笔数"], 2)
         self.assertAlmostEqual(google_hkd["成功金额"], 10.00, places=2)
+        self.assertAlmostEqual(google_hkd["手续费"], 1.00, places=2)
+
+    def test_apple_platform_summary_includes_absolute_fee(self):
+        apple_raw = pd.DataFrame(
+            [
+                {
+                    "Settlement Date": "2026-03-31",
+                    "Currency of Proceeds": "TRY",
+                    "Quantity": "2",
+                    "Customer Price": "36.00",
+                    "Extended Partner Share": "59.00",
+                },
+                {
+                    "Settlement Date": "2026-03-31",
+                    "Currency of Proceeds": "TRY",
+                    "Quantity": "-1",
+                    "Customer Price": "36.00",
+                    "Extended Partner Share": "-29.00",
+                },
+            ]
+        )
+
+        summary = build_apple_platform_summary(apple_raw)
+
+        self.assertEqual(len(summary), 1)
+        row = summary.iloc[0]
+        self.assertEqual(row[TRANSACTION_DATE_COL], "2026-03")
+        self.assertEqual(row[ADMIN_PAYMENT_COL], "苹果支付Lua")
+        self.assertEqual(row["成功笔数"], 2)
+        self.assertAlmostEqual(row["成功金额"], 59.00, places=2)
+        self.assertEqual(row["退款笔数"], 1)
+        self.assertAlmostEqual(row["退款金额"], 29.00, places=2)
+        self.assertAlmostEqual(row["手续费"], 6.00, places=2)
 
     def test_write_output_includes_summary_sheet(self):
         detail = pd.DataFrame(
@@ -417,7 +469,35 @@ class BankIntegrationSampleTests(unittest.TestCase):
             sheet_names = workbook.sheet_names
             workbook.close()
 
-        self.assertEqual(sheet_names, [OUTPUT_SHEET_3, OUTPUT_SUMMARY_SHEET_3])
+        self.assertEqual(sheet_names, [OUTPUT_SHEET_3, OUTPUT_SUMMARY_SHEET_3, OUTPUT_APPLE_SHEET_3])
+
+    def test_write_output_monthly_comparison_has_no_total_row(self):
+        detail = pd.DataFrame(
+            [
+                {
+                    ADMIN_AMOUNT_COL: "100.00",
+                    ADMIN_DATE_COL: "2026-03-01 10:00:00",
+                    TRANSACTION_DATE_COL: "2026-03-01",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    PLATFORM_CURRENCY_COL: "TRY",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    STATUS_COL: "成功",
+                    PLATFORM_AMOUNT_COL: "100.00",
+                    "结算金额": "10.00",
+                    "手续费": "-1.00",
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = write_output(detail, Path(tmp))
+            wb = load_workbook(output_path, data_only=False)
+            ws = wb[OUTPUT_SUMMARY_SHEET_3]
+            values = [cell.value for row in ws.iter_rows() for cell in row]
+            wb.close()
+
+        self.assertIn("月度对比（对账差异）", values)
+        self.assertNotIn("合计", values)
 
     def test_scan_source_files_only_recognizes_prefixed_samples(self):
         sources = scan_source_files(INPUT_DIR)

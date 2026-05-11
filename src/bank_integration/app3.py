@@ -815,6 +815,7 @@ def build_summary_sheet(
                 .reset_index(drop=True)
             )
 
+    summary["手续费"] = pd.to_numeric(summary["手续费"], errors="coerce").abs().round(4)
     return summary[summary_cols]
 
 
@@ -864,6 +865,18 @@ def build_apple_platform_summary(apple_raw_df: Optional[pd.DataFrame]) -> pd.Dat
     else:
         df["_qty"] = df["_eps"].apply(lambda x: 1.0 if x >= 0 else -1.0)
 
+    fee_cols = ["Quantity", "Customer Price", "Extended Partner Share"]
+    has_fee_cols = all(c in df.columns for c in fee_cols)
+    if has_fee_cols:
+        customer_price = pd.to_numeric(
+            df["Customer Price"].astype(str).str.replace(",", "", regex=False),
+            errors="coerce",
+        ).fillna(0.0)
+        df["_fee"] = (df["_qty"] * customer_price - df["_eps"]).fillna(0.0)
+    else:
+        logging.warning("苹果平台报表缺少手续费计算列: %s，苹果汇总手续费留空", [c for c in fee_cols if c not in df.columns])
+        df["_fee"] = 0.0
+
     df["_is_success"] = df["_qty"] > 0
     df["_is_refund"]  = df["_qty"] < 0
 
@@ -877,7 +890,7 @@ def build_apple_platform_summary(apple_raw_df: Optional[pd.DataFrame]) -> pd.Dat
             "成功金额": round(grp.loc[grp["_is_success"], "_eps"].sum(), 2),
             "退款笔数": int(grp.loc[grp["_is_refund"], "_qty"].abs().sum()),
             "退款金额": round(grp.loc[grp["_is_refund"], "_eps"].abs().sum(), 2),
-            "手续费": "",
+            "手续费": round(grp["_fee"].sum(), 4) if has_fee_cols else "",
         })
 
     if not rows:
@@ -885,6 +898,8 @@ def build_apple_platform_summary(apple_raw_df: Optional[pd.DataFrame]) -> pd.Dat
 
     result = pd.DataFrame(rows)
     result["净交易金额"] = result["成功金额"] - result["退款金额"]
+    if has_fee_cols:
+        result["手续费"] = pd.to_numeric(result["手续费"], errors="coerce").abs().round(4)
     return result[summary_cols]
 
 
@@ -1014,11 +1029,9 @@ def _append_comparison_table(
 ) -> None:
     """将月度对比表追加到 openpyxl worksheet 的 start_row 行位置。"""
     from openpyxl.styles import Font
-    from openpyxl.utils import get_column_letter
 
     headers = list(comparison_df.columns)
     numeric_headers = {"Admin结算金额", "平台净到账"}
-    numeric_ci = [i + 1 for i, h in enumerate(headers) if h in numeric_headers]
 
     row = start_row
     ws.cell(row, 1).value = "月度对比（对账差异）"
@@ -1031,7 +1044,6 @@ def _append_comparison_table(
         c.font = Font(bold=True)
     row += 1
 
-    data_start = row
     for _, dr in comparison_df.iterrows():
         for ci, val in enumerate(dr, 1):
             cell = ws.cell(row, ci)
@@ -1043,16 +1055,6 @@ def _append_comparison_table(
             else:
                 cell.value = str(val) if pd.notna(val) else ""
         row += 1
-    data_end = row - 1
-
-    ws.cell(row, 1).value = "合计"
-    ws.cell(row, 1).font = Font(bold=True)
-    for ci in numeric_ci:
-        col_letter = get_column_letter(ci)
-        if data_end >= data_start:
-            ws.cell(row, ci).value = f"=SUM({col_letter}{data_start}:{col_letter}{data_end})"
-        else:
-            ws.cell(row, ci).value = 0
 
 
 def _write_apple_sheet(

@@ -59,6 +59,8 @@ from src.bank_integration.config3 import (
     HUAWEI_JOIN_COL,
     MATCH_STATUS_COL,
     ORIGINAL_CHARGE_AMOUNT_COL,
+    OUTPUT_DIFF_SHEET_3,
+    OUTPUT_FAILED_SHEET_3,
     OUTPUT_SHEET_3,
     OUTPUT_APPLE_SHEET_3,
     OUTPUT_SUMMARY_SHEET_3,
@@ -537,10 +539,12 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertAlmostEqual(row["退款金额"], 29.00, places=2)
         self.assertAlmostEqual(row["手续费"], 6.00, places=2)
 
-    def test_write_output_includes_only_result_sheet(self):
+    def test_write_output_includes_reconciliation_sheets(self):
         detail = pd.DataFrame(
             [
                 {
+                    ADMIN_AMOUNT_COL: "100.00",
+                    MATCH_STATUS_COL: "是",
                     TRANSACTION_DATE_COL: "2026-03-01",
                     ADMIN_PAYMENT_COL: "Adyen",
                     PLATFORM_CURRENCY_COL: "TRY",
@@ -558,9 +562,70 @@ class BankIntegrationSampleTests(unittest.TestCase):
             sheet_names = wb.sheetnames
             wb.close()
 
-        self.assertEqual(sheet_names, [OUTPUT_SHEET_3])
+        self.assertEqual(sheet_names, [OUTPUT_SHEET_3, OUTPUT_DIFF_SHEET_3, OUTPUT_FAILED_SHEET_3])
         self.assertNotIn(OUTPUT_SUMMARY_SHEET_3, sheet_names)
         self.assertNotIn(OUTPUT_APPLE_SHEET_3, sheet_names)
+
+    def test_write_output_filters_reconciliation_sheets_and_formats_headers(self):
+        detail = pd.DataFrame(
+            [
+                {
+                    ADMIN_JOIN_COL: "OK-WITHIN-POINT-8",
+                    ADMIN_AMOUNT_COL: "100.00",
+                    MATCH_STATUS_COL: "是",
+                    PLATFORM_AMOUNT_COL: "100.80",
+                    STATUS_COL: "成功",
+                },
+                {
+                    ADMIN_JOIN_COL: "OK-WITHIN-ONE",
+                    ADMIN_AMOUNT_COL: "100.00",
+                    MATCH_STATUS_COL: "是",
+                    PLATFORM_AMOUNT_COL: "101.00",
+                    STATUS_COL: "成功",
+                },
+                {
+                    ADMIN_JOIN_COL: "DIFF-OVER-ONE",
+                    ADMIN_AMOUNT_COL: "100.00",
+                    MATCH_STATUS_COL: "是",
+                    PLATFORM_AMOUNT_COL: "101.01",
+                    STATUS_COL: "成功",
+                },
+                {
+                    ADMIN_JOIN_COL: "FAILED",
+                    ADMIN_AMOUNT_COL: "100.00",
+                    MATCH_STATUS_COL: "否",
+                    PLATFORM_AMOUNT_COL: "",
+                    STATUS_COL: "失败",
+                },
+                {
+                    ADMIN_JOIN_COL: "PLATFORM-ONLY",
+                    ADMIN_AMOUNT_COL: "",
+                    MATCH_STATUS_COL: "平台多余",
+                    PLATFORM_AMOUNT_COL: "100.00",
+                    STATUS_COL: "成功",
+                },
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = write_output(detail, Path(tmp))
+            main = pd.read_excel(output_path, sheet_name=OUTPUT_SHEET_3, dtype=str).fillna("")
+            diff = pd.read_excel(output_path, sheet_name=OUTPUT_DIFF_SHEET_3, dtype=str).fillna("")
+            failed = pd.read_excel(output_path, sheet_name=OUTPUT_FAILED_SHEET_3, dtype=str).fillna("")
+
+            wb = load_workbook(output_path)
+            try:
+                for sheet_name in (OUTPUT_SHEET_3, OUTPUT_DIFF_SHEET_3, OUTPUT_FAILED_SHEET_3):
+                    ws = wb[sheet_name]
+                    self.assertEqual(ws.freeze_panes, "A2")
+                    self.assertEqual(ws.auto_filter.ref, ws.dimensions)
+            finally:
+                wb.close()
+
+        self.assertEqual(list(main.columns), list(diff.columns))
+        self.assertEqual(list(main.columns), list(failed.columns))
+        self.assertEqual(set(diff[ADMIN_JOIN_COL]), {"DIFF-OVER-ONE"})
+        self.assertEqual(set(failed[ADMIN_JOIN_COL]), {"FAILED"})
 
     def test_write_output_keeps_apple_rows_in_result_sheet(self):
         detail = pd.DataFrame(

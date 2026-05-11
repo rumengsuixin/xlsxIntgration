@@ -5,6 +5,8 @@ from .config import DATA_DIR, OUTPUT_DIR  # noqa: F401
 INPUT_DIR_3 = DATA_DIR / "input" / "3"
 OUTPUT_FILE_TEMPLATE = "订单匹配结果_{date}.xlsx"
 OUTPUT_SHEET_3 = "订单匹配结果"
+OUTPUT_DIFF_SHEET_3 = "匹配订单差异"
+OUTPUT_FAILED_SHEET_3 = "匹配失败订单"
 OUTPUT_SUMMARY_SHEET_3 = "交易金额汇总"
 OUTPUT_APPLE_SHEET_3 = "苹果支付"
 

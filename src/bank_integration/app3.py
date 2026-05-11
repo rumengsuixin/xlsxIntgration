@@ -84,6 +84,8 @@ from .config3 import (
     MATCH_STATUS_COL,
     ORIGINAL_CHARGE_AMOUNT_COL,
     OUTPUT_APPLE_SHEET_3,
+    OUTPUT_DIFF_SHEET_3,
+    OUTPUT_FAILED_SHEET_3,
     OUTPUT_FILE_TEMPLATE,
     OUTPUT_SHEET_3,
     OUTPUT_SUMMARY_SHEET_3,
@@ -1374,12 +1376,41 @@ def write_output(
 
     main_df = result_df.reset_index(drop=True)
 
+    def _money_series(col_name: str) -> "pd.Series":
+        if col_name not in main_df.columns:
+            return pd.Series([float("nan")] * len(main_df), index=main_df.index)
+        return pd.to_numeric(
+            main_df[col_name].astype(str).str.replace(",", "", regex=False),
+            errors="coerce",
+        )
+
+    if MATCH_STATUS_COL in main_df.columns:
+        match_status = main_df[MATCH_STATUS_COL].astype(str).str.strip()
+    else:
+        match_status = pd.Series("", index=main_df.index)
+
+    admin_amount = _money_series(ADMIN_AMOUNT_COL)
+    platform_amount = _money_series(PLATFORM_AMOUNT_COL)
+    amount_diff = (admin_amount - platform_amount).abs()
+
+    diff_df = main_df.loc[match_status.eq("是") & amount_diff.gt(1.0)].copy()
+    failed_df = main_df.loc[match_status.eq("否")].copy()
+
     # 按当前需求禁用“交易金额汇总”和“苹果支付”两个 Sheet 的生成路径。
     # 保留 build_summary_sheet / build_apple_platform_summary / build_monthly_comparison /
     # _write_apple_sheet 等辅助函数，后续如需恢复可重新接回这里。
 
+    def _format_detail_sheet(writer: pd.ExcelWriter, sheet_name: str) -> None:
+        ws = writer.sheets[sheet_name]
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         main_df.to_excel(writer, sheet_name=OUTPUT_SHEET_3, index=False)
+        diff_df.to_excel(writer, sheet_name=OUTPUT_DIFF_SHEET_3, index=False)
+        failed_df.to_excel(writer, sheet_name=OUTPUT_FAILED_SHEET_3, index=False)
+        for sheet_name in (OUTPUT_SHEET_3, OUTPUT_DIFF_SHEET_3, OUTPUT_FAILED_SHEET_3):
+            _format_detail_sheet(writer, sheet_name)
         # summary_df.to_excel(writer, sheet_name=OUTPUT_SUMMARY_SHEET_3, index=False)
         # _write_apple_sheet(writer, apple_admin_df, apple_raw_df)
 

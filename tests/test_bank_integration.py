@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import unittest
 import tempfile
 from datetime import date
@@ -26,6 +27,12 @@ from src.bank_integration.app3 import (
     build_summary_sheet,
     enrich_admin,
     write_output,
+)
+from src.bank_integration.app4 import (
+    build_export_url,
+    build_export_urls,
+    configure_chrome_downloads,
+    parse_date,
 )
 from src.bank_integration.config3 import (
     ADMIN_AMOUNT_COL,
@@ -1040,6 +1047,53 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertAlmostEqual(df.iloc[0]["Amount"], 3297.03, places=2)
         self.assertEqual(monthly[0][0], "2025-02-04")
         self.assertAlmostEqual(monthly[0][1], 3297.03, places=2)
+
+    def test_mode4_parse_date_accepts_strict_iso_date(self):
+        self.assertEqual(parse_date("2025-05-12"), date(2025, 5, 12))
+
+    def test_mode4_parse_date_rejects_invalid_formats_and_values(self):
+        for value in ("2025/05/12", "20250512", "2025-02-30", "2025-5-12"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    parse_date(value)
+
+    def test_mode4_build_urls_for_each_day_and_preserves_page_placeholder(self):
+        urls = build_export_urls(date(2025, 5, 12), date(2025, 5, 14))
+
+        self.assertEqual(len(urls), 3)
+        self.assertIn("pay_sdate=2025-05-12", urls[0])
+        self.assertIn("pay_edate=2025-05-12", urls[0])
+        self.assertIn("pay_sdate=2025-05-13", urls[1])
+        self.assertIn("pay_edate=2025-05-13", urls[1])
+        self.assertIn("pay_sdate=2025-05-14", urls[2])
+        self.assertIn("pay_edate=2025-05-14", urls[2])
+        self.assertTrue(all("p=[PAGE]" in url for url in urls))
+
+    def test_mode4_build_urls_rejects_reversed_date_range(self):
+        with self.assertRaises(ValueError):
+            build_export_urls(date(2025, 5, 14), date(2025, 5, 12))
+
+    def test_mode4_build_single_export_url_keeps_page_placeholder(self):
+        url = build_export_url(date(2025, 5, 12))
+
+        self.assertIn("pay_sdate=2025-05-12", url)
+        self.assertIn("pay_edate=2025-05-12", url)
+        self.assertIn("p=[PAGE]", url)
+
+    def test_mode4_configure_chrome_downloads_writes_preferences(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile_dir = root / "profile"
+            download_dir = root / "downloads"
+
+            prefs_path = configure_chrome_downloads(profile_dir, download_dir)
+
+            self.assertTrue(download_dir.exists())
+            self.assertTrue(prefs_path.exists())
+            prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+            self.assertEqual(prefs["download"]["default_directory"], str(download_dir.resolve()))
+            self.assertFalse(prefs["download"]["prompt_for_download"])
+            self.assertTrue(prefs["download"]["directory_upgrade"])
 
 
 if __name__ == "__main__":

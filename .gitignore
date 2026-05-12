@@ -33,12 +33,14 @@ Thumbs.db
 # Runtime input/output data
 data/input/*
 data/output/*
+data/browser_profile/*
 !data/input/
 !data/input/raw/
 !data/input/.gitkeep
 !data/input/raw/.gitkeep
 !data/output/
 !data/output/.gitkeep
+!data/browser_profile/
 
 # Bank/export files are usually business data.
 # Keep the template workbook versioned, but ignore ad-hoc spreadsheets elsewhere.
@@ -52,5 +54,7 @@ data/output/*
 **/**.bat
 **/**.spec
 **/**.ps1
+!开始整合4.bat
+!run_4.ps1
 !bank_integration.spec
 !bank_integration_mac.spec

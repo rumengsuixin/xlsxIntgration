@@ -57,9 +57,26 @@ a3 = Analysis(
     noarchive=False,
 )
 
+a4 = Analysis(
+    ["整合4.py"],
+    pathex=[str(project_root)],
+    binaries=[],
+    datas=[],
+    hiddenimports=collect_submodules("xlrd"),
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
 pyz1 = PYZ(a1.pure, a1.zipped_data, cipher=block_cipher)
 pyz2 = PYZ(a2.pure, a2.zipped_data, cipher=block_cipher)
 pyz3 = PYZ(a3.pure, a3.zipped_data, cipher=block_cipher)
+pyz4 = PYZ(a4.pure, a4.zipped_data, cipher=block_cipher)
 
 exe1 = EXE(
     pyz1,
@@ -115,6 +132,24 @@ exe3 = EXE(
     entitlements_file=None,
 )
 
+exe4 = EXE(
+    pyz4,
+    a4.scripts,
+    [],
+    exclude_binaries=True,
+    name="后台订单导出",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
+
 coll = COLLECT(
     exe1,
     a1.binaries,
@@ -128,6 +163,10 @@ coll = COLLECT(
     a3.binaries,
     a3.zipfiles,
     a3.datas,
+    exe4,
+    a4.binaries,
+    a4.zipfiles,
+    a4.datas,
     strip=False,
     upx=True,
     upx_exclude=[],
@@ -151,14 +190,18 @@ if data_dst.exists():
 (data_dst / "input" / "3").mkdir(parents=True, exist_ok=True)
 (data_dst / "input" / "raw").mkdir(parents=True, exist_ok=True)
 (data_dst / "output").mkdir(parents=True, exist_ok=True)
+(data_dst / "output" / "4").mkdir(parents=True, exist_ok=True)
+(data_dst / "browser_profile" / "4").mkdir(parents=True, exist_ok=True)
 
 for filename in (
     "开始整合1.bat",
     "开始整合2.bat",
     "开始整合3.bat",
+    "开始整合4.bat",
     "run_1.ps1",
     "run_2.ps1",
     "run_3.ps1",
+    "run_4.ps1",
     "使用说明.txt",
 ):
     src = project_root / filename

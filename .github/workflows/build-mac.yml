@@ -47,6 +47,7 @@ jobs:
           chmod +x "dist/bank-integration/domestic_bank_integration"
           chmod +x "dist/bank-integration/overseas_bank_integration"
           chmod +x "dist/bank-integration/order_payment_match"
+          chmod +x "dist/bank-integration/recharge_order_export"
           chmod +x "dist/bank-integration/"*.command
 
       - name: Package

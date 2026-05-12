@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **代号1**：国内银行，将多家银行的交易流水原始导出文件（CSV/XLS/XLSX）汇总到 `国内银行汇总.xlsx`
 - **代号2**：海外银行，源文件命名携带币种，汇总到 `银行汇总.xlsx`，余额表每行代表"银行+币种"组合
 - **代号3**：游戏订单匹配，将游戏方后台 admin 订单表与 Adyen / 华为 / Google Play 商户平台订单通过流水号关联，追加「平台支付方式」列后输出到 `订单匹配结果_{YYYYMMDD}.xlsx`
+- **代号4**：后台充值订单浏览器导出，按支付日期逐日打开导出 URL，复用独立 Chrome 登录态并集中下载到 `data/output/4/`
 
 ## 常用命令
 
@@ -22,6 +23,9 @@ venv/Scripts/python.exe 整合2.py
 
 # 代号3：游戏订单支付方式匹配
 venv/Scripts/python.exe 整合3.py
+
+# 代号4：后台充值订单浏览器导出
+venv/Scripts/python.exe 整合4.py
 
 # 运行全部回归测试
 venv/Scripts/python.exe -m unittest discover -s tests
@@ -40,10 +44,12 @@ venv/Scripts/pip.exe install -r requirements.txt
 整合1.py                    # 代号1入口（调用 src/bank_integration/app.main()）
 整合2.py                    # 代号2入口（调用 src/bank_integration/app2.main()）
 整合3.py                    # 代号3入口（调用 src/bank_integration/app3.main()）
+整合4.py                    # 代号4入口（调用 src/bank_integration/app4.main()）
 src/bank_integration/
     config.py               # 代号1：路径常量、各银行读取配置、余额列/日期列映射
     config2.py              # 代号2：路径常量、各银行读取配置、余额列/日期列映射
     config3.py              # 代号3：路径常量、各平台列名映射
+    config4.py              # 代号4：导出URL模板、Chrome profile和下载目录
     scanner.py              # 扫描源文件目录（scan_source_files / scan_source_files_2）
     readers.py              # 按银行配置读取 CSV/XLS/XLSX，返回清洗后的 DataFrame
     balances.py             # 提取期末余额、定位/写入余额工作表的行列
@@ -51,6 +57,7 @@ src/bank_integration/
     app.py                  # 代号1 main()，串联各模块流程
     app2.py                 # 代号2 main()，串联各模块流程
     app3.py                 # 代号3 main()，游戏订单匹配逻辑
+    app4.py                 # 代号4 main()，充值订单浏览器导出逻辑
 template/
     1/
         国内银行汇总.xlsx   # 代号1模板（必须预先存在）
@@ -61,10 +68,12 @@ data/
     input/2/                # 代号2：{公司代号}-{银行全称}-{币种}.{扩展名} 源文件
     input/3/                # 代号3：admin + ADYEN- + 华为平台- + Googol- 源文件
     input/raw/              # 原始未命名样例（不被扫描）
+    browser_profile/4/      # 代号4：独立 Chrome 登录态目录（运行时生成）
     output/
         国内银行汇总.xlsx           # 代号1运行时从模板复制的工作副本（最终输出）
         银行汇总.xlsx               # 代号2运行时从模板复制的工作副本（最终输出）
         订单匹配结果_{YYYYMMDD}.xlsx # 代号3运行时生成（每日覆盖）
+        4/                          # 代号4浏览器下载目录
 tests/
     test_bank_integration.py
 ```
@@ -84,6 +93,15 @@ tests/
 3. `read_bank_file`：传入 `BANK_READ_CONFIG_2` / `BANK_DATE_COL_2`；支持额外选项：`encoding`、`col_map`、`strip_col_suffix_char`、`row_filter_col`/`row_filter_prefix`/`row_filter_val`，华美银行 PDF 读取 `DAILY BALANCES`
 4. `get_monthly_balances`：传入 `BANK_BALANCE_COL_2` / `BANK_DATE_COL_2` 按月提取期末余额
 5. `write_all_to_summary_2`：覆盖写入 `{公司代号}-{银行缩写}-{币种}` 明细子表（如 `A-东亚-HKD`），调用 `update_balance_sheet_2` 更新余额工作表
+
+## 代号4数据流
+
+1. 交互输入 `pay_sdate` / `pay_edate`，严格校验 `YYYY-MM-DD`
+2. 按日期区间逐日生成 URL：当天同时作为 `pay_sdate` 和 `pay_edate`
+3. `p=[PAGE]` 按需求原样保留，不做分页替换
+4. 查找 Google Chrome，使用 `data/browser_profile/4/` 作为独立用户目录
+5. 更新 Chrome `Default/Preferences`，将下载目录设置为 `data/output/4/`
+6. 在 Chrome 中打开所有导出 URL；首次使用需要在该独立 Chrome 窗口登录
 
 ## 各银行读取配置——代号1（config.py）
 
@@ -146,6 +164,13 @@ tests/
 - **华侨银行余额**：使用 `余额` + `交易日期` 提取月末余额，日期为 `YYYYMMDD` 格式
 - **华美银行 PDF**：仅支持文本型 PDF，不做 OCR；从 `DAILY BALANCES` 取账单月份最后一条余额
 - **金额清洗**：余额字段中的逗号分隔符和 `+` 前缀在 `get_monthly_balances` 中处理
+
+### 代号4
+- **日期输入**：只接受 `YYYY-MM-DD`，不接受 `YYYY/MM/DD`、`YYYYMMDD` 或不存在日期
+- **Chrome 依赖**：需要用户电脑安装 Google Chrome
+- **登录态**：不自行构造 HTTP 请求；通过独立 Chrome profile 保存登录状态
+- **下载目录**：程序尽量通过 Chrome Preferences 指定为 `data/output/4/`；如浏览器策略限制下载行为，以 Chrome 实际行为为准
+- **页码**：`p=[PAGE]` 原样保留，本版本不做分页循环
 
 ### 代号3
 - **源文件目录**：`data/input/3/`，所有文件平铺放置（均为 `.xlsx`）

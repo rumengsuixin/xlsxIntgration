@@ -43,11 +43,24 @@ venv\Scripts\python.exe scripts\pdf_to_excel.py "华美银行电子对账单-202
 
 ## 打包
 
+### Windows 用户包
+
 ```powershell
 build_exe.bat
 ```
 
 打包完成后，将 `dist\银行流水整合` 整个文件夹发给用户。用户电脑不需要安装 Python。
+
+### macOS 用户包
+
+macOS 二进制不能在 Windows 上直接构建。推荐使用 GitHub Actions 云端构建：
+
+1. 推送代码到 GitHub。
+2. 打开仓库的 Actions 页面。
+3. 运行 `Build macOS Binary` 工作流。
+4. 下载产物 `银行流水整合_mac`，解压后把里面的 `银行流水整合_mac.zip` 发给 Mac 用户。
+
+Mac 用户解压后运行 `开始整合1.sh`、`开始整合2.sh` 或 `开始整合3.sh` 即可，不需要安装 Python。
 
 ## 测试
 

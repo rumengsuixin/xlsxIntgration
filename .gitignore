@@ -16,6 +16,7 @@ htmlcov/
 # PyInstaller build artifacts
 build/
 dist/
+dist_mac/
 *.manifest
 *.pyz
 

@@ -36,6 +36,6 @@ fi
 }
 
 echo ""
-echo "构建完成：dist/银行流水整合"
-echo "构建产物在 dist/银行流水整合 目录，在终端中运行对应的 .sh 脚本即可。"
+echo "构建完成：dist/bank-integration"
+echo "构建产物在 dist/bank-integration 目录，在终端中运行对应的 .command 脚本即可。"
 wait_exit

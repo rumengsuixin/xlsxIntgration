@@ -12,6 +12,7 @@ on:
       - "requirements.txt"
       - "整合*.py"
       - "开始整合*.sh"
+      - "start_*.command"
       - "bank_integration_mac.spec"
       - ".github/workflows/build-mac.yml"
 
@@ -43,20 +44,20 @@ jobs:
       - name: Build binaries
         run: |
           python -m PyInstaller ./bank_integration_mac.spec --clean --noconfirm
-          chmod +x "dist/银行流水整合/国内银行整合"
-          chmod +x "dist/银行流水整合/海外银行整合"
-          chmod +x "dist/银行流水整合/游戏订单匹配"
-          chmod +x "dist/银行流水整合/"*.sh
+          chmod +x "dist/bank-integration/domestic_bank_integration"
+          chmod +x "dist/bank-integration/overseas_bank_integration"
+          chmod +x "dist/bank-integration/order_payment_match"
+          chmod +x "dist/bank-integration/"*.command
 
       - name: Package
         run: |
           mkdir -p dist_mac
           cd dist
-          ditto -c -k --sequesterRsrc --keepParent "银行流水整合" "../dist_mac/银行流水整合_mac.zip"
+          ditto -c -k --sequesterRsrc --keepParent "bank-integration" "../dist_mac/bank-integration-mac.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 银行流水整合_mac
-          path: dist_mac/银行流水整合_mac.zip
+          name: bank-integration-mac
+          path: dist_mac/bank-integration-mac.zip
           if-no-files-found: error

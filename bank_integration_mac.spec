@@ -62,7 +62,7 @@ exe1 = EXE(
     a1.scripts,
     [],
     exclude_binaries=True,
-    name="国内银行整合",
+    name="domestic_bank_integration",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -80,7 +80,7 @@ exe2 = EXE(
     a2.scripts,
     [],
     exclude_binaries=True,
-    name="海外银行整合",
+    name="overseas_bank_integration",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -98,7 +98,7 @@ exe3 = EXE(
     a3.scripts,
     [],
     exclude_binaries=True,
-    name="游戏订单匹配",
+    name="order_payment_match",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -127,10 +127,10 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="银行流水整合",
+    name="bank-integration",
 )
 
-dist_dir = project_root / "dist" / "银行流水整合"
+dist_dir = project_root / "dist" / "bank-integration"
 
 template_src = project_root / "template"
 template_dst = dist_dir / "template"
@@ -149,14 +149,14 @@ if data_dst.exists():
 (data_dst / "output").mkdir(parents=True, exist_ok=True)
 
 for filename in (
-    "开始整合1.sh",
-    "开始整合2.sh",
-    "开始整合3.sh",
-    "使用说明.txt",
+    "start_domestic.command",
+    "start_overseas.command",
+    "start_orders.command",
+    "README.md",
 ):
     src = project_root / filename
     if src.exists():
         dst = dist_dir / filename
         shutil.copy2(src, dst)
-        if filename.endswith(".sh"):
+        if filename.endswith((".sh", ".command")):
             dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

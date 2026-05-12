@@ -45,8 +45,12 @@ data/output/*
 **/*.xlsx
 **/*.xls
 **/*.csv
+!template/**/*.xlsx
+!template/**/*.xls
+!template/**/*.csv
 
 **/**.bat
 **/**.spec
 **/**.ps1
-
+!bank_integration.spec
+!bank_integration_mac.spec

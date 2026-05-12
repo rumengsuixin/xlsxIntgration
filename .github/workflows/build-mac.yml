@@ -28,6 +28,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Validate required files
+        run: |
+          test -f bank_integration_mac.spec
+          test -f "template/1/国内银行汇总.xlsx"
+          test -f "template/2/银行汇总.xlsx"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

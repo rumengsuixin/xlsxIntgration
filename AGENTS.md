@@ -26,6 +26,10 @@ venv/Scripts/python.exe 整合3.py
 
 # 代号4：后台充值订单浏览器导出
 venv/Scripts/python.exe 整合4.py
+# 手动指定日期范围
+venv/Scripts/python.exe 整合4.py --date-range 2026-04-01 2026-04-30
+# 手动指定日期范围和每批等待秒数
+venv/Scripts/python.exe 整合4.py --date-range 2026-04-01 2026-04-30 --wait-seconds 60
 
 # 运行全部回归测试
 venv/Scripts/python.exe -m unittest discover -s tests
@@ -96,12 +100,12 @@ tests/
 
 ## 代号4数据流
 
-1. 交互输入 `pay_sdate` / `pay_edate`，严格校验 `YYYY-MM-DD`
+1. 无参数时自动取上一个自然月；手动指定时使用 `--date-range START END`，严格校验 `YYYY-MM-DD`
 2. 按日期区间逐日生成 URL：当天同时作为 `pay_sdate` 和 `pay_edate`
 3. `p=[PAGE]` 按需求原样保留，不做分页替换
 4. 查找 Google Chrome，使用 `data/browser_profile/4/` 作为独立用户目录
 5. 更新 Chrome `Default/Preferences`，将下载目录设置为 `data/output/4/`
-6. 在 Chrome 中打开所有导出 URL；首次使用需要在该独立 Chrome 窗口登录
+6. 若独立 profile 尚无 `Default/Cookies` 数据，先打开一个导出链接让用户登录并等待回车，再打开所有导出 URL
 
 ## 各银行读取配置——代号1（config.py）
 
@@ -171,6 +175,8 @@ tests/
 - **登录态**：不自行构造 HTTP 请求；通过独立 Chrome profile 保存登录状态
 - **下载目录**：程序尽量通过 Chrome Preferences 指定为 `data/output/4/`；如浏览器策略限制下载行为，以 Chrome 实际行为为准
 - **页码**：`p=[PAGE]` 原样保留，本版本不做分页循环
+- **macOS 复用**：启动 Chrome 时固定 `--user-data-dir=data/browser_profile/4` 和 `--profile-directory=Default`；普通 Chrome 手动打开不共享该登录态
+- **Cookie 判定**：只把 `data/browser_profile/4/Default/Cookies` 作为可复用登录态判断依据，`Default/Network/Cookies` 仅打印诊断日志
 
 ### 代号3
 - **源文件目录**：`data/input/3/`，所有文件平铺放置（均为 `.xlsx`）

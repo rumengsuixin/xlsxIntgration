@@ -68,7 +68,14 @@ Mac 用户解压后进入 `bank-integration` 文件夹，运行 `start_domestic.
 venv\Scripts\python.exe 整合4.py
 ```
 
-程序会交互输入 `pay_sdate` 和 `pay_edate`，格式必须为 `YYYY-MM-DD`。它会按日期区间逐日打开导出 URL，使用独立 Chrome 登录环境 `data/browser_profile/4`，并把浏览器下载目录设置为 `data/output/4`。首次运行如跳转登录页，请在打开的 Chrome 窗口中登录；登录后如果没有自动下载，保持该 Chrome 登录状态并重新运行代号4。
+直接运行时，程序会自动导出上一个自然月的全部日期。手动指定日期范围或每批等待秒数时使用：
+
+```powershell
+venv\Scripts\python.exe 整合4.py --date-range 2026-04-01 2026-04-30
+venv\Scripts\python.exe 整合4.py --date-range 2026-04-01 2026-04-30 --wait-seconds 60
+```
+
+日期格式必须为 `YYYY-MM-DD`。程序会按日期区间逐日打开导出 URL，使用独立 Chrome 登录环境 `data/browser_profile/4`，并把浏览器下载目录设置为 `data/output/4`。如果该独立环境还没有 `Default/Cookies`，程序会先打开一个 Chrome 窗口让用户登录；登录完成后回到终端按回车继续打开导出链接。
 
 ## 测试
 

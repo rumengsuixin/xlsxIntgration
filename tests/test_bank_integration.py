@@ -29,9 +29,17 @@ from src.bank_integration.app3 import (
     write_output,
 )
 from src.bank_integration.app4 import (
+    build_chrome_args,
     build_export_url,
     build_export_urls,
+    chunk_list,
     configure_chrome_downloads,
+    expected_export_stem,
+    export_batches_with_retries,
+    get_previous_month_range,
+    has_chrome_cookie_store,
+    missing_export_dates,
+    parse_date_args,
     parse_date,
 )
 from src.bank_integration.config3 import (
@@ -77,6 +85,7 @@ from src.bank_integration.config3 import (
     STATUS_COL,
     TRANSACTION_DATE_COL,
 )
+from src.bank_integration.config4 import EXPORT_BATCH_WAIT_SECONDS_4
 from src.bank_integration.readers import read_bank_file
 from src.bank_integration.scanner import scan_source_files, scan_source_files_2
 
@@ -1057,6 +1066,51 @@ class BankIntegrationSampleTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     parse_date(value)
 
+    def test_mode4_previous_month_range_uses_previous_natural_month(self):
+        self.assertEqual(get_previous_month_range(date(2026, 5, 13)), (date(2026, 4, 1), date(2026, 4, 30)))
+
+    def test_mode4_previous_month_range_handles_year_boundary(self):
+        self.assertEqual(get_previous_month_range(date(2026, 1, 10)), (date(2025, 12, 1), date(2025, 12, 31)))
+
+    def test_mode4_parse_date_args_defaults_to_previous_month(self):
+        self.assertEqual(
+            parse_date_args([], today=date(2026, 5, 13)),
+            (date(2026, 4, 1), date(2026, 4, 30), EXPORT_BATCH_WAIT_SECONDS_4),
+        )
+
+    def test_mode4_parse_date_args_accepts_manual_date_range(self):
+        args = ["--date-range", "2026-04-01", "2026-04-30"]
+
+        self.assertEqual(parse_date_args(args), (date(2026, 4, 1), date(2026, 4, 30), EXPORT_BATCH_WAIT_SECONDS_4))
+
+    def test_mode4_parse_date_args_accepts_custom_wait_seconds(self):
+        self.assertEqual(
+            parse_date_args(["--wait-seconds", "60"], today=date(2026, 5, 13)),
+            (date(2026, 4, 1), date(2026, 4, 30), 60),
+        )
+
+    def test_mode4_parse_date_args_accepts_date_range_with_custom_wait_seconds(self):
+        args = ["--date-range", "2026-04-01", "2026-04-30", "--wait-seconds", "45"]
+
+        self.assertEqual(parse_date_args(args), (date(2026, 4, 1), date(2026, 4, 30), 45))
+
+    def test_mode4_parse_date_args_rejects_bad_arguments(self):
+        bad_args = [
+            ["--date-range"],
+            ["--date-range", "2026-04-01"],
+            ["--date-range", "2026/04/01", "2026-04-30"],
+            ["--date-range", "2026-05-01", "2026-04-30"],
+            ["--start", "2026-04-01", "2026-04-30"],
+            ["--wait-seconds"],
+            ["--wait-seconds", "0"],
+            ["--wait-seconds", "-1"],
+            ["--wait-seconds", "abc"],
+        ]
+        for args in bad_args:
+            with self.subTest(args=args):
+                with self.assertRaises(ValueError):
+                    parse_date_args(args)
+
     def test_mode4_build_urls_for_each_day_and_preserves_page_placeholder(self):
         urls = build_export_urls(date(2025, 5, 12), date(2025, 5, 14))
 
@@ -1068,6 +1122,14 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertIn("pay_sdate=2025-05-14", urls[2])
         self.assertIn("pay_edate=2025-05-14", urls[2])
         self.assertTrue(all("p=[PAGE]" in url for url in urls))
+
+    def test_mode4_chunks_month_into_five_day_batches(self):
+        days = list(range(31))
+
+        batches = chunk_list(days, 5)
+
+        self.assertEqual(len(batches), 7)
+        self.assertEqual([len(batch) for batch in batches], [5, 5, 5, 5, 5, 5, 1])
 
     def test_mode4_build_urls_rejects_reversed_date_range(self):
         with self.assertRaises(ValueError):
@@ -1094,6 +1156,141 @@ class BankIntegrationSampleTests(unittest.TestCase):
             self.assertEqual(prefs["download"]["default_directory"], str(download_dir.resolve()))
             self.assertFalse(prefs["download"]["prompt_for_download"])
             self.assertTrue(prefs["download"]["directory_upgrade"])
+
+    def test_mode4_expected_export_file_matches_strict_date_filename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            download_dir = Path(tmp)
+            target = date(2026, 5, 1)
+            (download_dir / "2026-05-01,2026-05-01.xlsx").write_text("xlsx", encoding="utf-8")
+            (download_dir / "2026-05-02,2026-05-02.xls").write_text("xls", encoding="utf-8")
+            (download_dir / "2026-05-03,2026-05-03.csv").write_text("csv", encoding="utf-8")
+            (download_dir / "2026-05-04,2026-05-04.xlsx.crdownload").write_text("tmp", encoding="utf-8")
+            (download_dir / "temp.tmp").write_text("tmp", encoding="utf-8")
+            (download_dir / "2026-05-05,2026-05-05.txt").write_text("txt", encoding="utf-8")
+            (download_dir / "prefix-2026-05-06,2026-05-06.xlsx").write_text("bad", encoding="utf-8")
+            (download_dir / "2026-05-07,2026-05-07 (1).xlsx").write_text("bad", encoding="utf-8")
+
+            self.assertEqual(expected_export_stem(target), "2026-05-01,2026-05-01")
+            missing = missing_export_dates(
+                download_dir,
+                [date(2026, 5, day) for day in range(1, 8)],
+                (".xls", ".xlsx", ".csv"),
+            )
+
+            self.assertEqual(missing, [date(2026, 5, 4), date(2026, 5, 5), date(2026, 5, 6), date(2026, 5, 7)])
+
+    def test_mode4_export_batch_success_does_not_retry(self):
+        dated_urls = [(date(2025, 5, day), f"https://example.test/{day}") for day in range(1, 4)]
+        launched = []
+
+        def fake_launcher(_chrome_path, _profile_dir, urls):
+            launched.append(list(urls))
+
+        def fake_waiter(_download_dir, _days, _wait_seconds, _suffixes):
+            return []
+
+        failures = export_batches_with_retries(
+            "chrome",
+            Path("profile"),
+            Path("downloads"),
+            dated_urls,
+            batch_size=5,
+            wait_seconds=20,
+            retry_limit=2,
+            launcher=fake_launcher,
+            waiter=fake_waiter,
+        )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(len(launched[0]), 3)
+
+    def test_mode4_export_batch_retries_only_missing_dates(self):
+        dated_urls = [(date(2025, 5, day), f"https://example.test/{day}") for day in range(1, 4)]
+        launched = []
+        wait_calls = []
+
+        def fake_launcher(_chrome_path, _profile_dir, urls):
+            launched.append(list(urls))
+
+        def fake_waiter(_download_dir, days, _wait_seconds, _suffixes):
+            wait_calls.append(list(days))
+            if len(wait_calls) == 1:
+                return [date(2025, 5, 2)]
+            return []
+
+        failures = export_batches_with_retries(
+            "chrome",
+            Path("profile"),
+            Path("downloads"),
+            dated_urls,
+            batch_size=5,
+            wait_seconds=20,
+            retry_limit=2,
+            launcher=fake_launcher,
+            waiter=fake_waiter,
+        )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(launched, [["https://example.test/1", "https://example.test/2", "https://example.test/3"], ["https://example.test/2"]])
+        self.assertEqual(wait_calls, [[date(2025, 5, 1), date(2025, 5, 2), date(2025, 5, 3)], [date(2025, 5, 2)]])
+
+    def test_mode4_export_batch_records_missing_dates_after_retry_limit(self):
+        dated_urls = [(date(2025, 5, day), f"https://example.test/{day}") for day in range(1, 4)]
+        launched = []
+
+        def fake_launcher(_chrome_path, _profile_dir, urls):
+            launched.append(list(urls))
+
+        def fake_waiter(_download_dir, days, _wait_seconds, _suffixes):
+            return list(days)
+
+        failures = export_batches_with_retries(
+            "chrome",
+            Path("profile"),
+            Path("downloads"),
+            dated_urls,
+            batch_size=5,
+            wait_seconds=20,
+            retry_limit=2,
+            launcher=fake_launcher,
+            waiter=fake_waiter,
+        )
+
+        self.assertEqual(len(launched), 3)
+        self.assertEqual(failures, [date(2025, 5, 1), date(2025, 5, 2), date(2025, 5, 3)])
+
+    def test_mode4_build_chrome_args_uses_default_profile_and_preserves_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_dir = Path(tmp) / "profile"
+            url = build_export_url(date(2025, 5, 12))
+
+            args = build_chrome_args("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", profile_dir, [url])
+
+            self.assertEqual(args[0], "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+            self.assertIn(f"--user-data-dir={profile_dir.resolve()}", args)
+            self.assertIn("--profile-directory=Default", args)
+            self.assertIn("--remote-debugging-port=0", args)
+            self.assertIn("--class=bank-integration-export", args)
+            self.assertIn(url, args)
+            self.assertIn("p=[PAGE]", url)
+
+    def test_mode4_cookie_store_requires_default_cookies_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_dir = Path(tmp) / "profile"
+
+            self.assertFalse(has_chrome_cookie_store(profile_dir))
+
+            network_cookie = profile_dir / "Default" / "Network" / "Cookies"
+            network_cookie.parent.mkdir(parents=True, exist_ok=True)
+            network_cookie.write_text("network cookie data", encoding="utf-8")
+
+            self.assertFalse(has_chrome_cookie_store(profile_dir))
+
+            primary_cookie = profile_dir / "Default" / "Cookies"
+            primary_cookie.write_text("primary cookie data", encoding="utf-8")
+
+            self.assertTrue(has_chrome_cookie_store(profile_dir))
 
 
 if __name__ == "__main__":

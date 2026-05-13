@@ -6,16 +6,16 @@ echo "========================================"
 echo "后台充值订单浏览器导出（代号4）"
 echo "========================================"
 echo ""
-echo "请输入支付日期范围，格式必须为 YYYY-MM-DD。"
+echo "默认导出上一个自然月；手动指定可追加：--date-range YYYY-MM-DD YYYY-MM-DD --wait-seconds N。"
 echo "程序会使用独立 Chrome 登录环境打开导出链接，并集中下载到 data/output/4。"
 echo ""
 
 EXIT_CODE=1
 if [ -f "./recharge_order_export" ]; then
-    ./recharge_order_export
+    ./recharge_order_export "$@"
     EXIT_CODE=$?
 elif [ -f "./venv/bin/python" ]; then
-    ./venv/bin/python ./整合4.py
+    ./venv/bin/python ./整合4.py "$@"
     EXIT_CODE=$?
 else
     echo "未找到可运行程序。请确认 macOS 二进制包完整。"

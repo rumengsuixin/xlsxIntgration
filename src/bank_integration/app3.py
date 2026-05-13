@@ -55,8 +55,17 @@ from .config3 import (
     ADYEN_SCHEME_FEES_COL,
     ADYEN_SETTLEMENT_CURRENCY_COL,
     ADYEN_SHEET,
+    ADYEN_SETTLE_SHEET,
+    ADYEN_SETTLE_HEADER,
+    ADYEN_SETTLE_JOURNAL_COL,
+    ADYEN_SETTLE_PAYOUT_TYPE,
+    ADYEN_SETTLE_TAX_TYPE,
+    ADYEN_SETTLE_DATE_COL,
+    ADYEN_SETTLE_CURRENCY_COL,
+    ADYEN_SETTLE_AMOUNT_COL,
     COUNTRY_TAX_COL,
     FEE_COL,
+    TAX_COL,
     GOOGLE_BUYER_AMOUNT_COL,
     GOOGLE_BUYER_CURRENCY_COL,
     GOOGLE_CHARGE_TYPE,
@@ -110,7 +119,7 @@ def scan_source_files_3(input_dir: Path) -> dict:
 
     返回 {"admin": [Path, ...], ...}，同平台多文件时全部收录，由调用方合并。
     """
-    result: dict = {"admin": [], "adyen": [], "huawei": [], "huawei_settlement": [], "google": [], "apple": []}
+    result: dict = {"admin": [], "adyen": [], "adyen_settlement": [], "huawei": [], "huawei_settlement": [], "google": [], "apple": []}
 
     for f in sorted(input_dir.glob("*.xlsx")):
         if f.name.startswith("~$"):
@@ -118,6 +127,8 @@ def scan_source_files_3(input_dir: Path) -> dict:
         stem = f.stem.lower()
         if stem.startswith("admin"):
             result["admin"].append(f)
+        elif stem.startswith("adyen-") and "settlement" in stem:
+            result["adyen_settlement"].append(f)
         elif stem.startswith("adyen-"):
             result["adyen"].append(f)
         elif stem.startswith("华为平台结算"):
@@ -182,6 +193,13 @@ def read_admin(filepath: Path) -> pd.DataFrame:
 def read_adyen(filepath: Path) -> pd.DataFrame:
     """读取 Adyen 报告（工作表：Data），全列字符串。"""
     return pd.read_excel(filepath, sheet_name=ADYEN_SHEET, dtype=str).fillna("")
+
+
+def read_adyen_settlement(filepath: Path) -> pd.DataFrame:
+    """读取 ADYEN 结算报告（工作表 Data，header=6），全列字符串。"""
+    df = pd.read_excel(filepath, sheet_name=ADYEN_SETTLE_SHEET,
+                       header=ADYEN_SETTLE_HEADER, dtype=str)
+    return df.dropna(how="all").fillna("")
 
 
 def read_huawei(filepath: Path) -> pd.DataFrame:
@@ -259,6 +277,58 @@ def build_huawei_lookup(df: pd.DataFrame) -> pd.DataFrame:
     return result.fillna("").set_index(HUAWEI_JOIN_COL)
 
 
+def build_adyen_settlement_monthly(df: pd.DataFrame) -> pd.DataFrame:
+    """从 ADYEN 结算文件提取月度原成功金额、实际到账和税金。
+
+    原成功金额(_adyen_settled) = Settled 行 Net Credit (NC) 合计（总交易流水）
+    实际到账(_adyen_payout)    = MerchantPayout 行 Net Debit (NC) 合计
+    税金(_adyen_tax)           = InvoiceDeduction 行 Net Debit (NC) 合计
+    手续费 = 原成功金额 - 净交易金额 - 税金（含 Fee 和净退款调整）
+    """
+    SETTLED_TYPE = "settled"
+    NET_CREDIT_COL = "Net Credit (NC)"
+
+    df = df.copy()
+    df["_month"] = pd.to_datetime(
+        df[ADYEN_SETTLE_DATE_COL].astype(str).str.strip(), errors="coerce"
+    ).dt.strftime("%Y-%m")
+    df["_debit"] = pd.to_numeric(
+        df[ADYEN_SETTLE_AMOUNT_COL].astype(str).str.replace(",", "", regex=False),
+        errors="coerce",
+    ).fillna(0.0)
+    df["_journal"]  = df[ADYEN_SETTLE_JOURNAL_COL].astype(str).str.strip().str.lower()
+    df["_currency"] = df[ADYEN_SETTLE_CURRENCY_COL].astype(str).str.strip()
+
+    gkeys = ["_month", "_currency"]
+
+    # Settled 行使用 Net Credit (NC) 列
+    if NET_CREDIT_COL in df.columns:
+        df["_credit"] = pd.to_numeric(
+            df[NET_CREDIT_COL].astype(str).str.replace(",", "", regex=False),
+            errors="coerce",
+        ).fillna(0.0)
+        settled = (
+            df[df["_journal"] == SETTLED_TYPE]
+            .groupby(gkeys)["_credit"].sum().rename("_adyen_settled").reset_index()
+        )
+    else:
+        settled = pd.DataFrame(columns=gkeys + ["_adyen_settled"])
+
+    payout = (
+        df[df["_journal"] == ADYEN_SETTLE_PAYOUT_TYPE.lower()]
+        .groupby(gkeys)["_debit"].sum().rename("_adyen_payout").reset_index()
+    )
+    tax = (
+        df[df["_journal"] == ADYEN_SETTLE_TAX_TYPE.lower()]
+        .groupby(gkeys)["_debit"].sum().rename("_adyen_tax").reset_index()
+    )
+    result = payout.merge(tax, on=gkeys, how="outer")
+    result = result.merge(settled, on=gkeys, how="left")
+    result = result.fillna(0.0)
+    return result.rename(columns={"_month": TRANSACTION_DATE_COL,
+                                   "_currency": SETTLEMENT_CURRENCY_COL})
+
+
 def build_huawei_fee_summary(df: pd.DataFrame) -> pd.DataFrame:
     """从华为结算文件按(月份, 结算货币)计算手续费与结算总额。
 
@@ -267,7 +337,7 @@ def build_huawei_fee_summary(df: pd.DataFrame) -> pd.DataFrame:
     """
     summary_cols = [
         TRANSACTION_DATE_COL, ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL,
-        "成功笔数", "成功金额", "退款笔数", "退款金额", "净交易金额", "手续费",
+        "成功笔数", "成功金额", "退款笔数", "退款金额", "净交易金额", "手续费", TAX_COL,
     ]
     if df.empty:
         return pd.DataFrame(columns=summary_cols)
@@ -321,6 +391,7 @@ def build_huawei_fee_summary(df: pd.DataFrame) -> pd.DataFrame:
         "退款金额":  0.0,
         "净交易金额": grouped["成功金额"],
         "手续费":    grouped["手续费"],
+        TAX_COL:     0.0,
     })
     return result[summary_cols]
 
@@ -785,12 +856,15 @@ def log_match_stats(result_df: pd.DataFrame) -> None:
 def build_summary_sheet(
     result_df: pd.DataFrame,
     huawei_settle_df: Optional[pd.DataFrame] = None,
+    adyen_settle_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """按交易日期、平台、结算币种汇总结算金额，附手续费列。
+    """按交易日期、平台、结算币种汇总结算金额，附手续费和税金列。
 
     手续费来源：
-        Adyen/Google — 聚合 result_df 中的 FEE_COL（已含于 SentForSettle / Merchant 行）
-        华为          — 来自 huawei_settle_df（月度结算文件），追加为单独的 HKD 结算行
+        Adyen  — 来自 adyen_settle_df（月度结算文件）：手续费 = 成功金额 - 净交易金额 - 税金
+        Google — 聚合 result_df 中的 FEE_COL（Merchant 行）
+        华为   — 来自 huawei_settle_df（月度结算文件），追加为单独的 HKD 结算行
+    Adyen 净交易金额 = 结算文件 MerchantPayout 月度合计；税金 = InvoiceDeduction 月度合计。
     """
     summary_cols = [
         TRANSACTION_DATE_COL,
@@ -802,6 +876,7 @@ def build_summary_sheet(
         "退款金额",
         "净交易金额",
         "手续费",
+        TAX_COL,
     ]
 
     if result_df.empty:
@@ -849,6 +924,7 @@ def build_summary_sheet(
     summary["净交易金额"] = summary["成功金额"] - summary["退款金额"]
     summary["手续费"] = (summary["_fee_success"] - summary["_fee_refund"]).round(4)
     summary = summary.drop(columns=["_fee_success", "_fee_refund"])
+    summary[TAX_COL] = 0.0
 
     if huawei_settle_df is not None and not huawei_settle_df.empty:
         huawei_settle_rows = build_huawei_fee_summary(huawei_settle_df)
@@ -878,6 +954,38 @@ def build_summary_sheet(
                 .reset_index(drop=True)
             )
 
+    # ── ADYEN 结算文件：替换成功金额、净交易金额、手续费、税金 ──
+    if adyen_settle_df is not None and not adyen_settle_df.empty:
+        monthly = build_adyen_settlement_monthly(adyen_settle_df)
+        if not monthly.empty:
+            adyen_mask = summary[ADMIN_PAYMENT_COL].str.strip() == "Adyen"
+            if adyen_mask.any():
+                adyen_rows = summary[adyen_mask].merge(
+                    monthly, on=[TRANSACTION_DATE_COL, SETTLEMENT_CURRENCY_COL], how="left"
+                )
+                adyen_rows["_adyen_payout"]   = adyen_rows["_adyen_payout"].fillna(0.0)
+                adyen_rows["_adyen_tax"]      = adyen_rows["_adyen_tax"].fillna(0.0)
+                adyen_rows["_adyen_settled"]  = adyen_rows["_adyen_settled"].fillna(0.0)
+                # 成功金额 = Settled Net Credit 总计（原成功金额）
+                adyen_rows["成功金额"]  = adyen_rows["_adyen_settled"].round(4)
+                # 净交易金额 = MerchantPayout（实际到账）
+                adyen_rows["净交易金额"] = adyen_rows["_adyen_payout"].round(4)
+                adyen_rows[TAX_COL]     = adyen_rows["_adyen_tax"].round(4)
+                # 手续费 = 原成功金额 - 净交易金额 - 税金
+                adyen_rows["手续费"] = (
+                    adyen_rows["成功金额"] - adyen_rows["净交易金额"] - adyen_rows[TAX_COL]
+                ).round(4)
+                adyen_rows = adyen_rows.drop(
+                    columns=["_adyen_payout", "_adyen_tax", "_adyen_settled"]
+                )
+                summary = (
+                    pd.concat([summary[~adyen_mask], adyen_rows], ignore_index=True)
+                    .sort_values(group_cols, kind="stable")
+                    .reset_index(drop=True)
+                )
+            else:
+                logging.info("ADYEN 结算文件已读取，但汇总表中未找到 Adyen 平台行，结算数据未应用")
+
     summary["手续费"] = pd.to_numeric(summary["手续费"], errors="coerce").abs().round(4)
     return summary[summary_cols]
 
@@ -889,7 +997,7 @@ def build_apple_platform_summary(apple_raw_df: Optional[pd.DataFrame]) -> pd.Dat
     """
     summary_cols = [
         TRANSACTION_DATE_COL, ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL,
-        "成功笔数", "成功金额", "退款笔数", "退款金额", "净交易金额", "手续费",
+        "成功笔数", "成功金额", "退款笔数", "退款金额", "净交易金额", "手续费", TAX_COL,
     ]
     if apple_raw_df is None or apple_raw_df.empty:
         return pd.DataFrame(columns=summary_cols)
@@ -954,6 +1062,7 @@ def build_apple_platform_summary(apple_raw_df: Optional[pd.DataFrame]) -> pd.Dat
             "退款笔数": int(grp.loc[grp["_is_refund"], "_qty"].abs().sum()),
             "退款金额": round(grp.loc[grp["_is_refund"], "_eps"].abs().sum(), 2),
             "手续费": round(grp["_fee"].sum(), 4) if has_fee_cols else "",
+            TAX_COL: 0.0,
         })
 
     if not rows:
@@ -1387,6 +1496,7 @@ def write_output(
     output_dir: Path,
     apple_raw_df: Optional[pd.DataFrame] = None,
     huawei_settle_df: Optional[pd.DataFrame] = None,
+    adyen_settle_df: Optional[pd.DataFrame] = None,
 ) -> Path:
     """将结果写入 data/output/订单匹配结果_{YYYYMMDD}.xlsx。"""
     today = date.today().strftime("%Y%m%d")
@@ -1423,7 +1533,7 @@ def write_output(
     diff_df = main_df.loc[match_status.eq("是") & amount_diff.gt(1.0)].copy()
     failed_df = main_df.loc[match_status.eq("否")].copy()
 
-    summary_df = build_summary_sheet(main_df, huawei_settle_df)
+    summary_df = build_summary_sheet(main_df, huawei_settle_df, adyen_settle_df)
     apple_summary_df = build_apple_platform_summary(apple_raw_df)
     if not apple_summary_df.empty:
         summary_df = pd.concat([summary_df, apple_summary_df], ignore_index=True)
@@ -1549,11 +1659,26 @@ def main() -> int:
     else:
         logging.info("未找到苹果文件（苹果 Sheet 的平台数据部分将为空）")
 
+    adyen_settle_df = None
+    if files["adyen_settlement"]:
+        settle_frames = []
+        for fp in files["adyen_settlement"]:
+            logging.info("读取 ADYEN 结算文件: %s", fp.name)
+            try:
+                settle_frames.append(read_adyen_settlement(fp))
+            except Exception:
+                logging.error("读取 ADYEN 结算文件失败: %s", fp.name, exc_info=True)
+        if settle_frames:
+            adyen_settle_df = pd.concat(settle_frames, ignore_index=True) if len(settle_frames) > 1 else settle_frames[0]
+            logging.info("  ADYEN 结算文件共 %d 行", len(adyen_settle_df))
+    else:
+        logging.info("未找到 ADYEN 结算文件（ADYEN-settlement_*.xlsx），手续费将不从结算文件计算")
+
     result_df = enrich_admin(admin_df, adyen_lk, huawei_lk, google_lk)
     log_match_stats(result_df)
 
     try:
-        output_path = write_output(result_df, OUTPUT_DIR, apple_raw_df, huawei_settle_df)
+        output_path = write_output(result_df, OUTPUT_DIR, apple_raw_df, huawei_settle_df, adyen_settle_df)
         logging.info("结果文件已写入: %s", output_path)
     except PermissionError:
         logging.error("无法写入输出文件，请确认文件未在 Excel 中打开后重试。")

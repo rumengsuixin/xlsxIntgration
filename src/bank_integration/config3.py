@@ -69,6 +69,19 @@ HUAWEI_DATE_COL      = "支付时间 (基于UTC+8)"
 GOOGLE_DATE_COL      = "Transaction Date"
 TRANSACTION_DATE_COL = "交易日期"
 
+# ── ADYEN 结算文件（月度聚合，header=6）─────────────────────
+ADYEN_SETTLE_SHEET        = "Data"
+ADYEN_SETTLE_HEADER       = 6
+ADYEN_SETTLE_JOURNAL_COL  = "Journal Type"
+ADYEN_SETTLE_PAYOUT_TYPE  = "MerchantPayout"
+ADYEN_SETTLE_TAX_TYPE     = "InvoiceDeduction"
+ADYEN_SETTLE_DATE_COL     = "Batch Closed Date"
+ADYEN_SETTLE_CURRENCY_COL = "Net Currency"
+ADYEN_SETTLE_AMOUNT_COL   = "Net Debit (NC)"
+
+# ── 汇总新增列 ────────────────────────────────────────────────
+TAX_COL = "税金"
+
 # ── 华为结算文件（月度聚合，header=1读取英文列名）────────────
 # 文件格式：第1行=中文列名，第2行=英文列名（作为列头），第3行起=数据
 HUAWEI_SETTLE_DATE_COL      = "End Date"                                          # YYYYMM格式

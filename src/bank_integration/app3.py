@@ -278,21 +278,16 @@ def build_huawei_lookup(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_adyen_settlement_monthly(df: pd.DataFrame) -> pd.DataFrame:
-    """从 ADYEN 结算文件提取月度原成功金额、实际到账和税金。
+    """从 ADYEN 结算文件提取月度实际到账和税金。
 
-    原成功金额(_adyen_settled) = Settled 行 Net Credit (NC) 合计（总交易流水）
-    实际到账(_adyen_payout)    = MerchantPayout 行 Net Debit (NC) 合计
-    税金(_adyen_tax)           = InvoiceDeduction 行 Net Debit (NC) 合计
-    手续费 = 原成功金额 - 净交易金额 - 税金（含 Fee 和净退款调整）
+    实际到账(_adyen_payout) = MerchantPayout 行 Net Debit (NC) 合计
+    税金(_adyen_tax)        = InvoiceDeduction 行 Net Debit (NC) 合计
     """
-    SETTLED_TYPE = "settled"
-    NET_CREDIT_COL = "Net Credit (NC)"
-
     df = df.copy()
     df["_month"] = pd.to_datetime(
         df[ADYEN_SETTLE_DATE_COL].astype(str).str.strip(), errors="coerce"
     ).dt.strftime("%Y-%m")
-    df["_debit"] = pd.to_numeric(
+    df["_amount"] = pd.to_numeric(
         df[ADYEN_SETTLE_AMOUNT_COL].astype(str).str.replace(",", "", regex=False),
         errors="coerce",
     ).fillna(0.0)
@@ -300,31 +295,15 @@ def build_adyen_settlement_monthly(df: pd.DataFrame) -> pd.DataFrame:
     df["_currency"] = df[ADYEN_SETTLE_CURRENCY_COL].astype(str).str.strip()
 
     gkeys = ["_month", "_currency"]
-
-    # Settled 行使用 Net Credit (NC) 列
-    if NET_CREDIT_COL in df.columns:
-        df["_credit"] = pd.to_numeric(
-            df[NET_CREDIT_COL].astype(str).str.replace(",", "", regex=False),
-            errors="coerce",
-        ).fillna(0.0)
-        settled = (
-            df[df["_journal"] == SETTLED_TYPE]
-            .groupby(gkeys)["_credit"].sum().rename("_adyen_settled").reset_index()
-        )
-    else:
-        settled = pd.DataFrame(columns=gkeys + ["_adyen_settled"])
-
     payout = (
         df[df["_journal"] == ADYEN_SETTLE_PAYOUT_TYPE.lower()]
-        .groupby(gkeys)["_debit"].sum().rename("_adyen_payout").reset_index()
+        .groupby(gkeys)["_amount"].sum().rename("_adyen_payout").reset_index()
     )
     tax = (
         df[df["_journal"] == ADYEN_SETTLE_TAX_TYPE.lower()]
-        .groupby(gkeys)["_debit"].sum().rename("_adyen_tax").reset_index()
+        .groupby(gkeys)["_amount"].sum().rename("_adyen_tax").reset_index()
     )
-    result = payout.merge(tax, on=gkeys, how="outer")
-    result = result.merge(settled, on=gkeys, how="left")
-    result = result.fillna(0.0)
+    result = payout.merge(tax, on=gkeys, how="outer").fillna(0.0)
     return result.rename(columns={"_month": TRANSACTION_DATE_COL,
                                    "_currency": SETTLEMENT_CURRENCY_COL})
 
@@ -954,7 +933,7 @@ def build_summary_sheet(
                 .reset_index(drop=True)
             )
 
-    # ── ADYEN 结算文件：替换成功金额、净交易金额、手续费、税金 ──
+    # ── ADYEN 结算文件：替换净交易金额、手续费、税金 ────────────
     if adyen_settle_df is not None and not adyen_settle_df.empty:
         monthly = build_adyen_settlement_monthly(adyen_settle_df)
         if not monthly.empty:
@@ -963,21 +942,16 @@ def build_summary_sheet(
                 adyen_rows = summary[adyen_mask].merge(
                     monthly, on=[TRANSACTION_DATE_COL, SETTLEMENT_CURRENCY_COL], how="left"
                 )
-                adyen_rows["_adyen_payout"]   = adyen_rows["_adyen_payout"].fillna(0.0)
-                adyen_rows["_adyen_tax"]      = adyen_rows["_adyen_tax"].fillna(0.0)
-                adyen_rows["_adyen_settled"]  = adyen_rows["_adyen_settled"].fillna(0.0)
-                # 成功金额 = Settled Net Credit 总计（原成功金额）
-                adyen_rows["成功金额"]  = adyen_rows["_adyen_settled"].round(4)
+                adyen_rows["_adyen_payout"] = adyen_rows["_adyen_payout"].fillna(0.0)
+                adyen_rows["_adyen_tax"]    = adyen_rows["_adyen_tax"].fillna(0.0)
                 # 净交易金额 = MerchantPayout（实际到账）
                 adyen_rows["净交易金额"] = adyen_rows["_adyen_payout"].round(4)
                 adyen_rows[TAX_COL]     = adyen_rows["_adyen_tax"].round(4)
-                # 手续费 = 原成功金额 - 净交易金额 - 税金
+                # 手续费 = 成功金额（订单匹配结果）- 净交易金额 - 税金
                 adyen_rows["手续费"] = (
                     adyen_rows["成功金额"] - adyen_rows["净交易金额"] - adyen_rows[TAX_COL]
                 ).round(4)
-                adyen_rows = adyen_rows.drop(
-                    columns=["_adyen_payout", "_adyen_tax", "_adyen_settled"]
-                )
+                adyen_rows = adyen_rows.drop(columns=["_adyen_payout", "_adyen_tax"])
                 summary = (
                     pd.concat([summary[~adyen_mask], adyen_rows], ignore_index=True)
                     .sort_values(group_cols, kind="stable")

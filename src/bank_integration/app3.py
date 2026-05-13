@@ -139,9 +139,43 @@ def scan_source_files_3(input_dir: Path) -> dict:
     return result
 
 
+def _select_admin_sheet(filepath: Path) -> str:
+    """Return the admin worksheet name, falling back to the sheet with the join column."""
+    with pd.ExcelFile(filepath) as xls:
+        sheet_names = list(xls.sheet_names)
+        if ADMIN_SHEET in sheet_names:
+            return ADMIN_SHEET
+
+        for sheet_name in sheet_names:
+            try:
+                header = pd.read_excel(xls, sheet_name=sheet_name, nrows=0, dtype=str)
+            except Exception:
+                logging.warning("Failed to inspect admin sheet header: %s [%s]", filepath.name, sheet_name)
+                continue
+
+            columns = [str(col).strip() for col in header.columns]
+            if ADMIN_JOIN_COL in columns:
+                logging.warning(
+                    "Admin sheet %r not found in %s; using sheet %r because it contains %r. "
+                    "Available sheets: %s",
+                    ADMIN_SHEET,
+                    filepath.name,
+                    sheet_name,
+                    ADMIN_JOIN_COL,
+                    sheet_names,
+                )
+                return sheet_name
+
+    raise ValueError(
+        f"Admin workbook {filepath.name} does not contain sheet {ADMIN_SHEET!r} "
+        f"or any sheet with column {ADMIN_JOIN_COL!r}. Available sheets: {sheet_names}"
+    )
+
+
 def read_admin(filepath: Path) -> pd.DataFrame:
     """读取 admin 订单表（工作表：汇总），全列字符串。"""
-    df = pd.read_excel(filepath, sheet_name=ADMIN_SHEET, dtype=str)
+    sheet_name = _select_admin_sheet(filepath)
+    df = pd.read_excel(filepath, sheet_name=sheet_name, dtype=str)
     return df.dropna(how="all").fillna("")
 
 

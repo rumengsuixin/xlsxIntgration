@@ -26,6 +26,7 @@ from src.bank_integration.app3 import (
     build_monthly_comparison,
     build_summary_sheet,
     enrich_admin,
+    read_admin,
     write_output,
 )
 from src.bank_integration.app4 import (
@@ -48,6 +49,7 @@ from src.bank_integration.config3 import (
     ADMIN_JOIN_COL,
     ADMIN_PAYMENT_COL,
     ADMIN_REFUND_COL,
+    ADMIN_SHEET,
     ADYEN_AMOUNT_COL,
     ADYEN_CURRENCY_COL,
     ADYEN_DATE_COL,
@@ -122,6 +124,55 @@ class BankIntegrationSampleTests(unittest.TestCase):
                 }
             ]
         )
+
+    def _write_admin_workbook(self, path, sheets):
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            for sheet_name, df in sheets.items():
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    def test_read_admin_uses_configured_summary_sheet_when_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admin.xlsx"
+            self._write_admin_workbook(
+                path,
+                {
+                    "Other": pd.DataFrame({"not_join": ["skip"]}),
+                    ADMIN_SHEET: self._admin_df("PSP-PREFERRED"),
+                },
+            )
+
+            result = read_admin(path)
+
+        self.assertEqual(result.loc[0, ADMIN_JOIN_COL], "PSP-PREFERRED")
+
+    def test_read_admin_falls_back_to_sheet_with_join_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admin.xlsx"
+            self._write_admin_workbook(
+                path,
+                {
+                    "Readme": pd.DataFrame({"not_join": ["skip"]}),
+                    "Orders": self._admin_df("PSP-FALLBACK"),
+                },
+            )
+
+            result = read_admin(path)
+
+        self.assertEqual(result.loc[0, ADMIN_JOIN_COL], "PSP-FALLBACK")
+
+    def test_read_admin_error_lists_sheets_when_no_candidate_sheet_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admin.xlsx"
+            self._write_admin_workbook(
+                path,
+                {
+                    "Readme": pd.DataFrame({"not_join": ["skip"]}),
+                    "Orders": pd.DataFrame({"also_not_join": ["skip"]}),
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, "Readme.*Orders"):
+                read_admin(path)
 
     def _adyen_status_for(self, psp, rows):
         lookup = build_adyen_lookup(self._adyen_df(rows))

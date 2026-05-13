@@ -223,36 +223,20 @@ def _dedup_lookup(df: pd.DataFrame, key_col: str, label: str) -> pd.DataFrame:
 
 
 def build_adyen_lookup(df: pd.DataFrame) -> pd.DataFrame:
-    """构建以 Psp Reference 为索引的 Adyen 查找表（每个 PSP 一行）。
-
-    同一 Psp Reference 有多行（Received/Authorised/SentForSettle 等），
-    只要任一行是 Refused，则该 PSP 不计入成功匹配；其余 PSP 按
-    ADYEN_RECORD_TYPE_PRIORITY 优先取最准确的成功行。
-    """
-    priority_map = {rt: i for i, rt in enumerate(ADYEN_RECORD_TYPE_PRIORITY)}
-
+    """构建以 Psp Reference 为索引的 Adyen 查找表，只保留 SentForSettle 行。"""
     df2 = df[df[ADYEN_JOIN_COL].str.strip() != ""].copy()
     record_types = df2[ADYEN_RECORD_TYPE_COL].str.strip()
 
-    refused_keys = set(df2.loc[record_types == "Refused", ADYEN_JOIN_COL].str.strip())
-    if refused_keys:
-        logging.warning("【Adyen】%d 个 PSP Reference 存在 Refused，已按失败处理并排除成功匹配", len(refused_keys))
-        df2 = df2[~df2[ADYEN_JOIN_COL].str.strip().isin(refused_keys)].copy()
-        record_types = df2[ADYEN_RECORD_TYPE_COL].str.strip()
-
-    success_mask = record_types.isin(ADYEN_RECORD_TYPE_PRIORITY)
-    filtered_count = len(df2) - int(success_mask.sum())
+    settle_mask = record_types.isin(ADYEN_RECORD_TYPE_PRIORITY)
+    filtered_count = len(df2) - int(settle_mask.sum())
     if filtered_count > 0:
-        logging.info("【Adyen】过滤 %d 条非成功状态记录（Received/Cancelled 等），不计入匹配", filtered_count)
-    df2 = df2[success_mask].copy()
-
-    df2["_p"] = df2[ADYEN_RECORD_TYPE_COL].str.strip().map(priority_map).astype(int)
-    df2 = df2.sort_values([ADYEN_JOIN_COL, "_p"])
+        logging.info("【Adyen】过滤 %d 条非 SentForSettle 记录，不计入匹配", filtered_count)
+    df2 = df2[settle_mask].copy()
 
     result = df2.drop_duplicates(subset=[ADYEN_JOIN_COL], keep="first")
     dupes = len(df2) - len(result)
     if dupes > 0:
-        logging.warning("【Adyen】同一 PSP Reference 存在多行记录，共去重 %d 行（优先取 SentForSettle/Authorised）", dupes)
+        logging.warning("【Adyen】同一 PSP Reference 存在多行 SentForSettle，去重 %d 行", dupes)
 
     keep_cols = [c for c in [
         ADYEN_JOIN_COL, ADYEN_AMOUNT_COL, ADYEN_CURRENCY_COL,
@@ -503,11 +487,7 @@ def _build_platform_only_rows(
             row[MATCH_STATUS_COL]      = "平台多余"
             row[STATUS_COL]            = "成功"
             row[SETTLEMENT_AMOUNT_COL] = str(adyen_lk.at[key, ADYEN_PAYABLE_COL]).strip()
-            m   = _to_float(adyen_lk.at[key, ADYEN_MARKUP_COL])
-            sch = _to_float(adyen_lk.at[key, ADYEN_SCHEME_FEES_COL])
-            itc = _to_float(adyen_lk.at[key, ADYEN_INTERCHANGE_COL])
-            if any(x is not None for x in [m, sch, itc]):
-                row[FEE_COL] = str(round((m or 0.0) + (sch or 0.0) + (itc or 0.0), 4))
+            row[FEE_COL] = "0"
             if ADYEN_DATE_COL in adyen_lk.columns:
                 row[TRANSACTION_DATE_COL] = _format_date(adyen_lk.at[key, ADYEN_DATE_COL])
             extra.append(row)
@@ -652,12 +632,7 @@ def enrich_admin(
             matched = amt != ""
             # 结算金额：Payable (SC)
             settle_amt = str(row.get(f"_a_{ADYEN_PAYABLE_COL}", "")).strip()
-            # 手续费：Markup + Scheme Fees + Interchange（均在 SentForSettle 行，SC 货币）
-            m   = _to_float(row.get(f"_a_{ADYEN_MARKUP_COL}", ""))
-            sch = _to_float(row.get(f"_a_{ADYEN_SCHEME_FEES_COL}", ""))
-            itc = _to_float(row.get(f"_a_{ADYEN_INTERCHANGE_COL}", ""))
-            if any(x is not None for x in [m, sch, itc]):
-                fee_amt = str(round((m or 0.0) + (sch or 0.0) + (itc or 0.0), 4))
+            fee_amt = "0"
             transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
         elif src == "华为支付" and huawei_avail:
@@ -736,12 +711,19 @@ def enrich_admin(
         country_tax_list.append(country_tax)
         transaction_date_list.append(transaction_date)
 
+        psp_ref = str(row.get(ADMIN_JOIN_COL, "")).strip()
         if refund_flag == "已退款":
             status_list.append("退款")
-        elif matched:
-            status_list.append("成功")
+        elif src == "Adyen":
+            if matched:
+                status_list.append("成功")
+            else:
+                status_list.append("")
         else:
-            status_list.append("失败")
+            if matched:
+                status_list.append("成功")
+            else:
+                status_list.append("")
 
     # ── 清理临时列，插入新增列 ────────────────────────────────
     tmp_cols = [c for c in result.columns if c.startswith(("_a_", "_h_", "_g_"))]
@@ -782,7 +764,7 @@ def log_match_stats(result_df: pd.DataFrame) -> None:
     if ADMIN_PAYMENT_COL not in result_df.columns:
         return
 
-    platform_map = [("Adyen", "Adyen"), ("华为支付", "华为支付"), ("Google支付", "Google支付"), ("苹果支付Lua", "苹果支付Lua")]
+    platform_map = [("Adyen", "Adyen"), ("华为支付", "华为支付"), ("Google支付", "Google支付")]
     for label, pay_val in platform_map:
         rows = result_df[result_df[ADMIN_PAYMENT_COL].str.strip() == pay_val]
         if rows.empty:
@@ -791,9 +773,13 @@ def log_match_stats(result_df: pd.DataFrame) -> None:
         failed = (rows[STATUS_COL] == "失败").sum()
         refund = (rows[STATUS_COL] == "退款").sum()
         logging.info("【%s】共 %d 条 — 成功 %d，失败 %d，退款 %d", label, len(rows), success, failed, refund)
-        if failed > 0:
-            ids = rows.loc[rows[STATUS_COL] == "失败", ADMIN_JOIN_COL].tolist()
-            logging.warning("【%s】未匹配流水号: %s", label, ids)
+        unmatched_count = (
+            rows[MATCH_STATUS_COL].astype(str).str.strip().eq("否").sum()
+            if MATCH_STATUS_COL in rows.columns
+            else failed
+        )
+        if unmatched_count > 0:
+            logging.warning("【%s】存在 %d 条未匹配记录，请查看【匹配失败订单】sheet", label, unmatched_count)
 
 
 def build_summary_sheet(
@@ -1410,6 +1396,13 @@ def write_output(
 
     main_df = result_df.reset_index(drop=True)
 
+    if ADMIN_PAYMENT_COL in main_df.columns:
+        is_apple = main_df[ADMIN_PAYMENT_COL].astype(str).str.strip().str.contains("苹果支付", na=False)
+        apple_admin_df = main_df.loc[is_apple].copy()
+        main_df = main_df.loc[~is_apple].reset_index(drop=True)
+    else:
+        apple_admin_df = pd.DataFrame()
+
     def _money_series(col_name: str) -> "pd.Series":
         if col_name not in main_df.columns:
             return pd.Series([float("nan")] * len(main_df), index=main_df.index)
@@ -1434,13 +1427,6 @@ def write_output(
     apple_summary_df = build_apple_platform_summary(apple_raw_df)
     if not apple_summary_df.empty:
         summary_df = pd.concat([summary_df, apple_summary_df], ignore_index=True)
-
-    if ADMIN_PAYMENT_COL in main_df.columns:
-        apple_admin_df = main_df.loc[
-            main_df[ADMIN_PAYMENT_COL].astype(str).str.strip().eq("苹果支付Lua")
-        ].copy()
-    else:
-        apple_admin_df = pd.DataFrame()
 
     def _format_detail_sheet(writer: pd.ExcelWriter, sheet_name: str) -> None:
         ws = writer.sheets[sheet_name]

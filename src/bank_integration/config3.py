@@ -24,8 +24,8 @@ ADYEN_RECORD_TYPE_COL = "Record Type"
 ADYEN_AMOUNT_COL = "Main Amount"
 ADYEN_CURRENCY_COL = "Main Currency"
 ADYEN_SETTLEMENT_CURRENCY_COL = "Settlement Currency"
-# 去重优先级（取交易金额最准确的行）
-ADYEN_RECORD_TYPE_PRIORITY = ["SentForSettle", "Authorised"]
+# 只处理结算行
+ADYEN_RECORD_TYPE_PRIORITY = ["SentForSettle"]
 # 结算与手续费（均来自 SentForSettle 行，Settlement Currency）
 ADYEN_PAYABLE_COL     = "Payable (SC)"
 ADYEN_MARKUP_COL      = "Markup (SC)"

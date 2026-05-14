@@ -107,6 +107,9 @@ from .config3 import (
 )
 
 
+GOOGLE_CHARGE_NET_INTERNAL_COL = "_google_charge_net_amount"
+
+
 def scan_source_files_3(input_dir: Path) -> dict:
     """扫描输入目录，按平台识别文件。
 
@@ -549,6 +552,15 @@ def _to_float(val) -> Optional[float]:
         return None
 
 
+def _google_charge_net_amount(merchant_charge, merchant_fee) -> Optional[float]:
+    """Google 原始 Charge 扣除 Google fee 后的商户币种净额。"""
+    mc = _to_float(merchant_charge)
+    if mc is None:
+        return None
+    mf = _to_float(merchant_fee)
+    return round((mc or 0.0) - abs(mf or 0.0), 2)
+
+
 def build_google_lookup(df: pd.DataFrame) -> pd.DataFrame:
     """构建以 Description 为索引的 Google Play 查找表，合并同一流水号的 4 种行类型。
 
@@ -738,6 +750,9 @@ def _build_platform_only_rows(
             row[PLATFORM_CURRENCY_COL] = str(google_lk.at[key, "ccy"]).strip()
             row[SETTLEMENT_CURRENCY_COL] = str(google_lk.at[key, "merchant_ccy"]).strip()
             row[MATCH_STATUS_COL] = "平台多余"
+            charge_net = _google_charge_net_amount(mc, mf)
+            if GOOGLE_CHARGE_NET_INTERNAL_COL in row and charge_net is not None:
+                row[GOOGLE_CHARGE_NET_INTERNAL_COL] = str(charge_net)
             if r is not None:  # 有退款记录 → 退款
                 refund_amount = abs(r or 0.0)
                 row[ORIGINAL_CHARGE_AMOUNT_COL] = str(round(refund_amount, 2))
@@ -822,6 +837,7 @@ def enrich_admin(
     fee_list              = []
     country_tax_list      = []
     transaction_date_list = []
+    google_charge_net_list = []
 
     for _, row in result.iterrows():
         src = str(row.get(ADMIN_PAYMENT_COL, "")).strip()
@@ -833,6 +849,7 @@ def enrich_admin(
         country_tax      = ""
         transaction_date = ""
         original_charge_amt = ""
+        google_charge_net = ""
         match_tag        = None  # None 表示由 matched 决定；非 None 时直接用此值
 
         if src == "Adyen" and adyen_avail:
@@ -857,11 +874,17 @@ def enrich_admin(
             ccy = str(row.get("_g_ccy", "")).strip()
             settle_ccy = str(row.get("_g_merchant_ccy", "")).strip()
             rate = _to_float(row.get("_g_conversion_rate", ""))
+            transaction_date = _format_date(row.get("_g_transaction_date", "")) or _format_date(row.get(ADMIN_DATE_COL, ""))
             if refund_flag == "已退款":
                 # 平台订单金额：|Charge refund| * 1.2（含 Google 代扣税费）
                 r  = _to_float(row.get("_g_refund_amt", ""))
                 mr  = _to_float(row.get("_g_merchant_refund_amt", ""))
                 mfr = _to_float(row.get("_g_merchant_fee_refund_amt", ""))
+                mc_charge = row.get("_g_merchant_charge_amt", "")
+                mf_charge = row.get("_g_merchant_fee_amt", "")
+                charge_net = _google_charge_net_amount(mc_charge, mf_charge)
+                if charge_net is not None:
+                    google_charge_net = str(charge_net)
                 if r is not None:
                     refund_amount = abs(r or 0.0)
                     original_charge_amt = str(round(refund_amount, 2))
@@ -898,6 +921,9 @@ def enrich_admin(
                 c = _to_float(row.get("_g_charge_amt", ""))
                 mc = _to_float(row.get("_g_merchant_charge_amt", ""))
                 mf = _to_float(row.get("_g_merchant_fee_amt", ""))
+                charge_net = _google_charge_net_amount(row.get("_g_merchant_charge_amt", ""), row.get("_g_merchant_fee_amt", ""))
+                if charge_net is not None:
+                    google_charge_net = str(charge_net)
                 if c is not None:
                     charge_amount = abs(c or 0.0)
                     original_charge_amt = str(round(charge_amount, 2))
@@ -913,7 +939,6 @@ def enrich_admin(
                 if mf is not None:
                     fee_amt = str(round(abs(mf), 2))
             matched = amt != ""
-            transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
         elif "苹果支付" in src:
             amt        = str(row.get(ADMIN_AMOUNT_COL, "")).strip()
@@ -937,6 +962,7 @@ def enrich_admin(
         fee_list.append(fee_amt)
         country_tax_list.append(country_tax)
         transaction_date_list.append(transaction_date)
+        google_charge_net_list.append(google_charge_net)
 
         psp_ref = str(row.get(ADMIN_JOIN_COL, "")).strip()
         if refund_flag == "已退款":
@@ -966,6 +992,7 @@ def enrich_admin(
     result.insert(admin_col_count + 7, FEE_COL,               fee_list)
     result.insert(admin_col_count + 8, COUNTRY_TAX_COL,       country_tax_list)
     result.insert(admin_col_count + 9, TRANSACTION_DATE_COL,  transaction_date_list)
+    result[GOOGLE_CHARGE_NET_INTERNAL_COL] = google_charge_net_list
 
     # ── 追加平台多余行（平台有、admin 无对应记录）────────────
     admin_keys = set(admin_df[ADMIN_JOIN_COL].str.strip())
@@ -1053,16 +1080,33 @@ def build_summary_sheet(
 
     amount = df[SETTLEMENT_AMOUNT_COL].fillna("").astype(str).str.strip().str.replace(",", "", regex=False)
     df["_amount"] = pd.to_numeric(amount, errors="coerce").fillna(0.0)
+    if GOOGLE_CHARGE_NET_INTERNAL_COL in df.columns:
+        charge_net_raw = (
+            df[GOOGLE_CHARGE_NET_INTERNAL_COL]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.replace(",", "", regex=False)
+        )
+        df["_google_charge_net"] = pd.to_numeric(charge_net_raw, errors="coerce").fillna(0.0)
+    else:
+        df["_google_charge_net"] = 0.0
 
     if MATCH_STATUS_COL in df.columns:
         pending_mask = df[MATCH_STATUS_COL].astype(str).str.strip().eq("退款待确认")
     else:
         pending_mask = pd.Series(False, index=df.index)
 
+    google_mask = df[ADMIN_PAYMENT_COL].astype(str).str.contains("Google", na=False)
+    google_refund_charge_mask = google_mask & (df[STATUS_COL] == "退款")
+
     df["_success_count"]  = ((df[STATUS_COL] == "成功") & ~pending_mask).astype(int)
     df["_refund_count"]   = ((df[STATUS_COL] == "退款") & ~pending_mask).astype(int)
     df["_pending_count"]  = pending_mask.astype(int)
-    df["_success_amount"] = df["_amount"].where((df[STATUS_COL] == "成功") & ~pending_mask, 0.0)
+    df["_success_amount"] = (
+        df["_amount"].where((df[STATUS_COL] == "成功") & ~pending_mask, 0.0)
+        + df["_google_charge_net"].where(google_refund_charge_mask, 0.0)
+    )
     df["_refund_amount"]  = df["_amount"].where((df[STATUS_COL] == "退款") & ~pending_mask, 0.0)
     df["_pending_amount"] = df["_amount"].where(pending_mask, 0.0)
 
@@ -1705,6 +1749,10 @@ def write_output(
     apple_summary_df = build_apple_platform_summary(apple_raw_df)
     if not apple_summary_df.empty:
         summary_df = pd.concat([summary_df, apple_summary_df], ignore_index=True)
+
+    for df in (main_df, diff_df, failed_df):
+        if GOOGLE_CHARGE_NET_INTERNAL_COL in df.columns:
+            df.drop(columns=[GOOGLE_CHARGE_NET_INTERNAL_COL], inplace=True)
 
     def _format_detail_sheet(writer: pd.ExcelWriter, sheet_name: str) -> None:
         ws = writer.sheets[sheet_name]

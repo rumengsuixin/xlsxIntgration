@@ -74,11 +74,13 @@ from src.bank_integration.config3 import (
     ADYEN_SETTLE_JOURNAL_COL,
     ADYEN_SETTLEMENT_CURRENCY_COL,
     COUNTRY_TAX_COL,
+    GOOGLE_CHARGE_TYPE,
     GOOGLE_DATE_COL,
     GOOGLE_BUYER_AMOUNT_COL,
     GOOGLE_BUYER_CURRENCY_COL,
     GOOGLE_CONVERSION_RATE_COL,
     GOOGLE_FEE_REFUND_TYPE,
+    GOOGLE_FEE_TYPE,
     GOOGLE_MERCHANT_AMOUNT_COL,
     GOOGLE_JOIN_COL,
     GOOGLE_MERCHANT_CURRENCY_COL,
@@ -637,6 +639,149 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(result.loc[0, "手续费"], "0.3")
         self.assertEqual(result.loc[0, COUNTRY_TAX_COL], "0.4")
 
+    def test_google_refund_summary_supplements_original_charge_net(self):
+        admin = pd.DataFrame(
+            [
+                {
+                    ADMIN_JOIN_COL: "GOOGLE-REFUND",
+                    ADMIN_AMOUNT_COL: "100.00",
+                    ADMIN_PAYMENT_COL: "Google支付",
+                    ADMIN_REFUND_COL: "已退款",
+                    ADMIN_DATE_COL: "2026-02-01 12:00:00",
+                },
+                {
+                    ADMIN_JOIN_COL: "GOOGLE-PENDING",
+                    ADMIN_AMOUNT_COL: "50.00",
+                    ADMIN_PAYMENT_COL: "Google支付",
+                    ADMIN_REFUND_COL: "已退款",
+                    ADMIN_DATE_COL: "2026-02-01 13:00:00",
+                },
+                {
+                    ADMIN_JOIN_COL: "ADMIN-ONLY",
+                    ADMIN_AMOUNT_COL: "10.00",
+                    ADMIN_PAYMENT_COL: "Google支付",
+                    ADMIN_REFUND_COL: "正常",
+                    ADMIN_DATE_COL: "2026-01-01 10:00:00",
+                },
+            ]
+        )
+        lookup = build_google_lookup(
+            pd.DataFrame(
+                [
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-REFUND",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_CHARGE_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "100.00",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_CONVERSION_RATE_COL: "0.2",
+                        GOOGLE_DATE_COL: "Jan 31, 2026",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "20.00",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-REFUND",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_FEE_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "-15.00",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "-3.00",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-REFUND",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_REFUND_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "-60.00",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_CONVERSION_RATE_COL: "0.2",
+                        GOOGLE_DATE_COL: "Jan 31, 2026",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "-12.00",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-REFUND",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_FEE_REFUND_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "10.00",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "2.00",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-PENDING",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_CHARGE_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "30.00",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_CONVERSION_RATE_COL: "0.2",
+                        GOOGLE_DATE_COL: "Jan 30, 2026",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "6.00",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-PENDING",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_FEE_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "-2.50",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "-0.50",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-PLATFORM-REFUND",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_CHARGE_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "25.00",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_CONVERSION_RATE_COL: "0.2",
+                        GOOGLE_DATE_COL: "Jan 29, 2026",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "5.00",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-PLATFORM-REFUND",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_FEE_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "-1.00",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "-0.20",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-PLATFORM-REFUND",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_REFUND_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "-20.00",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_CONVERSION_RATE_COL: "0.2",
+                        GOOGLE_DATE_COL: "Jan 29, 2026",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "-4.00",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                    {
+                        GOOGLE_JOIN_COL: "GOOGLE-PLATFORM-REFUND",
+                        GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_FEE_REFUND_TYPE,
+                        GOOGLE_BUYER_AMOUNT_COL: "0.50",
+                        GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                        GOOGLE_MERCHANT_AMOUNT_COL: "0.10",
+                        GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    },
+                ]
+            )
+        )
+
+        result = enrich_admin(admin, None, None, lookup)
+        summary = build_summary_sheet(result)
+
+        self.assertEqual(
+            result.loc[result[ADMIN_JOIN_COL] == "GOOGLE-REFUND", TRANSACTION_DATE_COL].iloc[0],
+            "2026-01-31",
+        )
+        google_hkd = summary[
+            (summary[TRANSACTION_DATE_COL] == "2026-01")
+            & (summary[ADMIN_PAYMENT_COL] == "Google支付")
+            & (summary[SETTLEMENT_CURRENCY_COL] == "HKD")
+        ].iloc[0]
+        self.assertEqual(google_hkd["成功笔数"], 0)
+        self.assertEqual(google_hkd["退款笔数"], 2)
+        self.assertEqual(google_hkd["退款待确认笔数"], 1)
+        self.assertAlmostEqual(google_hkd["成功金额"], 27.30, places=2)
+        self.assertAlmostEqual(google_hkd["退款金额"], 13.90, places=2)
+        self.assertAlmostEqual(google_hkd["退款待确认金额"], 5.50, places=2)
+        self.assertAlmostEqual(google_hkd["净交易金额"], 13.40, places=2)
+
     def test_google_platform_only_uses_buyer_amount_total_for_platform_amount(self):
         admin = pd.DataFrame(
             [
@@ -926,6 +1071,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         self.assertEqual(list(main.columns), list(diff.columns))
         self.assertEqual(list(main.columns), list(failed.columns))
+        self.assertFalse(any(str(col).startswith("_google_") for col in main.columns))
         self.assertEqual(set(diff[ADMIN_JOIN_COL]), {"DIFF-OVER-ONE"})
         self.assertEqual(set(failed[ADMIN_JOIN_COL]), {"FAILED"})
 

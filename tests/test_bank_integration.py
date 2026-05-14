@@ -166,6 +166,13 @@ class BankIntegrationSampleTests(unittest.TestCase):
             for sheet_name, df in sheets.items():
                 df.to_excel(writer, sheet_name=sheet_name, startrow=header, index=False)
 
+    def _write_csv(self, path, df, header=0, encoding="utf-8-sig"):
+        prefix = ""
+        if header:
+            filler = ",".join([f"说明{i}" for i in range(len(df.columns))])
+            prefix = "\n".join([filler] * header) + "\n"
+        path.write_text(prefix + df.to_csv(index=False), encoding=encoding)
+
     def _platform_sheet_cases(self):
         return [
             (
@@ -378,6 +385,31 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual([path.name for path in files["google"]], ["Google-PlayApps_20260301.csv"])
         self.assertEqual([path.name for path in files["admin"]], ["admin-orders.xlsx"])
 
+    def test_scan_source_files_3_detects_all_csv_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            for name in (
+                "admin-orders.csv",
+                "adyen-orders.csv",
+                "adyen-settlement-202603.csv",
+                "华为订单.csv",
+                "华为平台结算-202603.csv",
+                "Google-PlayApps_20260301.csv",
+                "苹果-202603.csv",
+                "ignore.txt",
+            ):
+                (tmp_path / name).write_text("", encoding="utf-8")
+
+            files = scan_source_files_3(tmp_path)
+
+        self.assertEqual([path.name for path in files["admin"]], ["admin-orders.csv"])
+        self.assertEqual([path.name for path in files["adyen"]], ["adyen-orders.csv"])
+        self.assertEqual([path.name for path in files["adyen_settlement"]], ["adyen-settlement-202603.csv"])
+        self.assertEqual([path.name for path in files["huawei"]], ["华为订单.csv"])
+        self.assertEqual([path.name for path in files["huawei_settlement"]], ["华为平台结算-202603.csv"])
+        self.assertEqual([path.name for path in files["google"]], ["Google-PlayApps_20260301.csv"])
+        self.assertEqual([path.name for path in files["apple"]], ["苹果-202603.csv"])
+
     def test_read_google_supports_csv(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Google-PlayApps_20260301.csv"
@@ -391,6 +423,46 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         self.assertEqual(result.loc[0, GOOGLE_JOIN_COL], "GPA.123")
         self.assertEqual(result.loc[0, GOOGLE_TRANSACTION_TYPE_COL], "Charge")
+
+    def test_platform_readers_support_csv(self):
+        for label, reader, _default_sheet, header, data, expected_col, expected_val in self._platform_sheet_cases():
+            with self.subTest(platform=label), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / f"{label.replace(' ', '-')}.csv"
+                self._write_csv(path, data, header=header)
+
+                result = reader(path)
+
+            self.assertEqual(result.loc[0, expected_col], expected_val)
+
+    def test_read_admin_supports_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admin-orders.csv"
+            self._write_csv(path, self._admin_df("PSP-CSV"))
+
+            result = read_admin(path)
+
+        self.assertEqual(result.loc[0, ADMIN_JOIN_COL], "PSP-CSV")
+
+    def test_read_adyen_settlement_csv_detects_metadata_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "adyen-settlement.csv"
+            path.write_text(
+                "Merchant/Company,Start date,End date,Aggregation,Country codes\n"
+                "MIG_InteractiveECOM,01/01/2026,10/05/2026,Store Terminal,\n"
+                "Company Account,Merchant Account,Country Code,Store,Terminal ID,Batch Number,"
+                "Batch Closed Date,Payment Method,Creation Date,TimeZone,Journal Type,Gross Currency,"
+                "Gross Debit (GC),Gross Credit (GC),Exchange Rate,Net Currency,Net Debit (NC),"
+                "Net Credit (NC),Bank/Card Commission (NC),DCC Markup (NC),Num Txs\n"
+                "MIG_Interactive,MIG_InteractiveECOM,HK,,,762,2026-05-07 20:15:28.663,,"
+                "2026-05-08,HKT,MerchantPayout,,,,1,USD,6984.78,,,,1\n",
+                encoding="utf-8-sig",
+            )
+
+            result = read_adyen_settlement(path)
+
+        self.assertEqual(result.loc[0, ADYEN_SETTLE_JOURNAL_COL], "MerchantPayout")
+        self.assertEqual(result.loc[0, ADYEN_SETTLE_CURRENCY_COL], "USD")
+        self.assertEqual(result.loc[0, ADYEN_SETTLE_AMOUNT_COL], "6984.78")
 
     def _adyen_status_for(self, psp, rows):
         lookup = build_adyen_lookup(self._adyen_df(rows))

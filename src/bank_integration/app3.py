@@ -29,6 +29,7 @@
 """
 
 import logging
+import csv
 from datetime import date
 from pathlib import Path
 from typing import List, Optional, Set
@@ -108,6 +109,7 @@ from .config3 import (
 
 
 GOOGLE_CHARGE_NET_INTERNAL_COL = "_google_charge_net_amount"
+CSV_ENCODINGS = ("utf-8-sig", "utf-16", "gbk")
 
 
 def scan_source_files_3(input_dir: Path) -> dict:
@@ -131,9 +133,7 @@ def scan_source_files_3(input_dir: Path) -> dict:
             continue
         suffix = f.suffix.lower()
         stem = f.stem.lower()
-        if suffix not in {".xlsx", ".xls"} and not (
-            suffix == ".csv" and (stem.startswith("googol-") or stem.startswith("google-"))
-        ):
+        if suffix not in {".xlsx", ".xls", ".csv"}:
             continue
         if stem.startswith("admin"):
             result["admin"].append(f)
@@ -164,6 +164,95 @@ def _normalize_columns(columns) -> Set[str]:
     return {str(col).strip() for col in columns}
 
 
+def _columns_match(
+    columns,
+    required_columns: List[str],
+    any_column_groups: Optional[List[List[str]]] = None,
+) -> bool:
+    normalized = _normalize_columns(columns)
+    required = [str(col).strip() for col in required_columns]
+    any_groups = [[str(col).strip() for col in group] for group in (any_column_groups or [])]
+    if not all(col in normalized for col in required):
+        return False
+    return not any_groups or any(all(col in normalized for col in group) for group in any_groups)
+
+
+def _read_csv_file(filepath: Path, *, header: int = 0, label: str = "CSV") -> pd.DataFrame:
+    """按常见编码读取 CSV，全列字符串，不限制数据大小。"""
+    last_error = None
+    for encoding in CSV_ENCODINGS:
+        try:
+            return pd.read_csv(filepath, dtype=str, encoding=encoding, header=header)
+        except UnicodeError as exc:
+            last_error = exc
+    raise UnicodeError(f"读取 {label} CSV 文件失败: {filepath.name}; 已尝试 utf-8-sig / utf-16 / gbk") from last_error
+
+
+def _find_csv_header_row(
+    filepath: Path,
+    *,
+    required_columns: List[str],
+    any_column_groups: Optional[List[List[str]]] = None,
+    max_scan_rows: int = 50,
+) -> Optional[int]:
+    last_error = None
+    for encoding in CSV_ENCODINGS:
+        try:
+            with filepath.open("r", encoding=encoding, newline="") as fh:
+                for idx, row in enumerate(csv.reader(fh)):
+                    if idx >= max_scan_rows:
+                        break
+                    if _columns_match(row, required_columns, any_column_groups):
+                        return idx
+            return None
+        except UnicodeError as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise UnicodeError(f"读取 CSV 文件失败: {filepath.name}; 已尝试 utf-8-sig / utf-16 / gbk") from last_error
+    return None
+
+
+def _read_csv_by_columns(
+    filepath: Path,
+    *,
+    header: int,
+    required_columns: List[str],
+    label: str,
+    any_column_groups: Optional[List[List[str]]] = None,
+) -> pd.DataFrame:
+    df = _read_csv_file(filepath, header=header, label=label).dropna(how="all").fillna("")
+    if _columns_match(df.columns, required_columns, any_column_groups):
+        return df
+
+    detected_header = _find_csv_header_row(
+        filepath,
+        required_columns=required_columns,
+        any_column_groups=any_column_groups,
+    )
+    if detected_header is not None and detected_header != header:
+        logging.warning(
+            "%s CSV %s configured header=%d not usable; using detected header=%d",
+            label,
+            filepath.name,
+            header,
+            detected_header,
+        )
+        df = _read_csv_file(filepath, header=detected_header, label=label).dropna(how="all").fillna("")
+        if _columns_match(df.columns, required_columns, any_column_groups):
+            return df
+
+    if not _columns_match(df.columns, required_columns, any_column_groups):
+        required_desc = list(required_columns)
+        if any_column_groups:
+            required_desc = required_desc + [f"one of {any_column_groups}"]
+        raise ValueError(
+            f"{label} CSV {filepath.name} does not contain required columns {required_desc!r}. "
+            f"Actual columns: {list(df.columns)!r}"
+        )
+    return df
+
+
 def _select_sheet_by_columns(
     filepath: Path,
     *,
@@ -186,14 +275,6 @@ def _select_sheet_by_columns(
             ordered_sheets.append(default_name)
         ordered_sheets.extend(sheet for sheet in sheet_names if sheet != default_name)
 
-        required = [str(col).strip() for col in required_columns]
-        any_groups = [[str(col).strip() for col in group] for group in (any_column_groups or [])]
-
-        def _matches(columns: Set[str]) -> bool:
-            if not all(col in columns for col in required):
-                return False
-            return not any_groups or any(all(col in columns for col in group) for group in any_groups)
-
         for sheet_name in ordered_sheets:
             try:
                 preview = pd.read_excel(xls, sheet_name=sheet_name, header=header, nrows=0, dtype=str)
@@ -201,7 +282,7 @@ def _select_sheet_by_columns(
                 logging.warning("Failed to inspect %s sheet header: %s [%s]", label, filepath.name, sheet_name)
                 continue
 
-            if _matches(_normalize_columns(preview.columns)):
+            if _columns_match(preview.columns, required_columns, any_column_groups):
                 if sheet_name != default_name:
                     expected = default_sheet if default_name is None else default_name
                     logging.warning(
@@ -267,6 +348,13 @@ def _select_admin_sheet(filepath: Path) -> str:
 
 def read_admin(filepath: Path) -> pd.DataFrame:
     """读取 admin 订单表（工作表：汇总），全列字符串。"""
+    if filepath.suffix.lower() == ".csv":
+        return _read_csv_by_columns(
+            filepath,
+            header=0,
+            required_columns=[ADMIN_JOIN_COL],
+            label="Admin",
+        )
     sheet_name = _select_admin_sheet(filepath)
     df = pd.read_excel(filepath, sheet_name=sheet_name, dtype=str)
     return df.dropna(how="all").fillna("")
@@ -274,6 +362,13 @@ def read_admin(filepath: Path) -> pd.DataFrame:
 
 def read_adyen(filepath: Path) -> pd.DataFrame:
     """读取 Adyen 报告（工作表：Data），全列字符串。"""
+    if filepath.suffix.lower() == ".csv":
+        return _read_csv_by_columns(
+            filepath,
+            header=0,
+            required_columns=[ADYEN_JOIN_COL, ADYEN_RECORD_TYPE_COL],
+            label="Adyen",
+        )
     sheet_name = _select_sheet_by_columns(
         filepath,
         default_sheet=ADYEN_SHEET,
@@ -286,16 +381,24 @@ def read_adyen(filepath: Path) -> pd.DataFrame:
 
 def read_adyen_settlement(filepath: Path) -> pd.DataFrame:
     """读取 ADYEN 结算报告（工作表 Data，header=6），全列字符串。"""
+    required_columns = [
+        ADYEN_SETTLE_JOURNAL_COL,
+        ADYEN_SETTLE_DATE_COL,
+        ADYEN_SETTLE_CURRENCY_COL,
+        ADYEN_SETTLE_AMOUNT_COL,
+    ]
+    if filepath.suffix.lower() == ".csv":
+        return _read_csv_by_columns(
+            filepath,
+            header=ADYEN_SETTLE_HEADER,
+            required_columns=required_columns,
+            label="ADYEN settlement",
+        )
     sheet_name = _select_sheet_by_columns(
         filepath,
         default_sheet=ADYEN_SETTLE_SHEET,
         header=ADYEN_SETTLE_HEADER,
-        required_columns=[
-            ADYEN_SETTLE_JOURNAL_COL,
-            ADYEN_SETTLE_DATE_COL,
-            ADYEN_SETTLE_CURRENCY_COL,
-            ADYEN_SETTLE_AMOUNT_COL,
-        ],
+        required_columns=required_columns,
         label="ADYEN settlement",
     )
     df = pd.read_excel(filepath, sheet_name=sheet_name, header=ADYEN_SETTLE_HEADER, dtype=str)
@@ -304,6 +407,13 @@ def read_adyen_settlement(filepath: Path) -> pd.DataFrame:
 
 def read_huawei(filepath: Path) -> pd.DataFrame:
     """读取华为平台文件（工作表：Sheet0），全列字符串。"""
+    if filepath.suffix.lower() == ".csv":
+        return _read_csv_by_columns(
+            filepath,
+            header=0,
+            required_columns=[HUAWEI_JOIN_COL, HUAWEI_AMOUNT_COL, HUAWEI_CURRENCY_COL],
+            label="Huawei",
+        )
     sheet_name = _select_sheet_by_columns(
         filepath,
         default_sheet=HUAWEI_SHEET,
@@ -320,15 +430,23 @@ def read_huawei_settlement(filepath: Path) -> pd.DataFrame:
 
     文件格式：第1行=中文列名，第2行=英文列名（header=1），第3行起=数据。
     """
+    required_columns = [
+        HUAWEI_SETTLE_DATE_COL,
+        HUAWEI_SETTLE_AMOUNT_COL,
+        HUAWEI_SETTLE_CURRENCY_COL,
+    ]
+    if filepath.suffix.lower() == ".csv":
+        return _read_csv_by_columns(
+            filepath,
+            header=1,
+            required_columns=required_columns,
+            label="Huawei settlement",
+        )
     sheet_name = _select_sheet_by_columns(
         filepath,
         default_sheet=0,
         header=1,
-        required_columns=[
-            HUAWEI_SETTLE_DATE_COL,
-            HUAWEI_SETTLE_AMOUNT_COL,
-            HUAWEI_SETTLE_CURRENCY_COL,
-        ],
+        required_columns=required_columns,
         label="Huawei settlement",
     )
     df = pd.read_excel(filepath, sheet_name=sheet_name, header=1, dtype=str)
@@ -338,15 +456,12 @@ def read_huawei_settlement(filepath: Path) -> pd.DataFrame:
 def read_google(filepath: Path) -> pd.DataFrame:
     """读取 Google Play 报告（第一个工作表），返回全部行。"""
     if filepath.suffix.lower() == ".csv":
-        last_error = None
-        for encoding in ("utf-8-sig", "utf-16", "gbk"):
-            try:
-                df = pd.read_csv(filepath, dtype=str, encoding=encoding)
-                break
-            except UnicodeError as exc:
-                last_error = exc
-        else:
-            raise last_error
+        df = _read_csv_by_columns(
+            filepath,
+            header=0,
+            required_columns=[GOOGLE_JOIN_COL, GOOGLE_TRANSACTION_TYPE_COL, GOOGLE_BUYER_AMOUNT_COL],
+            label="Google Play",
+        )
     else:
         sheet_name = _select_sheet_by_columns(
             filepath,
@@ -361,21 +476,31 @@ def read_google(filepath: Path) -> pd.DataFrame:
 
 def read_apple(filepath: Path) -> pd.DataFrame:
     """读取 App Store Connect 报表（header 在第 4 行，即 header=3），全列字符串。"""
+    required_columns = ["Extended Partner Share"]
+    any_column_groups = [
+        ["Settlement Date"],
+        ["Transaction Date"],
+        ["Begin Date"],
+        ["End Date"],
+        ["Report Date"],
+        ["Date"],
+        ["日期"],
+        ["Quantity", "Customer Price"],
+    ]
+    if filepath.suffix.lower() == ".csv":
+        return _read_csv_by_columns(
+            filepath,
+            header=3,
+            required_columns=required_columns,
+            any_column_groups=any_column_groups,
+            label="Apple",
+        )
     sheet_name = _select_sheet_by_columns(
         filepath,
         default_sheet=0,
         header=3,
-        required_columns=["Extended Partner Share"],
-        any_column_groups=[
-            ["Settlement Date"],
-            ["Transaction Date"],
-            ["Begin Date"],
-            ["End Date"],
-            ["Report Date"],
-            ["Date"],
-            ["日期"],
-            ["Quantity", "Customer Price"],
-        ],
+        required_columns=required_columns,
+        any_column_groups=any_column_groups,
         label="Apple",
     )
     df = pd.read_excel(filepath, sheet_name=sheet_name, header=3, dtype=str)

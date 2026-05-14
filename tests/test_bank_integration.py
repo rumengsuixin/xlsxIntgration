@@ -27,6 +27,13 @@ from src.bank_integration.app3 import (
     build_summary_sheet,
     enrich_admin,
     read_admin,
+    read_adyen,
+    read_adyen_settlement,
+    read_apple,
+    read_google,
+    read_huawei,
+    read_huawei_settlement,
+    scan_source_files_3,
     write_output,
 )
 from src.bank_integration.app4 import (
@@ -59,8 +66,14 @@ from src.bank_integration.config3 import (
     ADYEN_PAYABLE_COL,
     ADYEN_RECORD_TYPE_COL,
     ADYEN_SCHEME_FEES_COL,
+    ADYEN_SETTLE_AMOUNT_COL,
+    ADYEN_SETTLE_CURRENCY_COL,
+    ADYEN_SETTLE_DATE_COL,
+    ADYEN_SETTLE_HEADER,
+    ADYEN_SETTLE_JOURNAL_COL,
     ADYEN_SETTLEMENT_CURRENCY_COL,
     COUNTRY_TAX_COL,
+    GOOGLE_DATE_COL,
     GOOGLE_BUYER_AMOUNT_COL,
     GOOGLE_BUYER_CURRENCY_COL,
     GOOGLE_CONVERSION_RATE_COL,
@@ -74,6 +87,9 @@ from src.bank_integration.config3 import (
     HUAWEI_CURRENCY_COL,
     HUAWEI_DATE_COL,
     HUAWEI_JOIN_COL,
+    HUAWEI_SETTLE_AMOUNT_COL,
+    HUAWEI_SETTLE_CURRENCY_COL,
+    HUAWEI_SETTLE_DATE_COL,
     MATCH_STATUS_COL,
     ORIGINAL_CHARGE_AMOUNT_COL,
     OUTPUT_DIFF_SHEET_3,
@@ -130,6 +146,99 @@ class BankIntegrationSampleTests(unittest.TestCase):
             for sheet_name, df in sheets.items():
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
 
+    def _write_workbook(self, path, sheets, header=0):
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            for sheet_name, df in sheets.items():
+                df.to_excel(writer, sheet_name=sheet_name, startrow=header, index=False)
+
+    def _platform_sheet_cases(self):
+        return [
+            (
+                "adyen",
+                read_adyen,
+                "Data",
+                0,
+                pd.DataFrame({ADYEN_JOIN_COL: ["PSP-FALLBACK"], ADYEN_RECORD_TYPE_COL: ["SentForSettle"]}),
+                ADYEN_JOIN_COL,
+                "PSP-FALLBACK",
+            ),
+            (
+                "adyen settlement",
+                read_adyen_settlement,
+                "Data",
+                ADYEN_SETTLE_HEADER,
+                pd.DataFrame(
+                    {
+                        ADYEN_SETTLE_JOURNAL_COL: ["MerchantPayout"],
+                        ADYEN_SETTLE_DATE_COL: ["2026-03-31"],
+                        ADYEN_SETTLE_CURRENCY_COL: ["HKD"],
+                        ADYEN_SETTLE_AMOUNT_COL: ["10.00"],
+                    }
+                ),
+                ADYEN_SETTLE_JOURNAL_COL,
+                "MerchantPayout",
+            ),
+            (
+                "huawei",
+                read_huawei,
+                "Sheet0",
+                0,
+                pd.DataFrame(
+                    {
+                        HUAWEI_JOIN_COL: ["HUAWEI-FALLBACK"],
+                        HUAWEI_AMOUNT_COL: ["10.00"],
+                        HUAWEI_CURRENCY_COL: ["HKD"],
+                    }
+                ),
+                HUAWEI_JOIN_COL,
+                "HUAWEI-FALLBACK",
+            ),
+            (
+                "huawei settlement",
+                read_huawei_settlement,
+                0,
+                1,
+                pd.DataFrame(
+                    {
+                        HUAWEI_SETTLE_DATE_COL: ["202603"],
+                        HUAWEI_SETTLE_AMOUNT_COL: ["10.00"],
+                        HUAWEI_SETTLE_CURRENCY_COL: ["HKD"],
+                    }
+                ),
+                HUAWEI_SETTLE_DATE_COL,
+                "202603",
+            ),
+            (
+                "google",
+                read_google,
+                0,
+                0,
+                pd.DataFrame(
+                    {
+                        GOOGLE_JOIN_COL: ["GPA.123"],
+                        GOOGLE_TRANSACTION_TYPE_COL: ["Charge"],
+                        GOOGLE_BUYER_AMOUNT_COL: ["10.00"],
+                    }
+                ),
+                GOOGLE_JOIN_COL,
+                "GPA.123",
+            ),
+            (
+                "apple",
+                read_apple,
+                0,
+                3,
+                pd.DataFrame(
+                    {
+                        "Settlement Date": ["2026-03-01"],
+                        "Extended Partner Share": ["8.00"],
+                    }
+                ),
+                "Extended Partner Share",
+                "8.00",
+            ),
+        ]
+
     def test_read_admin_uses_configured_summary_sheet_when_present(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "admin.xlsx"
@@ -173,6 +282,100 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "Readme.*Orders"):
                 read_admin(path)
+
+    def test_read_admin_falls_back_when_configured_sheet_has_wrong_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admin.xlsx"
+            self._write_admin_workbook(
+                path,
+                {
+                    ADMIN_SHEET: pd.DataFrame({"not_join": ["skip"]}),
+                    "Orders": self._admin_df("PSP-FALLBACK"),
+                },
+            )
+
+            result = read_admin(path)
+
+        self.assertEqual(result.loc[0, ADMIN_JOIN_COL], "PSP-FALLBACK")
+
+    def test_platform_readers_fall_back_when_default_sheet_missing(self):
+        for label, reader, default_sheet, header, data, expected_col, expected_val in self._platform_sheet_cases():
+            if not isinstance(default_sheet, str):
+                continue
+            with self.subTest(platform=label), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / f"{label}.xlsx"
+                self._write_workbook(
+                    path,
+                    {
+                        "Readme": pd.DataFrame({"not_expected": ["skip"]}),
+                        "Actual": data,
+                    },
+                    header=header,
+                )
+
+                result = reader(path)
+
+            self.assertEqual(result.loc[0, expected_col], expected_val)
+
+    def test_platform_readers_fall_back_when_default_sheet_has_wrong_columns(self):
+        for label, reader, default_sheet, header, data, expected_col, expected_val in self._platform_sheet_cases():
+            with self.subTest(platform=label), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / f"{label}.xlsx"
+                first_sheet = "Data" if default_sheet == "Data" else "Sheet0" if default_sheet == "Sheet0" else "Readme"
+                self._write_workbook(
+                    path,
+                    {
+                        first_sheet: pd.DataFrame({"not_expected": ["skip"]}),
+                        "Actual": data,
+                    },
+                    header=header,
+                )
+
+                result = reader(path)
+
+            self.assertEqual(result.loc[0, expected_col], expected_val)
+
+    def test_platform_reader_error_lists_sheets_and_required_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "adyen.xlsx"
+            self._write_workbook(
+                path,
+                {
+                    "Data": pd.DataFrame({"not_expected": ["skip"]}),
+                    "Readme": pd.DataFrame({"also_not_expected": ["skip"]}),
+                },
+            )
+
+            with self.assertRaises(ValueError) as ctx:
+                read_adyen(path)
+            msg = str(ctx.exception)
+            for expected in ("adyen.xlsx", "Data", "Readme", "Psp Reference", "Record Type"):
+                self.assertIn(expected, msg)
+
+    def test_scan_source_files_3_detects_google_csv_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "Google-PlayApps_20260301.csv").write_text("", encoding="utf-8")
+            (tmp_path / "admin-orders.xlsx").write_text("", encoding="utf-8")
+
+            files = scan_source_files_3(tmp_path)
+
+        self.assertEqual([path.name for path in files["google"]], ["Google-PlayApps_20260301.csv"])
+        self.assertEqual([path.name for path in files["admin"]], ["admin-orders.xlsx"])
+
+    def test_read_google_supports_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Google-PlayApps_20260301.csv"
+            path.write_text(
+                "Description,Transaction Type,Amount (Buyer Currency)\n"
+                "GPA.123,Charge,10.00\n",
+                encoding="utf-8-sig",
+            )
+
+            result = read_google(path)
+
+        self.assertEqual(result.loc[0, GOOGLE_JOIN_COL], "GPA.123")
+        self.assertEqual(result.loc[0, GOOGLE_TRANSACTION_TYPE_COL], "Charge")
 
     def _adyen_status_for(self, psp, rows):
         lookup = build_adyen_lookup(self._adyen_df(rows))

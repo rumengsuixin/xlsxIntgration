@@ -31,7 +31,7 @@
 import logging
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Set
 
 import pandas as pd
 
@@ -121,10 +121,17 @@ def scan_source_files_3(input_dir: Path) -> dict:
     """
     result: dict = {"admin": [], "adyen": [], "adyen_settlement": [], "huawei": [], "huawei_settlement": [], "google": [], "apple": []}
 
-    for f in sorted(input_dir.glob("*.xlsx")):
+    for f in sorted(input_dir.iterdir()):
+        if not f.is_file():
+            continue
         if f.name.startswith("~$"):
             continue
+        suffix = f.suffix.lower()
         stem = f.stem.lower()
+        if suffix not in {".xlsx", ".xls"} and not (
+            suffix == ".csv" and (stem.startswith("googol-") or stem.startswith("google-"))
+        ):
+            continue
         if stem.startswith("admin"):
             result["admin"].append(f)
         elif stem.startswith("adyen-") and "settlement" in stem:
@@ -150,24 +157,96 @@ def scan_source_files_3(input_dir: Path) -> dict:
     return result
 
 
+def _normalize_columns(columns) -> Set[str]:
+    return {str(col).strip() for col in columns}
+
+
+def _select_sheet_by_columns(
+    filepath: Path,
+    *,
+    default_sheet,
+    header: int,
+    required_columns: List[str],
+    label: str,
+    any_column_groups: Optional[List[List[str]]] = None,
+):
+    """Return the first sheet whose header contains the required platform columns."""
+    with pd.ExcelFile(filepath) as xls:
+        sheet_names = list(xls.sheet_names)
+        if isinstance(default_sheet, int):
+            default_name = sheet_names[default_sheet] if -len(sheet_names) <= default_sheet < len(sheet_names) else None
+        else:
+            default_name = default_sheet if default_sheet in sheet_names else None
+
+        ordered_sheets = []
+        if default_name is not None:
+            ordered_sheets.append(default_name)
+        ordered_sheets.extend(sheet for sheet in sheet_names if sheet != default_name)
+
+        required = [str(col).strip() for col in required_columns]
+        any_groups = [[str(col).strip() for col in group] for group in (any_column_groups or [])]
+
+        def _matches(columns: Set[str]) -> bool:
+            if not all(col in columns for col in required):
+                return False
+            return not any_groups or any(all(col in columns for col in group) for group in any_groups)
+
+        for sheet_name in ordered_sheets:
+            try:
+                preview = pd.read_excel(xls, sheet_name=sheet_name, header=header, nrows=0, dtype=str)
+            except Exception:
+                logging.warning("Failed to inspect %s sheet header: %s [%s]", label, filepath.name, sheet_name)
+                continue
+
+            if _matches(_normalize_columns(preview.columns)):
+                if sheet_name != default_name:
+                    expected = default_sheet if default_name is None else default_name
+                    logging.warning(
+                        "%s sheet %r not usable in %s; using sheet %r because it contains required columns %s. "
+                        "Available sheets: %s",
+                        label,
+                        expected,
+                        filepath.name,
+                        sheet_name,
+                        required,
+                        sheet_names,
+                    )
+                return sheet_name
+
+    required_desc = list(required_columns)
+    if any_column_groups:
+        required_desc = required_desc + [f"one of {any_column_groups}"]
+    raise ValueError(
+        f"{label} workbook {filepath.name} does not contain usable sheet {default_sheet!r} "
+        f"or any sheet with required columns {required_desc!r}. Available sheets: {sheet_names}"
+    )
+
+
 def _select_admin_sheet(filepath: Path) -> str:
     """Return the admin worksheet name, falling back to the sheet with the join column."""
     with pd.ExcelFile(filepath) as xls:
         sheet_names = list(xls.sheet_names)
         if ADMIN_SHEET in sheet_names:
-            return ADMIN_SHEET
+            try:
+                header = pd.read_excel(xls, sheet_name=ADMIN_SHEET, nrows=0, dtype=str)
+                if ADMIN_JOIN_COL in _normalize_columns(header.columns):
+                    return ADMIN_SHEET
+            except Exception:
+                logging.warning("Failed to inspect admin sheet header: %s [%s]", filepath.name, ADMIN_SHEET)
 
         for sheet_name in sheet_names:
+            if sheet_name == ADMIN_SHEET:
+                continue
             try:
                 header = pd.read_excel(xls, sheet_name=sheet_name, nrows=0, dtype=str)
             except Exception:
                 logging.warning("Failed to inspect admin sheet header: %s [%s]", filepath.name, sheet_name)
                 continue
 
-            columns = [str(col).strip() for col in header.columns]
+            columns = _normalize_columns(header.columns)
             if ADMIN_JOIN_COL in columns:
                 logging.warning(
-                    "Admin sheet %r not found in %s; using sheet %r because it contains %r. "
+                    "Admin sheet %r not usable in %s; using sheet %r because it contains %r. "
                     "Available sheets: %s",
                     ADMIN_SHEET,
                     filepath.name,
@@ -192,19 +271,44 @@ def read_admin(filepath: Path) -> pd.DataFrame:
 
 def read_adyen(filepath: Path) -> pd.DataFrame:
     """读取 Adyen 报告（工作表：Data），全列字符串。"""
-    return pd.read_excel(filepath, sheet_name=ADYEN_SHEET, dtype=str).fillna("")
+    sheet_name = _select_sheet_by_columns(
+        filepath,
+        default_sheet=ADYEN_SHEET,
+        header=0,
+        required_columns=[ADYEN_JOIN_COL, ADYEN_RECORD_TYPE_COL],
+        label="Adyen",
+    )
+    return pd.read_excel(filepath, sheet_name=sheet_name, dtype=str).fillna("")
 
 
 def read_adyen_settlement(filepath: Path) -> pd.DataFrame:
     """读取 ADYEN 结算报告（工作表 Data，header=6），全列字符串。"""
-    df = pd.read_excel(filepath, sheet_name=ADYEN_SETTLE_SHEET,
-                       header=ADYEN_SETTLE_HEADER, dtype=str)
+    sheet_name = _select_sheet_by_columns(
+        filepath,
+        default_sheet=ADYEN_SETTLE_SHEET,
+        header=ADYEN_SETTLE_HEADER,
+        required_columns=[
+            ADYEN_SETTLE_JOURNAL_COL,
+            ADYEN_SETTLE_DATE_COL,
+            ADYEN_SETTLE_CURRENCY_COL,
+            ADYEN_SETTLE_AMOUNT_COL,
+        ],
+        label="ADYEN settlement",
+    )
+    df = pd.read_excel(filepath, sheet_name=sheet_name, header=ADYEN_SETTLE_HEADER, dtype=str)
     return df.dropna(how="all").fillna("")
 
 
 def read_huawei(filepath: Path) -> pd.DataFrame:
     """读取华为平台文件（工作表：Sheet0），全列字符串。"""
-    df = pd.read_excel(filepath, sheet_name=HUAWEI_SHEET, dtype=str)
+    sheet_name = _select_sheet_by_columns(
+        filepath,
+        default_sheet=HUAWEI_SHEET,
+        header=0,
+        required_columns=[HUAWEI_JOIN_COL, HUAWEI_AMOUNT_COL, HUAWEI_CURRENCY_COL],
+        label="Huawei",
+    )
+    df = pd.read_excel(filepath, sheet_name=sheet_name, dtype=str)
     return df.dropna(how="all").fillna("")
 
 
@@ -213,19 +317,65 @@ def read_huawei_settlement(filepath: Path) -> pd.DataFrame:
 
     文件格式：第1行=中文列名，第2行=英文列名（header=1），第3行起=数据。
     """
-    df = pd.read_excel(filepath, sheet_name=0, header=1, dtype=str)
+    sheet_name = _select_sheet_by_columns(
+        filepath,
+        default_sheet=0,
+        header=1,
+        required_columns=[
+            HUAWEI_SETTLE_DATE_COL,
+            HUAWEI_SETTLE_AMOUNT_COL,
+            HUAWEI_SETTLE_CURRENCY_COL,
+        ],
+        label="Huawei settlement",
+    )
+    df = pd.read_excel(filepath, sheet_name=sheet_name, header=1, dtype=str)
     return df.dropna(how="all").fillna("")
 
 
 def read_google(filepath: Path) -> pd.DataFrame:
     """读取 Google Play 报告（第一个工作表），返回全部行。"""
-    df = pd.read_excel(filepath, sheet_name=0, dtype=str)
+    if filepath.suffix.lower() == ".csv":
+        last_error = None
+        for encoding in ("utf-8-sig", "utf-16", "gbk"):
+            try:
+                df = pd.read_csv(filepath, dtype=str, encoding=encoding)
+                break
+            except UnicodeError as exc:
+                last_error = exc
+        else:
+            raise last_error
+    else:
+        sheet_name = _select_sheet_by_columns(
+            filepath,
+            default_sheet=0,
+            header=0,
+            required_columns=[GOOGLE_JOIN_COL, GOOGLE_TRANSACTION_TYPE_COL, GOOGLE_BUYER_AMOUNT_COL],
+            label="Google Play",
+        )
+        df = pd.read_excel(filepath, sheet_name=sheet_name, dtype=str)
     return df.fillna("")
 
 
 def read_apple(filepath: Path) -> pd.DataFrame:
     """读取 App Store Connect 报表（header 在第 4 行，即 header=3），全列字符串。"""
-    df = pd.read_excel(filepath, header=3, dtype=str)
+    sheet_name = _select_sheet_by_columns(
+        filepath,
+        default_sheet=0,
+        header=3,
+        required_columns=["Extended Partner Share"],
+        any_column_groups=[
+            ["Settlement Date"],
+            ["Transaction Date"],
+            ["Begin Date"],
+            ["End Date"],
+            ["Report Date"],
+            ["Date"],
+            ["日期"],
+            ["Quantity", "Customer Price"],
+        ],
+        label="Apple",
+    )
+    df = pd.read_excel(filepath, sheet_name=sheet_name, header=3, dtype=str)
     return df.dropna(how="all").fillna("")
 
 

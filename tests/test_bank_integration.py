@@ -20,6 +20,7 @@ from src.bank_integration.config2 import (
     BANK_READ_CONFIG_2,
 )
 from src.bank_integration.app3 import (
+    _format_date,
     build_adyen_lookup,
     build_apple_platform_summary,
     build_google_lookup,
@@ -115,6 +116,18 @@ HUAMEI_PDF = ROOT / "华美银行电子对账单-2025.02.pdf"
 
 
 class BankIntegrationSampleTests(unittest.TestCase):
+    def test_format_date_normalizes_platform_dates(self):
+        cases = {
+            "Jan 1, 2026": "2026-01-01",
+            "2026-01-30 12:34:56": "2026-01-30",
+            "2026-01-30": "2026-01-30",
+            "": "",
+            "not a date": "",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(_format_date(raw), expected)
+
     def _adyen_df(self, rows):
         defaults = {
             ADYEN_AMOUNT_COL: "10.00",

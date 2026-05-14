@@ -527,8 +527,17 @@ def build_huawei_fee_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 def _format_date(val) -> str:
     try:
+        if pd.isna(val):
+            return ""
         s = str(val).strip()
-        return s[:10] if len(s) >= 10 else ""
+        if not s:
+            return ""
+        parsed = pd.to_datetime(s, errors="coerce")
+        if not pd.isna(parsed):
+            return parsed.strftime("%Y-%m-%d")
+        if len(s) >= 10 and s[4:5] == "-" and s[7:8] == "-":
+            return s[:10]
+        return ""
     except Exception:
         return ""
 
@@ -1021,6 +1030,8 @@ def build_summary_sheet(
         "成功金额",
         "退款笔数",
         "退款金额",
+        "退款待确认笔数",
+        "退款待确认金额",
         "净交易金额",
         "手续费",
         TAX_COL,
@@ -1042,18 +1053,26 @@ def build_summary_sheet(
 
     amount = df[SETTLEMENT_AMOUNT_COL].fillna("").astype(str).str.strip().str.replace(",", "", regex=False)
     df["_amount"] = pd.to_numeric(amount, errors="coerce").fillna(0.0)
-    df["_success_count"] = (df[STATUS_COL] == "成功").astype(int)
-    df["_refund_count"] = (df[STATUS_COL] == "退款").astype(int)
-    df["_success_amount"] = df["_amount"].where(df[STATUS_COL] == "成功", 0.0)
-    df["_refund_amount"] = df["_amount"].where(df[STATUS_COL] == "退款", 0.0)
+
+    if MATCH_STATUS_COL in df.columns:
+        pending_mask = df[MATCH_STATUS_COL].astype(str).str.strip().eq("退款待确认")
+    else:
+        pending_mask = pd.Series(False, index=df.index)
+
+    df["_success_count"]  = ((df[STATUS_COL] == "成功") & ~pending_mask).astype(int)
+    df["_refund_count"]   = ((df[STATUS_COL] == "退款") & ~pending_mask).astype(int)
+    df["_pending_count"]  = pending_mask.astype(int)
+    df["_success_amount"] = df["_amount"].where((df[STATUS_COL] == "成功") & ~pending_mask, 0.0)
+    df["_refund_amount"]  = df["_amount"].where((df[STATUS_COL] == "退款") & ~pending_mask, 0.0)
+    df["_pending_amount"] = df["_amount"].where(pending_mask, 0.0)
 
     if FEE_COL in df.columns:
         fee_raw = df[FEE_COL].fillna("").astype(str).str.strip().str.replace(",", "", regex=False)
         df["_fee"] = pd.to_numeric(fee_raw, errors="coerce").fillna(0.0)
     else:
         df["_fee"] = 0.0
-    df["_fee_success"] = df["_fee"].where(df[STATUS_COL] == "成功", 0.0)
-    df["_fee_refund"]  = df["_fee"].where(df[STATUS_COL] == "退款", 0.0)
+    df["_fee_success"] = df["_fee"].where((df[STATUS_COL] == "成功") & ~pending_mask, 0.0)
+    df["_fee_refund"]  = df["_fee"].where((df[STATUS_COL] == "退款") & ~pending_mask, 0.0)
 
     summary = (
         df.groupby(group_cols, as_index=False)
@@ -1062,6 +1081,8 @@ def build_summary_sheet(
             成功金额=("_success_amount", "sum"),
             退款笔数=("_refund_count", "sum"),
             退款金额=("_refund_amount", "sum"),
+            退款待确认笔数=("_pending_count", "sum"),
+            退款待确认金额=("_pending_amount", "sum"),
             _fee_success=("_fee_success", "sum"),
             _fee_refund=("_fee_refund", "sum"),
         )
@@ -1129,6 +1150,9 @@ def build_summary_sheet(
                 logging.info("ADYEN 结算文件已读取，但汇总表中未找到 Adyen 平台行，结算数据未应用")
 
     summary["手续费"] = pd.to_numeric(summary["手续费"], errors="coerce").abs().round(4)
+    for _col in ("退款待确认笔数", "退款待确认金额"):
+        if _col in summary.columns:
+            summary[_col] = summary[_col].fillna(0)
     return summary[summary_cols]
 
 

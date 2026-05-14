@@ -674,6 +674,7 @@ def enrich_admin(
         country_tax      = ""
         transaction_date = ""
         original_charge_amt = ""
+        match_tag        = None  # None 表示由 matched 决定；非 None 时直接用此值
 
         if src == "Adyen" and adyen_avail:
             amt = str(row.get(f"_a_{ADYEN_AMOUNT_COL}", "")).strip()
@@ -708,14 +709,31 @@ def enrich_admin(
                     amt = str(round(refund_amount * 1.2, 2))
                     if rate is not None:
                         country_tax = str(round(refund_amount * 0.2 * rate, 2))
+                    # 结算金额：|merchant refund| - |merchant fee_refund|
+                    if mr is not None:
+                        settle_amt = str(round(abs(mr or 0.0) - abs(mfr or 0.0), 2))
+                    # 手续费：|merchant fee_refund|
+                    if mfr is not None:
+                        fee_amt = str(round(abs(mfr), 2))
                 else:
-                    amt = ""
-                # 结算金额：|merchant refund| - |merchant fee_refund|
-                if mr is not None:
-                    settle_amt = str(round(abs(mr or 0.0) - abs(mfr or 0.0), 2))
-                # 手续费：|merchant fee_refund|
-                if mfr is not None:
-                    fee_amt = str(round(abs(mfr), 2))
+                    # Google报表暂无Charge refund行（退款发生在报表周期外），以Charge行兜底
+                    # 标记为"退款待确认"，归入匹配订单差异sheet
+                    c_fb = _to_float(row.get("_g_charge_amt", ""))
+                    mc_fb = _to_float(row.get("_g_merchant_charge_amt", ""))
+                    mf_fb = _to_float(row.get("_g_merchant_fee_amt", ""))
+                    if c_fb is not None:
+                        charge_amount = abs(c_fb or 0.0)
+                        original_charge_amt = str(round(charge_amount, 2))
+                        amt = str(round(charge_amount * 1.2, 2))
+                        if rate is not None:
+                            country_tax = str(round(charge_amount * 0.2 * rate, 2))
+                        match_tag = "退款待确认"
+                    else:
+                        amt = ""
+                    if mc_fb is not None:
+                        settle_amt = str(round((mc_fb or 0.0) - abs(mf_fb or 0.0), 2))
+                    if mf_fb is not None:
+                        fee_amt = str(round(abs(mf_fb), 2))
             else:
                 # 平台订单金额：|Charge| * 1.2（含 Google 代扣税费）
                 c = _to_float(row.get("_g_charge_amt", ""))
@@ -755,7 +773,7 @@ def enrich_admin(
         platform_amt_list.append(amt)
         platform_ccy_list.append(ccy)
         settlement_ccy_list.append(settle_ccy)
-        match_status_list.append("是" if matched else "否")
+        match_status_list.append(match_tag if match_tag is not None else ("是" if matched else "否"))
         settlement_list.append(settle_amt)
         fee_list.append(fee_amt)
         country_tax_list.append(country_tax)
@@ -1504,7 +1522,9 @@ def write_output(
     platform_amount = _money_series(PLATFORM_AMOUNT_COL)
     amount_diff = (admin_amount - platform_amount).abs()
 
-    diff_df = main_df.loc[match_status.eq("是") & amount_diff.gt(1.0)].copy()
+    diff_df = main_df.loc[
+        (match_status.eq("是") & amount_diff.gt(1.0)) | match_status.eq("退款待确认")
+    ].copy()
     failed_df = main_df.loc[match_status.eq("否")].copy()
 
     summary_df = build_summary_sheet(main_df, huawei_settle_df, adyen_settle_df)

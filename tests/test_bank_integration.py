@@ -854,6 +854,156 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertAlmostEqual(google_hkd["退款待确认金额"], 5.50, places=2)
         self.assertAlmostEqual(google_hkd["净交易金额"], 13.40, places=2)
 
+    def test_google_cashflow_summary_keeps_cross_month_refund_in_refund_month(self):
+        admin = pd.DataFrame(
+            [
+                {
+                    ADMIN_JOIN_COL: "GOOGLE-CROSS-MONTH",
+                    ADMIN_AMOUNT_COL: "100.00",
+                    ADMIN_PAYMENT_COL: "Google支付",
+                    ADMIN_REFUND_COL: "已退款",
+                    ADMIN_DATE_COL: "2026-02-05 12:00:00",
+                }
+            ]
+        )
+        google_raw = pd.DataFrame(
+            [
+                {
+                    GOOGLE_JOIN_COL: "GOOGLE-CROSS-MONTH",
+                    GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_CHARGE_TYPE,
+                    GOOGLE_BUYER_AMOUNT_COL: "100.00",
+                    GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                    GOOGLE_CONVERSION_RATE_COL: "0.2",
+                    GOOGLE_DATE_COL: "Jan 31, 2026",
+                    GOOGLE_MERCHANT_AMOUNT_COL: "20.00",
+                    GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                },
+                {
+                    GOOGLE_JOIN_COL: "GOOGLE-CROSS-MONTH",
+                    GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_FEE_TYPE,
+                    GOOGLE_BUYER_AMOUNT_COL: "-15.00",
+                    GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                    GOOGLE_MERCHANT_AMOUNT_COL: "-3.00",
+                    GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    GOOGLE_DATE_COL: "Jan 31, 2026",
+                },
+                {
+                    GOOGLE_JOIN_COL: "GOOGLE-CROSS-MONTH",
+                    GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_REFUND_TYPE,
+                    GOOGLE_BUYER_AMOUNT_COL: "-50.00",
+                    GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                    GOOGLE_CONVERSION_RATE_COL: "0.2",
+                    GOOGLE_DATE_COL: "Feb 3, 2026",
+                    GOOGLE_MERCHANT_AMOUNT_COL: "-10.00",
+                    GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                },
+                {
+                    GOOGLE_JOIN_COL: "GOOGLE-CROSS-MONTH",
+                    GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_FEE_REFUND_TYPE,
+                    GOOGLE_BUYER_AMOUNT_COL: "7.50",
+                    GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                    GOOGLE_MERCHANT_AMOUNT_COL: "1.50",
+                    GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    GOOGLE_DATE_COL: "Feb 3, 2026",
+                },
+            ]
+        )
+
+        result = enrich_admin(admin, None, None, build_google_lookup(google_raw))
+        summary = build_summary_sheet(result, google_raw_df=google_raw)
+
+        jan = summary[
+            (summary[TRANSACTION_DATE_COL] == "2026-01")
+            & (summary[ADMIN_PAYMENT_COL] == "Google支付")
+            & (summary[SETTLEMENT_CURRENCY_COL] == "HKD")
+        ].iloc[0]
+        feb = summary[
+            (summary[TRANSACTION_DATE_COL] == "2026-02")
+            & (summary[ADMIN_PAYMENT_COL] == "Google支付")
+            & (summary[SETTLEMENT_CURRENCY_COL] == "HKD")
+        ].iloc[0]
+
+        self.assertEqual(jan["成功笔数"], 1)
+        self.assertEqual(jan["退款笔数"], 0)
+        self.assertAlmostEqual(jan["成功金额"], 17.00, places=2)
+        self.assertAlmostEqual(jan["退款金额"], 0.00, places=2)
+        self.assertAlmostEqual(jan["净交易金额"], 17.00, places=2)
+        self.assertEqual(feb["成功笔数"], 0)
+        self.assertEqual(feb["退款笔数"], 1)
+        self.assertAlmostEqual(feb["成功金额"], 0.00, places=2)
+        self.assertAlmostEqual(feb["退款金额"], 8.50, places=2)
+        self.assertAlmostEqual(feb["净交易金额"], -8.50, places=2)
+
+    def test_google_cashflow_summary_keeps_single_month_refund_net_amount(self):
+        admin = pd.DataFrame(
+            [
+                {
+                    ADMIN_JOIN_COL: "GOOGLE-SAME-MONTH",
+                    ADMIN_AMOUNT_COL: "100.00",
+                    ADMIN_PAYMENT_COL: "Google支付",
+                    ADMIN_REFUND_COL: "已退款",
+                    ADMIN_DATE_COL: "2026-01-20 12:00:00",
+                }
+            ]
+        )
+        google_raw = pd.DataFrame(
+            [
+                {
+                    GOOGLE_JOIN_COL: "GOOGLE-SAME-MONTH",
+                    GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_CHARGE_TYPE,
+                    GOOGLE_BUYER_AMOUNT_COL: "100.00",
+                    GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                    GOOGLE_CONVERSION_RATE_COL: "0.2",
+                    GOOGLE_DATE_COL: "Jan 10, 2026",
+                    GOOGLE_MERCHANT_AMOUNT_COL: "20.00",
+                    GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                },
+                {
+                    GOOGLE_JOIN_COL: "GOOGLE-SAME-MONTH",
+                    GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_FEE_TYPE,
+                    GOOGLE_BUYER_AMOUNT_COL: "-15.00",
+                    GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                    GOOGLE_MERCHANT_AMOUNT_COL: "-3.00",
+                    GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    GOOGLE_DATE_COL: "Jan 10, 2026",
+                },
+                {
+                    GOOGLE_JOIN_COL: "GOOGLE-SAME-MONTH",
+                    GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_REFUND_TYPE,
+                    GOOGLE_BUYER_AMOUNT_COL: "-60.00",
+                    GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                    GOOGLE_CONVERSION_RATE_COL: "0.2",
+                    GOOGLE_DATE_COL: "Jan 25, 2026",
+                    GOOGLE_MERCHANT_AMOUNT_COL: "-12.00",
+                    GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                },
+                {
+                    GOOGLE_JOIN_COL: "GOOGLE-SAME-MONTH",
+                    GOOGLE_TRANSACTION_TYPE_COL: GOOGLE_FEE_REFUND_TYPE,
+                    GOOGLE_BUYER_AMOUNT_COL: "10.00",
+                    GOOGLE_BUYER_CURRENCY_COL: "TRY",
+                    GOOGLE_MERCHANT_AMOUNT_COL: "2.00",
+                    GOOGLE_MERCHANT_CURRENCY_COL: "HKD",
+                    GOOGLE_DATE_COL: "Jan 25, 2026",
+                },
+            ]
+        )
+
+        result = enrich_admin(admin, None, None, build_google_lookup(google_raw))
+        summary = build_summary_sheet(result, google_raw_df=google_raw)
+
+        google_hkd = summary[
+            (summary[TRANSACTION_DATE_COL] == "2026-01")
+            & (summary[ADMIN_PAYMENT_COL] == "Google支付")
+            & (summary[SETTLEMENT_CURRENCY_COL] == "HKD")
+        ].iloc[0]
+        self.assertEqual(google_hkd["成功笔数"], 1)
+        self.assertEqual(google_hkd["退款笔数"], 1)
+        self.assertEqual(google_hkd["退款待确认笔数"], 0)
+        self.assertAlmostEqual(google_hkd["成功金额"], 17.00, places=2)
+        self.assertAlmostEqual(google_hkd["退款金额"], 10.00, places=2)
+        self.assertAlmostEqual(google_hkd["净交易金额"], 7.00, places=2)
+
     def test_google_platform_only_uses_buyer_amount_total_for_platform_amount(self):
         admin = pd.DataFrame(
             [

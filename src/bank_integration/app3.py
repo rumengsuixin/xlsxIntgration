@@ -1161,16 +1161,154 @@ def log_match_stats(result_df: pd.DataFrame) -> None:
             logging.warning("【%s】存在 %d 条未匹配记录，请查看【匹配失败订单】sheet", label, unmatched_count)
 
 
+def build_google_cashflow_summary(google_raw_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """按 Google 源文件现金流日期构建月度汇总行。"""
+    summary_cols = [
+        TRANSACTION_DATE_COL,
+        ADMIN_PAYMENT_COL,
+        SETTLEMENT_CURRENCY_COL,
+        "成功笔数",
+        "成功金额",
+        "退款笔数",
+        "退款金额",
+        "退款待确认笔数",
+        "退款待确认金额",
+        "净交易金额",
+        "手续费",
+        TAX_COL,
+    ]
+    if google_raw_df is None or google_raw_df.empty:
+        return pd.DataFrame(columns=summary_cols)
+
+    required = {
+        GOOGLE_JOIN_COL,
+        GOOGLE_TRANSACTION_TYPE_COL,
+        GOOGLE_DATE_COL,
+        GOOGLE_MERCHANT_AMOUNT_COL,
+        GOOGLE_MERCHANT_CURRENCY_COL,
+    }
+    if not required.issubset(set(google_raw_df.columns)):
+        missing = sorted(required - set(google_raw_df.columns))
+        logging.warning("Google 源文件缺少现金流汇总必需列，跳过源流水汇总: %s", ", ".join(missing))
+        return pd.DataFrame(columns=summary_cols)
+
+    df = google_raw_df.copy()
+    df[GOOGLE_JOIN_COL] = df[GOOGLE_JOIN_COL].fillna("").astype(str).str.strip()
+    df[GOOGLE_TRANSACTION_TYPE_COL] = df[GOOGLE_TRANSACTION_TYPE_COL].fillna("").astype(str).str.strip()
+    df[GOOGLE_DATE_COL] = df[GOOGLE_DATE_COL].fillna("").astype(str).str.strip()
+    df[GOOGLE_MERCHANT_CURRENCY_COL] = (
+        df[GOOGLE_MERCHANT_CURRENCY_COL].fillna("").astype(str).str.strip()
+    )
+    amount_raw = (
+        df[GOOGLE_MERCHANT_AMOUNT_COL]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.replace(",", "", regex=False)
+    )
+    df["_merchant_amount"] = pd.to_numeric(amount_raw, errors="coerce").fillna(0.0)
+    df["_date"] = df[GOOGLE_DATE_COL].map(_format_date)
+    df["_month"] = df["_date"].astype(str).str[:7]
+    df = df[(df[GOOGLE_JOIN_COL] != "") & (df["_month"].str.len() == 7)].copy()
+    if df.empty:
+        return pd.DataFrame(columns=summary_cols)
+
+    key_cols = [GOOGLE_JOIN_COL, GOOGLE_DATE_COL, GOOGLE_MERCHANT_CURRENCY_COL]
+
+    def _typed(type_name: str, amount_col: str, count_col: str) -> pd.DataFrame:
+        sub = df[df[GOOGLE_TRANSACTION_TYPE_COL] == type_name].copy()
+        if sub.empty:
+            return pd.DataFrame(columns=key_cols + ["_month", amount_col, count_col])
+        return (
+            sub.groupby(key_cols, as_index=False)
+            .agg(
+                _month=("_month", "first"),
+                **{
+                    amount_col: ("_merchant_amount", "sum"),
+                    count_col: (GOOGLE_JOIN_COL, "size"),
+                },
+            )
+        )
+
+    charges = _typed(GOOGLE_CHARGE_TYPE, "_charge_amount", "_charge_count")
+    fees = _typed(GOOGLE_FEE_TYPE, "_fee_amount", "_fee_count").drop(columns=["_month"], errors="ignore")
+    refunds = _typed(GOOGLE_REFUND_TYPE, "_refund_amount", "_refund_count")
+    fee_refunds = _typed(GOOGLE_FEE_REFUND_TYPE, "_fee_refund_amount", "_fee_refund_count").drop(
+        columns=["_month"], errors="ignore"
+    )
+
+    success_rows = pd.DataFrame()
+    if not charges.empty:
+        success_rows = charges.merge(fees, on=key_cols, how="left")
+        success_rows["_fee_amount"] = success_rows["_fee_amount"].fillna(0.0)
+        success_rows["_success_count"] = success_rows["_charge_count"].fillna(0).astype(int)
+        success_rows["_refund_count_out"] = 0
+        success_rows["_success_amount"] = success_rows["_charge_amount"] - success_rows["_fee_amount"].abs()
+        success_rows["_refund_amount_out"] = 0.0
+        success_rows["_fee_success"] = success_rows["_fee_amount"].abs()
+        success_rows["_fee_refund"] = 0.0
+
+    refund_rows = pd.DataFrame()
+    if not refunds.empty:
+        refund_rows = refunds.merge(fee_refunds, on=key_cols, how="left")
+        refund_rows["_fee_refund_amount"] = refund_rows["_fee_refund_amount"].fillna(0.0)
+        refund_rows["_success_count"] = 0
+        refund_rows["_refund_count_out"] = refund_rows["_refund_count"].fillna(0).astype(int)
+        refund_rows["_success_amount"] = 0.0
+        refund_rows["_refund_amount_out"] = (
+            refund_rows["_refund_amount"].abs() - refund_rows["_fee_refund_amount"].abs()
+        )
+        refund_rows["_fee_success"] = 0.0
+        refund_rows["_fee_refund"] = refund_rows["_fee_refund_amount"].abs()
+
+    cashflow = pd.concat([success_rows, refund_rows], ignore_index=True, sort=False)
+    if cashflow.empty:
+        return pd.DataFrame(columns=summary_cols)
+
+    cashflow[ADMIN_PAYMENT_COL] = "Google支付"
+    grouped = (
+        cashflow.groupby(["_month", ADMIN_PAYMENT_COL, GOOGLE_MERCHANT_CURRENCY_COL], as_index=False)
+        .agg(
+            成功笔数=("_success_count", "sum"),
+            成功金额=("_success_amount", "sum"),
+            退款笔数=("_refund_count_out", "sum"),
+            退款金额=("_refund_amount_out", "sum"),
+            _fee_success=("_fee_success", "sum"),
+            _fee_refund=("_fee_refund", "sum"),
+        )
+        .rename(
+            columns={
+                "_month": TRANSACTION_DATE_COL,
+                GOOGLE_MERCHANT_CURRENCY_COL: SETTLEMENT_CURRENCY_COL,
+            }
+        )
+    )
+    grouped["退款待确认笔数"] = 0
+    grouped["退款待确认金额"] = 0.0
+    grouped["净交易金额"] = grouped["成功金额"] - grouped["退款金额"]
+    grouped["手续费"] = (grouped["_fee_success"] - grouped["_fee_refund"]).abs()
+    grouped[TAX_COL] = 0.0
+
+    amount_cols = ["成功金额", "退款金额", "退款待确认金额", "净交易金额", "手续费", TAX_COL]
+    grouped[amount_cols] = grouped[amount_cols].round(4)
+    grouped = grouped.drop(columns=["_fee_success", "_fee_refund"])
+    return grouped[summary_cols].sort_values(
+        [TRANSACTION_DATE_COL, ADMIN_PAYMENT_COL, SETTLEMENT_CURRENCY_COL],
+        kind="stable",
+    ).reset_index(drop=True)
+
+
 def build_summary_sheet(
     result_df: pd.DataFrame,
     huawei_settle_df: Optional[pd.DataFrame] = None,
     adyen_settle_df: Optional[pd.DataFrame] = None,
+    google_raw_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """按交易日期、平台、结算币种汇总结算金额，附手续费和税金列。
 
     手续费来源：
         Adyen  — 来自 adyen_settle_df（月度结算文件）：手续费 = 成功金额 - 净交易金额 - 税金
-        Google — 聚合 result_df 中的 FEE_COL（Merchant 行）
+        Google — 优先聚合 Google 源文件现金流行；未传源文件时聚合 result_df 中的 FEE_COL
         华为   — 来自 huawei_settle_df（月度结算文件），追加为单独的 HKD 结算行
     Adyen 净交易金额 = 结算文件 MerchantPayout 月度合计；税金 = InvoiceDeduction 月度合计。
     """
@@ -1262,6 +1400,15 @@ def build_summary_sheet(
     summary["手续费"] = (summary["_fee_success"] - summary["_fee_refund"]).round(4)
     summary = summary.drop(columns=["_fee_success", "_fee_refund"])
     summary[TAX_COL] = 0.0
+
+    google_cashflow_summary = build_google_cashflow_summary(google_raw_df)
+    if not google_cashflow_summary.empty:
+        google_summary_mask = summary[ADMIN_PAYMENT_COL].astype(str).str.contains("Google", na=False)
+        summary = (
+            pd.concat([summary[~google_summary_mask], google_cashflow_summary], ignore_index=True)
+            .sort_values(group_cols, kind="stable")
+            .reset_index(drop=True)
+        )
 
     if huawei_settle_df is not None and not huawei_settle_df.empty:
         huawei_settle_rows = build_huawei_fee_summary(huawei_settle_df)
@@ -1832,6 +1979,7 @@ def write_output(
     apple_raw_df: Optional[pd.DataFrame] = None,
     huawei_settle_df: Optional[pd.DataFrame] = None,
     adyen_settle_df: Optional[pd.DataFrame] = None,
+    google_raw_df: Optional[pd.DataFrame] = None,
 ) -> Path:
     """将结果写入 data/output/订单匹配结果_{YYYYMMDD}.xlsx。"""
     today = date.today().strftime("%Y%m%d")
@@ -1870,7 +2018,7 @@ def write_output(
     ].copy()
     failed_df = main_df.loc[match_status.eq("否")].copy()
 
-    summary_df = build_summary_sheet(main_df, huawei_settle_df, adyen_settle_df)
+    summary_df = build_summary_sheet(main_df, huawei_settle_df, adyen_settle_df, google_raw_df)
     apple_summary_df = build_apple_platform_summary(apple_raw_df)
     if not apple_summary_df.empty:
         summary_df = pd.concat([summary_df, apple_summary_df], ignore_index=True)
@@ -1924,6 +2072,7 @@ def main() -> int:
     logging.info("  admin 共 %d 条记录", len(admin_df))
 
     adyen_lk = huawei_lk = google_lk = None
+    google_raw_df = None
 
     if files["adyen"]:
         adyen_frames = []
@@ -1979,8 +2128,8 @@ def main() -> int:
             except Exception:
                 logging.error("读取 Google Play 文件失败: %s", fp.name, exc_info=True)
         if google_frames:
-            raw = pd.concat(google_frames, ignore_index=True) if len(google_frames) > 1 else google_frames[0]
-            google_lk = build_google_lookup(raw)
+            google_raw_df = pd.concat(google_frames, ignore_index=True) if len(google_frames) > 1 else google_frames[0]
+            google_lk = build_google_lookup(google_raw_df)
             logging.info("  Google Play 共 %d 个唯一订单", len(google_lk))
     else:
         logging.warning("未找到 Google Play 文件，跳过 Google 匹配")
@@ -2019,7 +2168,7 @@ def main() -> int:
     log_match_stats(result_df)
 
     try:
-        output_path = write_output(result_df, OUTPUT_DIR, apple_raw_df, huawei_settle_df, adyen_settle_df)
+        output_path = write_output(result_df, OUTPUT_DIR, apple_raw_df, huawei_settle_df, adyen_settle_df, google_raw_df)
         logging.info("结果文件已写入: %s", output_path)
     except PermissionError:
         logging.error("无法写入输出文件，请确认文件未在 Excel 中打开后重试。")

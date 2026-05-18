@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+import os
 import unittest
 import tempfile
 from datetime import date
@@ -45,12 +46,15 @@ from src.bank_integration.app4 import (
     configure_chrome_downloads,
     expected_export_stem,
     export_batches_with_retries,
+    find_completed_export_file,
     get_previous_month_range,
     has_chrome_cookie_store,
+    merge_completed_export_files,
     missing_export_dates,
     parse_date_args,
     parse_date,
 )
+from src.bank_integration.config4 import get_mode4_batch_size, get_mode4_batch_wait_seconds, get_mode4_retry_limit
 from src.bank_integration.config3 import (
     ADMIN_AMOUNT_COL,
     ADMIN_DATE_COL,
@@ -1792,6 +1796,74 @@ class BankIntegrationSampleTests(unittest.TestCase):
             self.assertFalse(prefs["download"]["prompt_for_download"])
             self.assertTrue(prefs["download"]["directory_upgrade"])
 
+    def test_mode4_batch_wait_seconds_reads_env_file_and_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("MODE4_BATCH_WAIT_SECONDS=45\n", encoding="utf-8")
+
+            self.assertEqual(get_mode4_batch_wait_seconds(env={}, env_path=env_path), 45)
+            self.assertEqual(
+                get_mode4_batch_wait_seconds(
+                    env={"MODE4_BATCH_WAIT_SECONDS": "60"},
+                    env_path=env_path,
+                ),
+                60,
+            )
+            self.assertEqual(get_mode4_batch_wait_seconds(env={}, env_path=Path(tmp) / "missing.env"), 10)
+            self.assertEqual(
+                get_mode4_batch_wait_seconds(
+                    env={"MODE4_BATCH_WAIT_SECONDS": "abc"},
+                    env_path=env_path,
+                ),
+                10,
+            )
+
+    def test_mode4_batch_size_reads_env_file_and_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("MODE4_BATCH_SIZE=8\n", encoding="utf-8")
+
+            self.assertEqual(get_mode4_batch_size(env={}, env_path=env_path), 8)
+            self.assertEqual(
+                get_mode4_batch_size(
+                    env={"MODE4_BATCH_SIZE": "12"},
+                    env_path=env_path,
+                ),
+                12,
+            )
+            self.assertEqual(get_mode4_batch_size(env={}, env_path=Path(tmp) / "missing.env"), 5)
+            for invalid_value in ("abc", "0", "-3"):
+                self.assertEqual(
+                    get_mode4_batch_size(
+                        env={"MODE4_BATCH_SIZE": invalid_value},
+                        env_path=env_path,
+                    ),
+                    5,
+                )
+
+    def test_mode4_retry_limit_reads_env_file_and_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("MODE4_RETRY_LIMIT=4\n", encoding="utf-8")
+
+            self.assertEqual(get_mode4_retry_limit(env={}, env_path=env_path), 4)
+            self.assertEqual(
+                get_mode4_retry_limit(
+                    env={"MODE4_RETRY_LIMIT": "6"},
+                    env_path=env_path,
+                ),
+                6,
+            )
+            self.assertEqual(get_mode4_retry_limit(env={}, env_path=Path(tmp) / "missing.env"), 3)
+            for invalid_value in ("abc", "0", "-3"):
+                self.assertEqual(
+                    get_mode4_retry_limit(
+                        env={"MODE4_RETRY_LIMIT": invalid_value},
+                        env_path=env_path,
+                    ),
+                    3,
+                )
+
     def test_mode4_expected_export_file_matches_strict_date_filename(self):
         with tempfile.TemporaryDirectory() as tmp:
             download_dir = Path(tmp)
@@ -1803,7 +1875,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
             (download_dir / "temp.tmp").write_text("tmp", encoding="utf-8")
             (download_dir / "2026-05-05,2026-05-05.txt").write_text("txt", encoding="utf-8")
             (download_dir / "prefix-2026-05-06,2026-05-06.xlsx").write_text("bad", encoding="utf-8")
-            (download_dir / "2026-05-07,2026-05-07 (1).xlsx").write_text("bad", encoding="utf-8")
+            (download_dir / "2026-05-07,2026-05-07 (1).xlsx").write_text("xlsx", encoding="utf-8")
 
             self.assertEqual(expected_export_stem(target), "2026-05-01,2026-05-01")
             missing = missing_export_dates(
@@ -1812,7 +1884,51 @@ class BankIntegrationSampleTests(unittest.TestCase):
                 (".xls", ".xlsx", ".csv"),
             )
 
-            self.assertEqual(missing, [date(2026, 5, 4), date(2026, 5, 5), date(2026, 5, 6), date(2026, 5, 7)])
+            self.assertEqual(missing, [date(2026, 5, 4), date(2026, 5, 5), date(2026, 5, 6)])
+
+    def test_mode4_selects_latest_duplicate_completed_export_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            download_dir = Path(tmp)
+            old_file = download_dir / "2026-05-01,2026-05-01.xlsx"
+            new_file = download_dir / "2026-05-01,2026-05-01 (1).xlsx"
+            old_file.write_text("old", encoding="utf-8")
+            new_file.write_text("new", encoding="utf-8")
+            os.utime(old_file, (1000, 1000))
+            os.utime(new_file, (2000, 2000))
+
+            selected = find_completed_export_file(download_dir, date(2026, 5, 1), (".xlsx",))
+
+            self.assertEqual(selected, new_file)
+
+    def test_mode4_merges_completed_exports_without_extra_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            download_dir = Path(tmp)
+            day1 = download_dir / "2026-05-01,2026-05-01.xlsx"
+            day2 = download_dir / "2026-05-02,2026-05-02 (1).csv"
+            output_path = download_dir / "merged.xlsx"
+
+            pd.DataFrame(
+                [
+                    {"流水号": "A1", "金额": "10"},
+                    {"流水号": "A2", "金额": "20"},
+                ]
+            ).to_excel(day1, index=False)
+            day2.write_text("流水号,金额,额外列\nB1,30,忽略\n", encoding="utf-8-sig")
+
+            result_path = merge_completed_export_files(
+                download_dir,
+                [date(2026, 5, 1), date(2026, 5, 2)],
+                output_path,
+                (".xlsx", ".csv"),
+            )
+
+            merged = pd.read_excel(result_path, dtype=str).fillna("")
+            self.assertEqual(list(merged.columns), ["流水号", "金额"])
+            self.assertEqual(merged.to_dict("records"), [
+                {"流水号": "A1", "金额": "10"},
+                {"流水号": "A2", "金额": "20"},
+                {"流水号": "B1", "金额": "30"},
+            ])
 
     def test_mode4_export_batch_success_does_not_retry(self):
         dated_urls = [(date(2025, 5, day), f"https://example.test/{day}") for day in range(1, 4)]

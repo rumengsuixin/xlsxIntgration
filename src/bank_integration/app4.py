@@ -13,6 +13,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple, TypeVar
 
+import pandas as pd
+
 from .config4 import (
     CHROME_PROFILE_DIR_4,
     EXPORT_BATCH_SIZE_4,
@@ -28,6 +30,7 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PROFILE_NAME = "Default"
 T = TypeVar("T")
 DATE_ARGS_USAGE = "用法: 整合4.py [--date-range YYYY-MM-DD YYYY-MM-DD] [--wait-seconds N]"
+CSV_ENCODINGS_4 = ("utf-8-sig", "utf-16", "gbk")
 
 
 def parse_date(value: str) -> date:
@@ -230,18 +233,30 @@ def expected_export_stem(day: date) -> str:
     return f"{date_text},{date_text}"
 
 
-def has_completed_export_file(download_dir: Path, day: date, suffixes: Sequence[str]) -> bool:
-    """Return whether the expected completed export file exists for day."""
+def _is_expected_export_stem(stem: str, expected_stem: str) -> bool:
+    return stem == expected_stem or re.fullmatch(rf"{re.escape(expected_stem)} \(\d+\)", stem) is not None
+
+
+def find_completed_export_file(download_dir: Path, day: date, suffixes: Sequence[str]) -> Optional[Path]:
+    """Return the latest completed export file for day, including Chrome duplicate names."""
     if not download_dir.exists():
-        return False
+        return None
     expected_stem = expected_export_stem(day)
     normalized_suffixes = tuple(suffix.lower() for suffix in suffixes)
+    matches = []
     for path in download_dir.iterdir():
         if not path.is_file():
             continue
-        if path.stem == expected_stem and path.suffix.lower() in normalized_suffixes:
-            return True
-    return False
+        if _is_expected_export_stem(path.stem, expected_stem) and path.suffix.lower() in normalized_suffixes:
+            matches.append(path)
+    if not matches:
+        return None
+    return max(matches, key=lambda item: (item.stat().st_mtime, item.name))
+
+
+def has_completed_export_file(download_dir: Path, day: date, suffixes: Sequence[str]) -> bool:
+    """Return whether the expected completed export file exists for day."""
+    return find_completed_export_file(download_dir, day, suffixes) is not None
 
 
 def missing_export_dates(download_dir: Path, days: Sequence[date], suffixes: Sequence[str]) -> List[date]:
@@ -262,6 +277,59 @@ def wait_for_export_files(
         time.sleep(poll_seconds)
         latest_missing = missing_export_dates(download_dir, days, suffixes)
     return latest_missing
+
+
+def _read_export_dataframe(path: Path) -> pd.DataFrame:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        last_error = None
+        for encoding in CSV_ENCODINGS_4:
+            try:
+                return pd.read_csv(path, dtype=str, encoding=encoding).fillna("")
+            except UnicodeError as exc:
+                last_error = exc
+        raise UnicodeError(f"读取导出 CSV 文件失败: {path.name}; 已尝试 utf-8-sig / utf-16 / gbk") from last_error
+    if suffix in {".xls", ".xlsx"}:
+        return pd.read_excel(path, dtype=str).fillna("")
+    raise ValueError(f"不支持的导出文件格式: {path.name}")
+
+
+def build_merged_export_path(download_dir: Path, start: date, end: date) -> Path:
+    return download_dir / f"后台充值订单导出合并_{start.strftime('%Y-%m-%d')}_{end.strftime('%Y-%m-%d')}.xlsx"
+
+
+def merge_completed_export_files(
+    download_dir: Path,
+    days: Sequence[date],
+    output_path: Path,
+    suffixes: Sequence[str] = EXPORT_COMPLETED_SUFFIXES_4,
+) -> Path:
+    """Merge latest completed exports by day into one xlsx without adding columns."""
+    selected_files = []
+    for day in days:
+        export_file = find_completed_export_file(download_dir, day, suffixes)
+        if export_file is None:
+            raise FileNotFoundError(f"缺少导出文件: {expected_export_stem(day)}.{{xls,xlsx,csv}}")
+        selected_files.append(export_file)
+
+    frames = []
+    base_columns = None
+    for export_file in selected_files:
+        frame = _read_export_dataframe(export_file)
+        if base_columns is None:
+            base_columns = list(frame.columns)
+        else:
+            extra_columns = [col for col in frame.columns if col not in base_columns]
+            if extra_columns:
+                logging.warning("导出文件 %s 存在首个文件没有的列，合并时将忽略: %s", export_file.name, extra_columns)
+            frame = frame.reindex(columns=base_columns, fill_value="")
+        frames.append(frame)
+
+    merged = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        merged.to_excel(writer, sheet_name="导出合并", index=False)
+    return output_path
 
 
 def export_batches_with_retries(
@@ -396,6 +464,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 missing_day.strftime("%Y-%m-%d"),
                 expected_export_stem(missing_day),
             )
+        return 1
+
+    try:
+        merged_path = merge_completed_export_files(
+            EXPORT_DOWNLOAD_DIR_4,
+            [day for day, _url in dated_urls],
+            build_merged_export_path(EXPORT_DOWNLOAD_DIR_4, start, end),
+        )
+        logging.info("导出文件已合并: %s", merged_path)
+    except Exception:
+        logging.error("导出文件合并失败", exc_info=True)
         return 1
 
     logging.info("导出完成，已检测到 %d 个日期文件。", len(urls))

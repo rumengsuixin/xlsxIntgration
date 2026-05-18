@@ -75,7 +75,19 @@ venv\Scripts\python.exe 整合4.py --date-range 2026-04-01 2026-04-30
 venv\Scripts\python.exe 整合4.py --date-range 2026-04-01 2026-04-30 --wait-seconds 60
 ```
 
+也可以复制 `.env.example` 为 `.env`，设置默认批次等待时间：
+
+```dotenv
+MODE4_BATCH_WAIT_SECONDS=60
+MODE4_BATCH_SIZE=5
+MODE4_RETRY_LIMIT=3
+```
+
+`MODE4_BATCH_WAIT_SECONDS` 控制每批打开后等待多少秒再检查下载齐备；`MODE4_BATCH_SIZE` 控制每批打开多少个导出链接，默认 `5`；`MODE4_RETRY_LIMIT` 控制每批缺失文件最多自动重试多少次，默认 `3`。等待秒数优先级为：命令行 `--wait-seconds` > 系统环境变量 > `.env` > 默认值 `10`；单批数量和重试次数优先级为：系统环境变量 > `.env` > 默认值。
+
 日期格式必须为 `YYYY-MM-DD`。程序会按日期区间逐日打开导出 URL，使用独立 Chrome 登录环境 `data/browser_profile/4`，并把浏览器下载目录设置为 `data/output/4`。如果该独立环境还没有 `Default/Cookies`，程序会先打开一个 Chrome 窗口让用户登录；登录完成后回到终端按回车继续打开导出链接。
+
+全部日期下载齐备后，程序会自动合并本次日期范围内的最新导出文件，输出到 `data/output/4/后台充值订单导出合并_{start}_{end}.xlsx`。Chrome 生成的重复下载文件名（如 `2026-05-07,2026-05-07 (1).xlsx`）会被识别为同一天文件，合并时同一天只取最后修改时间最新的完成文件。
 
 ## 测试
 

@@ -21,6 +21,7 @@ dist_mac/
 *.pyz
 
 # Local logs and temporary files
+.env
 *.log
 *.tmp
 *.temp

@@ -30,6 +30,9 @@ venv/Scripts/python.exe 整合4.py
 venv/Scripts/python.exe 整合4.py --date-range 2026-04-01 2026-04-30
 # 手动指定日期范围和每批等待秒数
 venv/Scripts/python.exe 整合4.py --date-range 2026-04-01 2026-04-30 --wait-seconds 60
+# 或在 .env 中设置默认等待时间：MODE4_BATCH_WAIT_SECONDS=60
+# 单批导出链接数量：MODE4_BATCH_SIZE=5
+# 每批下载不完整时自动重试次数：MODE4_RETRY_LIMIT=3
 
 # 运行全部回归测试
 venv/Scripts/python.exe -m unittest discover -s tests
@@ -106,6 +109,8 @@ tests/
 4. 查找 Google Chrome，使用 `data/browser_profile/4/` 作为独立用户目录
 5. 更新 Chrome `Default/Preferences`，将下载目录设置为 `data/output/4/`
 6. 若独立 profile 尚无 `Default/Cookies` 数据，先打开一个导出链接让用户登录并等待回车，再打开所有导出 URL
+7. 按批次等待下载完成，等待秒数优先级为 `--wait-seconds` > 系统环境变量 > `.env` > 默认值 `10`；单批链接数量和重试次数优先级为系统环境变量 > `.env` > 默认值
+8. 全部日期齐备后，按日期选择最新完成文件并合并为 `data/output/4/后台充值订单导出合并_{start}_{end}.xlsx`
 
 ## 各银行读取配置——代号1（config.py）
 
@@ -174,6 +179,11 @@ tests/
 - **Chrome 依赖**：需要用户电脑安装 Google Chrome
 - **登录态**：不自行构造 HTTP 请求；通过独立 Chrome profile 保存登录状态
 - **下载目录**：程序尽量通过 Chrome Preferences 指定为 `data/output/4/`；如浏览器策略限制下载行为，以 Chrome 实际行为为准
+- **批次等待**：`.env` 可配置 `MODE4_BATCH_WAIT_SECONDS`；命令行 `--wait-seconds` 优先级最高
+- **单批数量**：`.env` 可配置 `MODE4_BATCH_SIZE`；默认每批打开 5 个导出链接
+- **重试次数**：`.env` 可配置 `MODE4_RETRY_LIMIT`；默认每批缺失文件最多重试 3 次
+- **重复下载**：识别 `YYYY-MM-DD,YYYY-MM-DD (1).xlsx` 这类 Chrome 重复下载文件；合并时同一天取最后修改时间最新的完成文件
+- **合并输出**：下载齐备后自动合并为单个 `.xlsx`，不新增来源列，首个文件决定表头
 - **页码**：`p=[PAGE]` 原样保留，本版本不做分页循环
 - **macOS 复用**：启动 Chrome 时固定 `--user-data-dir=data/browser_profile/4` 和 `--profile-directory=Default`；普通 Chrome 手动打开不共享该登录态
 - **Cookie 判定**：只把 `data/browser_profile/4/Default/Cookies` 作为可复用登录态判断依据，`Default/Network/Cookies` 仅打印诊断日志

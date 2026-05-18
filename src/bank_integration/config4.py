@@ -10,9 +10,13 @@ from .config import DATA_DIR, OUTPUT_DIR, PROJECT_ROOT
 MODE4_BATCH_WAIT_SECONDS_ENV = "MODE4_BATCH_WAIT_SECONDS"
 MODE4_BATCH_SIZE_ENV = "MODE4_BATCH_SIZE"
 MODE4_RETRY_LIMIT_ENV = "MODE4_RETRY_LIMIT"
+MODE4_MISSING_CHECK_CHANCES_ENV = "MODE4_MISSING_CHECK_CHANCES"
+MODE4_CHECK_INTERVAL_SECONDS_ENV = "MODE4_CHECK_INTERVAL_SECONDS"
 DEFAULT_EXPORT_BATCH_WAIT_SECONDS_4 = 10
 DEFAULT_EXPORT_BATCH_SIZE_4 = 5
 DEFAULT_EXPORT_RETRY_LIMIT_4 = 3
+DEFAULT_EXPORT_MISSING_CHECK_CHANCES_4 = 10
+DEFAULT_EXPORT_CHECK_INTERVAL_SECONDS_4 = 2
 
 
 def _parse_env_file(env_path: Path) -> dict:
@@ -59,6 +63,24 @@ def get_mode4_retry_limit(
     return _get_positive_int_config(MODE4_RETRY_LIMIT_ENV, default, env, env_path)
 
 
+def get_mode4_missing_check_chances(
+    env: Optional[Mapping[str, str]] = None,
+    env_path: Optional[Path] = None,
+    default: int = DEFAULT_EXPORT_MISSING_CHECK_CHANCES_4,
+) -> int:
+    """Return mode 4 missing file check chances from environment or .env."""
+    return _get_positive_int_config(MODE4_MISSING_CHECK_CHANCES_ENV, default, env, env_path)
+
+
+def get_mode4_check_interval_seconds(
+    env: Optional[Mapping[str, str]] = None,
+    env_path: Optional[Path] = None,
+    default: int = DEFAULT_EXPORT_CHECK_INTERVAL_SECONDS_4,
+) -> int:
+    """Return mode 4 missing file check interval seconds from environment or .env."""
+    return _get_positive_int_config(MODE4_CHECK_INTERVAL_SECONDS_ENV, default, env, env_path)
+
+
 def _get_positive_int_config(
     name: str,
     default: int,
@@ -88,10 +110,13 @@ EXPORT_URL_TEMPLATE = (
     "&goods_id=&user_type=&tracker_token=&sdate=&edate="
     "&pay_sdate={date}&pay_edate={date}&os=&channel_type=&p=[PAGE]"
 )
+EXPORT_LOGIN_URL_4 = "https://aim1.567okey.com/Public/login.html"
 
 EXPORT_DOWNLOAD_DIR_4 = OUTPUT_DIR / "4"
 CHROME_PROFILE_DIR_4 = DATA_DIR / "browser_profile" / "4"
 EXPORT_BATCH_SIZE_4 = get_mode4_batch_size()
 EXPORT_BATCH_WAIT_SECONDS_4 = get_mode4_batch_wait_seconds()
 EXPORT_RETRY_LIMIT_4 = get_mode4_retry_limit()
+EXPORT_MISSING_CHECK_CHANCES_4 = get_mode4_missing_check_chances()
+EXPORT_CHECK_INTERVAL_SECONDS_4 = get_mode4_check_interval_seconds()
 EXPORT_COMPLETED_SUFFIXES_4 = (".xls", ".xlsx", ".csv")

@@ -81,13 +81,15 @@ venv\Scripts\python.exe 整合4.py --date-range 2026-04-01 2026-04-30 --wait-sec
 MODE4_BATCH_WAIT_SECONDS=60
 MODE4_BATCH_SIZE=5
 MODE4_RETRY_LIMIT=3
+MODE4_MISSING_CHECK_CHANCES=10
+MODE4_CHECK_INTERVAL_SECONDS=2
 ```
 
-`MODE4_BATCH_WAIT_SECONDS` 控制每批打开后等待多少秒再检查下载齐备；`MODE4_BATCH_SIZE` 控制每批打开多少个导出链接，默认 `5`；`MODE4_RETRY_LIMIT` 控制每批缺失文件最多自动重试多少次，默认 `3`。等待秒数优先级为：命令行 `--wait-seconds` > 系统环境变量 > `.env` > 默认值 `10`；单批数量和重试次数优先级为：系统环境变量 > `.env` > 默认值。
+`MODE4_BATCH_WAIT_SECONDS` 保留为兼容旧参数；实际是否重试由 `MODE4_MISSING_CHECK_CHANCES` 和 `MODE4_CHECK_INTERVAL_SECONDS` 控制，机会用完才会重试，默认每 2 秒检查 1 次，最多 10 次。`MODE4_BATCH_SIZE` 控制每批打开多少个导出链接，默认 `5`；`MODE4_RETRY_LIMIT` 控制每批缺失文件最多自动重试多少次，默认 `3`。等待秒数优先级为：命令行 `--wait-seconds` > 系统环境变量 > `.env` > 默认值 `10`；其他配置优先级为：系统环境变量 > `.env` > 默认值。
 
-日期格式必须为 `YYYY-MM-DD`。程序会按日期区间逐日打开导出 URL，使用独立 Chrome 登录环境 `data/browser_profile/4`，并把浏览器下载目录设置为 `data/output/4`。如果该独立环境还没有 `Default/Cookies`，程序会先打开一个 Chrome 窗口让用户登录；登录完成后回到终端按回车继续打开导出链接。
+日期格式必须为 `YYYY-MM-DD`。程序会按日期区间逐日打开导出 URL，使用独立 Chrome 登录环境 `data/browser_profile/4`，并把浏览器下载目录设置为 `data/output/4`。如果该独立环境还没有 `Default/Cookies`，程序会先打开固定登录页 `https://aim1.567okey.com/Public/login.html` 让用户登录；登录完成后回到终端按回车继续打开导出链接。每批打开导出 URL 前会先检查对应日期文件是否已经存在，已存在的日期会直接跳过，不再打开下载链接。
 
-全部日期下载齐备后，程序会自动合并本次日期范围内的最新导出文件，输出到 `data/output/4/后台充值订单导出合并_{start}_{end}.xlsx`。Chrome 生成的重复下载文件名（如 `2026-05-07,2026-05-07 (1).xlsx`）会被识别为同一天文件，合并时同一天只取最后修改时间最新的完成文件。
+全部日期下载齐备后，程序会自动合并本次日期范围内的最新导出文件，输出到 `data/output/4/后台充值订单导出合并_{start}_{end}.xlsx`。Chrome 生成的重复下载文件名（如 `2026-05-07,2026-05-07 (1).xlsx`）会被识别为同一天文件，合并时同一天只取最后修改时间最新的完成文件。如果 `.xls` 文件可用 Excel 打开但无法被 `xlrd` 直接读取，程序会尝试使用本机 LibreOffice 或 Windows Excel 临时转换为 `.xlsx` 后再合并。
 
 ## 测试
 

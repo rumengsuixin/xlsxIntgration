@@ -1,5 +1,7 @@
 """Mode 4 recharge order browser export."""
 
+import contextlib
+import io
 import json
 import logging
 import os
@@ -8,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -19,8 +22,11 @@ from .config4 import (
     CHROME_PROFILE_DIR_4,
     EXPORT_BATCH_SIZE_4,
     EXPORT_BATCH_WAIT_SECONDS_4,
+    EXPORT_CHECK_INTERVAL_SECONDS_4,
     EXPORT_COMPLETED_SUFFIXES_4,
     EXPORT_DOWNLOAD_DIR_4,
+    EXPORT_LOGIN_URL_4,
+    EXPORT_MISSING_CHECK_CHANCES_4,
     EXPORT_RETRY_LIMIT_4,
     EXPORT_URL_TEMPLATE,
 )
@@ -268,14 +274,18 @@ def wait_for_export_files(
     days: Sequence[date],
     timeout_seconds: int,
     suffixes: Sequence[str],
-    poll_seconds: float = 1.0,
+    poll_seconds: float = EXPORT_CHECK_INTERVAL_SECONDS_4,
+    max_missing_checks: int = EXPORT_MISSING_CHECK_CHANCES_4,
 ) -> List[date]:
-    """Wait until all expected date-named exports exist, then return missing dates."""
-    deadline = time.monotonic() + timeout_seconds
+    """Wait with missing-file chances before returning dates for retry."""
     latest_missing = missing_export_dates(download_dir, days, suffixes)
-    while latest_missing and time.monotonic() < deadline:
-        time.sleep(poll_seconds)
+    missing_checks = 0
+
+    while latest_missing and missing_checks < max_missing_checks:
+        time.sleep(float(poll_seconds))
         latest_missing = missing_export_dates(download_dir, days, suffixes)
+        if latest_missing:
+            missing_checks += 1
     return latest_missing
 
 
@@ -289,9 +299,91 @@ def _read_export_dataframe(path: Path) -> pd.DataFrame:
             except UnicodeError as exc:
                 last_error = exc
         raise UnicodeError(f"读取导出 CSV 文件失败: {path.name}; 已尝试 utf-8-sig / utf-16 / gbk") from last_error
-    if suffix in {".xls", ".xlsx"}:
+    if suffix == ".xlsx":
         return pd.read_excel(path, dtype=str).fillna("")
+    if suffix == ".xls":
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                return pd.read_excel(path, dtype=str).fillna("")
+        except Exception as exc:
+            logging.warning("导出 XLS 文件无法直接读取，将尝试转换后合并: %s", path.name)
+            with tempfile.TemporaryDirectory(prefix="mode4_xls_") as tmp:
+                converted_path = _convert_xls_to_xlsx(path, Path(tmp))
+                try:
+                    return pd.read_excel(converted_path, dtype=str, engine="openpyxl").fillna("")
+                except Exception as converted_exc:
+                    raise RuntimeError(
+                        f"导出 XLS 文件转换后仍无法读取: {path.name}。请确认文件可用 Excel 另存为 xlsx。"
+                    ) from converted_exc
+            raise RuntimeError(f"导出 XLS 文件无法读取: {path.name}") from exc
     raise ValueError(f"不支持的导出文件格式: {path.name}")
+
+
+def _convert_xls_to_xlsx(path: Path, output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{path.stem}.xlsx"
+    errors = []
+
+    office_cmd = _find_office_converter()
+    if office_cmd:
+        result = subprocess.run(
+            [
+                office_cmd,
+                "--headless",
+                "--convert-to",
+                "xlsx",
+                "--outdir",
+                str(output_dir),
+                str(path.resolve()),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode == 0 and output_path.exists():
+            return output_path
+        errors.append(f"LibreOffice 转换失败: {result.stderr.strip() or result.stdout.strip() or result.returncode}")
+
+    if platform.system().lower() == "windows":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if powershell:
+            env = os.environ.copy()
+            env["MODE4_XLS_INPUT"] = str(path.resolve())
+            env["MODE4_XLS_OUTPUT"] = str(output_path.resolve())
+            script = r"""
+$excel = $null
+$workbook = $null
+try {
+    $excel = New-Object -ComObject Excel.Application
+    $excel.DisplayAlerts = $false
+    $workbook = $excel.Workbooks.Open($env:MODE4_XLS_INPUT, 0, $true)
+    $workbook.SaveAs($env:MODE4_XLS_OUTPUT, 51)
+} finally {
+    if ($workbook -ne $null) { $workbook.Close($false) | Out-Null }
+    if ($excel -ne $null) { $excel.Quit() | Out-Null }
+}
+"""
+            result = subprocess.run(
+                [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
+            )
+            if result.returncode == 0 and output_path.exists():
+                return output_path
+            errors.append(f"Excel COM 转换失败: {result.stderr.strip() or result.stdout.strip() or result.returncode}")
+
+    details = "；".join(errors) if errors else "未找到 LibreOffice 或 Windows Excel COM 转换能力"
+    raise RuntimeError(f"无法将 XLS 转换为 XLSX: {path.name}。{details}")
+
+
+def _find_office_converter() -> Optional[str]:
+    for command in ("soffice", "libreoffice"):
+        resolved = shutil.which(command)
+        if resolved:
+            return resolved
+    return None
 
 
 def build_merged_export_path(download_dir: Path, start: date, end: date) -> Path:
@@ -349,8 +441,30 @@ def export_batches_with_retries(
     batches = chunk_list(dated_urls, batch_size)
 
     for batch_index, batch in enumerate(batches, start=1):
-        pending = list(batch)
-        batch_dates = [day for day, _url in pending]
+        batch_dates = [day for day, _url in batch]
+        initial_missing_dates = missing_export_dates(download_dir, batch_dates, completed_suffixes)
+        if not initial_missing_dates:
+            logging.info(
+                "第 %d/%d 批导出文件已存在，跳过打开导出链接：%s 至 %s，共 %d 个",
+                batch_index,
+                len(batches),
+                batch_dates[0].strftime("%Y-%m-%d"),
+                batch_dates[-1].strftime("%Y-%m-%d"),
+                len(batch_dates),
+            )
+            continue
+
+        initial_missing_set = set(initial_missing_dates)
+        skipped_count = len(batch_dates) - len(initial_missing_dates)
+        if skipped_count:
+            logging.info(
+                "第 %d/%d 批已有 %d 个日期文件，跳过已存在日期，只导出缺失项",
+                batch_index,
+                len(batches),
+                skipped_count,
+            )
+
+        pending = [(day, url) for day, url in batch if day in initial_missing_set]
 
         for attempt in range(1, retry_limit + 2):
             pending_dates = [day for day, _url in pending]
@@ -364,6 +478,7 @@ def export_batches_with_retries(
                 pending_dates[-1].strftime("%Y-%m-%d"),
                 len(pending_urls),
             )
+            logging.info("本批下载检查配置：每 %.1f 秒检查一次，最多 %d 次机会", EXPORT_CHECK_INTERVAL_SECONDS_4, EXPORT_MISSING_CHECK_CHANCES_4)
             launcher(chrome_path, profile_dir, pending_urls)
             missing_dates = waiter(download_dir, pending_dates, wait_seconds, completed_suffixes)
             if not missing_dates:
@@ -431,10 +546,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     log_cookie_store_status(CHROME_PROFILE_DIR_4)
 
     if not has_cookie_before_launch:
-        logging.info("当前独立 Chrome profile 还没有 Cookie 数据，将先打开第一个导出链接用于登录。")
+        logging.info("当前独立 Chrome profile 还没有 Cookie 数据，将先打开登录页用于登录: %s", EXPORT_LOGIN_URL_4)
         logging.info("请在打开的 Chrome 窗口中完成登录，不要马上关闭 Chrome；登录后回到此终端按回车继续打开导出链接。")
         try:
-            launch_chrome(chrome_path, CHROME_PROFILE_DIR_4, urls[:1])
+            launch_chrome(chrome_path, CHROME_PROFILE_DIR_4, [EXPORT_LOGIN_URL_4])
             input("登录完成后按回车继续打开导出链接：")
             log_cookie_store_status(CHROME_PROFILE_DIR_4)
         except Exception:

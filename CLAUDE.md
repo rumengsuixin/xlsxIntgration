@@ -33,6 +33,8 @@ venv/Scripts/python.exe 整合4.py --date-range 2026-04-01 2026-04-30 --wait-sec
 # 或在 .env 中设置默认等待时间：MODE4_BATCH_WAIT_SECONDS=60
 # 单批导出链接数量：MODE4_BATCH_SIZE=5
 # 每批下载不完整时自动重试次数：MODE4_RETRY_LIMIT=3
+# 检查缺失文件机会次数：MODE4_MISSING_CHECK_CHANCES=10
+# 检查缺失文件间隔秒数：MODE4_CHECK_INTERVAL_SECONDS=2
 
 # 运行全部回归测试
 venv/Scripts/python.exe -m unittest discover -s tests
@@ -108,9 +110,11 @@ tests/
 3. `p=[PAGE]` 按需求原样保留，不做分页替换
 4. 查找 Google Chrome，使用 `data/browser_profile/4/` 作为独立用户目录
 5. 更新 Chrome `Default/Preferences`，将下载目录设置为 `data/output/4/`
-6. 若独立 profile 尚无 `Default/Cookies` 数据，先打开一个导出链接让用户登录并等待回车，再打开所有导出 URL
-7. 按批次等待下载完成，等待秒数优先级为 `--wait-seconds` > 系统环境变量 > `.env` > 默认值 `10`；单批链接数量和重试次数优先级为系统环境变量 > `.env` > 默认值
-8. 全部日期齐备后，按日期选择最新完成文件并合并为 `data/output/4/后台充值订单导出合并_{start}_{end}.xlsx`
+6. 若独立 profile 尚无 `Default/Cookies` 数据，先打开固定登录页 `https://aim1.567okey.com/Public/login.html` 让用户登录并等待回车，再打开所有导出 URL
+7. 每批打开导出 URL 前先检查对应日期文件是否已存在，已存在日期直接跳过，只打开缺失日期 URL
+8. 按批次等待下载完成；`--wait-seconds` / `MODE4_BATCH_WAIT_SECONDS` 保留兼容，实际重试由检查机会和检查间隔控制，机会用完才重试
+9. 全部日期齐备后，按日期选择最新完成文件并合并为 `data/output/4/后台充值订单导出合并_{start}_{end}.xlsx`
+10. 合并读取 `.xls` 时若 `xlrd` 无法直接读取，会尝试用 LibreOffice 或 Windows Excel 临时转换为 `.xlsx` 后再读取
 
 ## 各银行读取配置——代号1（config.py）
 
@@ -178,12 +182,16 @@ tests/
 - **日期输入**：只接受 `YYYY-MM-DD`，不接受 `YYYY/MM/DD`、`YYYYMMDD` 或不存在日期
 - **Chrome 依赖**：需要用户电脑安装 Google Chrome
 - **登录态**：不自行构造 HTTP 请求；通过独立 Chrome profile 保存登录状态
+- **登录入口**：无 Cookie 时只打开 `https://aim1.567okey.com/Public/login.html`，不使用导出链接探测登录
 - **下载目录**：程序尽量通过 Chrome Preferences 指定为 `data/output/4/`；如浏览器策略限制下载行为，以 Chrome 实际行为为准
-- **批次等待**：`.env` 可配置 `MODE4_BATCH_WAIT_SECONDS`；命令行 `--wait-seconds` 优先级最高
+- **批次等待**：`.env` 可配置 `MODE4_BATCH_WAIT_SECONDS`；命令行 `--wait-seconds` 优先级最高，但不再提前截断检查机会
 - **单批数量**：`.env` 可配置 `MODE4_BATCH_SIZE`；默认每批打开 5 个导出链接
 - **重试次数**：`.env` 可配置 `MODE4_RETRY_LIMIT`；默认每批缺失文件最多重试 3 次
+- **检查机会**：`.env` 可配置 `MODE4_MISSING_CHECK_CHANCES` 和 `MODE4_CHECK_INTERVAL_SECONDS`；默认每 2 秒检查 1 次，最多 10 次，机会用完后才重试
+- **已存在跳过**：打开导出 URL 前先检查日期文件，已存在的标准文件或 Chrome 重复下载文件会直接跳过
 - **重复下载**：识别 `YYYY-MM-DD,YYYY-MM-DD (1).xlsx` 这类 Chrome 重复下载文件；合并时同一天取最后修改时间最新的完成文件
 - **合并输出**：下载齐备后自动合并为单个 `.xlsx`，不新增来源列，首个文件决定表头
+- **XLS 合并兜底**：`.xls` 文件可被 Excel 打开但 `xlrd` 读取失败时，优先尝试 LibreOffice，再尝试 Windows Excel COM 临时转换为 `.xlsx`
 - **页码**：`p=[PAGE]` 原样保留，本版本不做分页循环
 - **macOS 复用**：启动 Chrome 时固定 `--user-data-dir=data/browser_profile/4` 和 `--profile-directory=Default`；普通 Chrome 手动打开不共享该登录态
 - **Cookie 判定**：只把 `data/browser_profile/4/Default/Cookies` 作为可复用登录态判断依据，`Default/Network/Cookies` 仅打印诊断日志

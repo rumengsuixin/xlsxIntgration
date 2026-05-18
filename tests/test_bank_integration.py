@@ -5,10 +5,12 @@ import unittest
 import tempfile
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 
+import src.bank_integration.app4 as app4_module
 from src.bank_integration.balances import (
     get_last_balance,
     get_monthly_balances,
@@ -53,8 +55,15 @@ from src.bank_integration.app4 import (
     missing_export_dates,
     parse_date_args,
     parse_date,
+    wait_for_export_files,
 )
-from src.bank_integration.config4 import get_mode4_batch_size, get_mode4_batch_wait_seconds, get_mode4_retry_limit
+from src.bank_integration.config4 import (
+    get_mode4_batch_size,
+    get_mode4_batch_wait_seconds,
+    get_mode4_check_interval_seconds,
+    get_mode4_missing_check_chances,
+    get_mode4_retry_limit,
+)
 from src.bank_integration.config3 import (
     ADMIN_AMOUNT_COL,
     ADMIN_DATE_COL,
@@ -1864,6 +1873,52 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     3,
                 )
 
+    def test_mode4_missing_check_chances_reads_env_file_and_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("MODE4_MISSING_CHECK_CHANCES=12\n", encoding="utf-8")
+
+            self.assertEqual(get_mode4_missing_check_chances(env={}, env_path=env_path), 12)
+            self.assertEqual(
+                get_mode4_missing_check_chances(
+                    env={"MODE4_MISSING_CHECK_CHANCES": "20"},
+                    env_path=env_path,
+                ),
+                20,
+            )
+            self.assertEqual(get_mode4_missing_check_chances(env={}, env_path=Path(tmp) / "missing.env"), 10)
+            for invalid_value in ("abc", "0", "-3"):
+                self.assertEqual(
+                    get_mode4_missing_check_chances(
+                        env={"MODE4_MISSING_CHECK_CHANCES": invalid_value},
+                        env_path=env_path,
+                    ),
+                    10,
+                )
+
+    def test_mode4_check_interval_seconds_reads_env_file_and_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("MODE4_CHECK_INTERVAL_SECONDS=3\n", encoding="utf-8")
+
+            self.assertEqual(get_mode4_check_interval_seconds(env={}, env_path=env_path), 3)
+            self.assertEqual(
+                get_mode4_check_interval_seconds(
+                    env={"MODE4_CHECK_INTERVAL_SECONDS": "4"},
+                    env_path=env_path,
+                ),
+                4,
+            )
+            self.assertEqual(get_mode4_check_interval_seconds(env={}, env_path=Path(tmp) / "missing.env"), 2)
+            for invalid_value in ("abc", "0", "-3"):
+                self.assertEqual(
+                    get_mode4_check_interval_seconds(
+                        env={"MODE4_CHECK_INTERVAL_SECONDS": invalid_value},
+                        env_path=env_path,
+                    ),
+                    2,
+                )
+
     def test_mode4_expected_export_file_matches_strict_date_filename(self):
         with tempfile.TemporaryDirectory() as tmp:
             download_dir = Path(tmp)
@@ -1930,6 +1985,112 @@ class BankIntegrationSampleTests(unittest.TestCase):
                 {"流水号": "B1", "金额": "30"},
             ])
 
+    def test_mode4_read_export_dataframe_converts_unreadable_xls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_path = root / "2026-05-01,2026-05-01.xls"
+            converted_path = root / "converted.xlsx"
+            source_path.write_bytes(b"broken xls")
+            expected = pd.DataFrame([{"流水号": "A1", "金额": "10"}])
+
+            with patch.object(app4_module, "_convert_xls_to_xlsx", return_value=converted_path) as converter:
+                with patch.object(
+                    app4_module.pd,
+                    "read_excel",
+                    side_effect=[RuntimeError("xlrd failed"), expected],
+                ) as reader:
+                    result = app4_module._read_export_dataframe(source_path)
+
+            converter.assert_called_once()
+            self.assertEqual(reader.call_count, 2)
+            self.assertEqual(result.to_dict("records"), [{"流水号": "A1", "金额": "10"}])
+
+    def test_mode4_wait_for_export_files_uses_chances_before_retry(self):
+        day = date(2026, 5, 1)
+        sleeps = []
+        missing_results = [[day], [day], []]
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        with patch.object(app4_module, "missing_export_dates", side_effect=missing_results):
+            with patch.object(app4_module.time, "sleep", side_effect=fake_sleep):
+                missing = wait_for_export_files(
+                    Path("downloads"),
+                    [day],
+                    timeout_seconds=100,
+                    suffixes=(".xlsx",),
+                    poll_seconds=2,
+                    max_missing_checks=10,
+                )
+
+        self.assertEqual(missing, [])
+        self.assertEqual(sleeps, [2.0, 2.0])
+
+    def test_mode4_wait_for_export_files_returns_missing_after_chances_used(self):
+        day = date(2026, 5, 1)
+        sleeps = []
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        with patch.object(app4_module, "missing_export_dates", return_value=[day]):
+            with patch.object(app4_module.time, "sleep", side_effect=fake_sleep):
+                missing = wait_for_export_files(
+                    Path("downloads"),
+                    [day],
+                    timeout_seconds=100,
+                    suffixes=(".xlsx",),
+                    poll_seconds=2,
+                    max_missing_checks=2,
+                )
+
+        self.assertEqual(missing, [day])
+        self.assertEqual(sleeps, [2.0, 2.0])
+
+    def test_mode4_wait_for_export_files_uses_all_chances_despite_timeout_seconds(self):
+        day = date(2026, 5, 1)
+        sleeps = []
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        with patch.object(app4_module, "missing_export_dates", return_value=[day]):
+            with patch.object(app4_module.time, "sleep", side_effect=fake_sleep):
+                missing = wait_for_export_files(
+                    Path("downloads"),
+                    [day],
+                    timeout_seconds=15,
+                    suffixes=(".xlsx",),
+                    poll_seconds=5,
+                    max_missing_checks=10,
+                )
+
+        self.assertEqual(missing, [day])
+        self.assertEqual(sleeps, [5.0] * 10)
+
+    def test_mode4_wait_for_export_files_succeeds_on_fourth_chance(self):
+        day = date(2026, 5, 1)
+        sleeps = []
+        missing_results = [[day], [day], [day], [day], []]
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        with patch.object(app4_module, "missing_export_dates", side_effect=missing_results):
+            with patch.object(app4_module.time, "sleep", side_effect=fake_sleep):
+                missing = wait_for_export_files(
+                    Path("downloads"),
+                    [day],
+                    timeout_seconds=15,
+                    suffixes=(".xlsx",),
+                    poll_seconds=5,
+                    max_missing_checks=10,
+                )
+
+        self.assertEqual(missing, [])
+        self.assertEqual(sleeps, [5.0, 5.0, 5.0, 5.0])
+
     def test_mode4_export_batch_success_does_not_retry(self):
         dated_urls = [(date(2025, 5, day), f"https://example.test/{day}") for day in range(1, 4)]
         launched = []
@@ -1955,6 +2116,73 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(len(launched), 1)
         self.assertEqual(len(launched[0]), 3)
+
+    def test_mode4_export_batch_skips_when_all_files_exist_before_launch(self):
+        dated_urls = [(date(2025, 5, day), f"https://example.test/{day}") for day in range(1, 4)]
+        launched = []
+        wait_calls = []
+
+        def fake_launcher(_chrome_path, _profile_dir, urls):
+            launched.append(list(urls))
+
+        def fake_waiter(_download_dir, days, _wait_seconds, _suffixes):
+            wait_calls.append(list(days))
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            download_dir = Path(tmp)
+            for day, _url in dated_urls:
+                filename = f"{day.strftime('%Y-%m-%d')},{day.strftime('%Y-%m-%d')}.xlsx"
+                (download_dir / filename).write_text("xlsx", encoding="utf-8")
+
+            failures = export_batches_with_retries(
+                "chrome",
+                Path("profile"),
+                download_dir,
+                dated_urls,
+                batch_size=5,
+                wait_seconds=20,
+                retry_limit=2,
+                launcher=fake_launcher,
+                waiter=fake_waiter,
+            )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(launched, [])
+        self.assertEqual(wait_calls, [])
+
+    def test_mode4_export_batch_launches_only_missing_dates_before_retry(self):
+        dated_urls = [(date(2025, 5, day), f"https://example.test/{day}") for day in range(1, 4)]
+        launched = []
+        wait_calls = []
+
+        def fake_launcher(_chrome_path, _profile_dir, urls):
+            launched.append(list(urls))
+
+        def fake_waiter(_download_dir, days, _wait_seconds, _suffixes):
+            wait_calls.append(list(days))
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            download_dir = Path(tmp)
+            (download_dir / "2025-05-01,2025-05-01.xlsx").write_text("xlsx", encoding="utf-8")
+            (download_dir / "2025-05-03,2025-05-03 (1).xlsx").write_text("xlsx", encoding="utf-8")
+
+            failures = export_batches_with_retries(
+                "chrome",
+                Path("profile"),
+                download_dir,
+                dated_urls,
+                batch_size=5,
+                wait_seconds=20,
+                retry_limit=2,
+                launcher=fake_launcher,
+                waiter=fake_waiter,
+            )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(launched, [["https://example.test/2"]])
+        self.assertEqual(wait_calls, [[date(2025, 5, 2)]])
 
     def test_mode4_export_batch_retries_only_missing_dates(self):
         dated_urls = [(date(2025, 5, day), f"https://example.test/{day}") for day in range(1, 4)]
@@ -2025,6 +2253,25 @@ class BankIntegrationSampleTests(unittest.TestCase):
             self.assertIn("--class=bank-integration-export", args)
             self.assertIn(url, args)
             self.assertIn("p=[PAGE]", url)
+
+    def test_mode4_main_opens_login_url_when_cookie_missing(self):
+        launched = []
+
+        def fake_launch(_chrome_path, _profile_dir, urls):
+            launched.append(list(urls))
+
+        with patch.object(app4_module, "find_chrome_executable", return_value="chrome"):
+            with patch.object(app4_module, "configure_chrome_downloads", return_value=Path("Preferences")):
+                with patch.object(app4_module, "has_chrome_cookie_store", return_value=False):
+                    with patch.object(app4_module, "log_cookie_store_status"):
+                        with patch.object(app4_module, "launch_chrome", side_effect=fake_launch):
+                            with patch("builtins.input", return_value=""):
+                                with patch.object(app4_module, "export_batches_with_retries", return_value=[]):
+                                    with patch.object(app4_module, "merge_completed_export_files", return_value=Path("merged.xlsx")):
+                                        result = app4_module.main(["--date-range", "2026-04-01", "2026-04-01"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(launched, [[app4_module.EXPORT_LOGIN_URL_4]])
 
     def test_mode4_cookie_store_requires_default_cookies_file(self):
         with tempfile.TemporaryDirectory() as tmp:

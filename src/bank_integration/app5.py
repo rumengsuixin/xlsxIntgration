@@ -521,7 +521,7 @@ def _build_platform_only_rows_5(
             sp_time   = str(superpay_lk.at[key, SUPERPAY_FINISH_TIME_COL_5]).strip()  if SUPERPAY_FINISH_TIME_COL_5  in superpay_lk.columns else ""
             sp_amt_f    = _to_float_5(sp_amt) or 0.0
             sp_actual_f = _to_float_5(sp_actual) or 0.0
-            sp_calc_fee = str(round(sp_amt_f - sp_actual_f, 2)) if (sp_amt or sp_actual) else ""
+            sp_calc_fee = str(round(abs(sp_amt_f - sp_actual_f), 2)) if (sp_amt or sp_actual) else ""
             row[PLATFORM_ORDER_NO_COL_5] = sp_no
             row[PLATFORM_AMOUNT_COL_5]   = sp_amt
             row[PLATFORM_STATUS_COL_5]   = sp_status
@@ -673,7 +673,7 @@ def enrich_admin_5(
         elif sp_hit:
             sp_amt_f    = _to_float_5(sp_amt) or 0.0
             sp_actual_f = _to_float_5(sp_actual) or 0.0
-            sp_calc_fee = str(round(sp_amt_f - sp_actual_f, 2))
+            sp_calc_fee = str(round(abs(sp_amt_f - sp_actual_f), 2))
             match_status_list.append("是")
             platform_order_no_list.append(sp_no)
             platform_amount_list.append(sp_amt)

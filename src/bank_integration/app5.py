@@ -491,6 +491,7 @@ def _build_platform_only_rows_5(
                 continue
             row: dict = {c: "" for c in result_cols}
             row[MATCH_STATUS_COL_5]      = "平台多余"
+            row[ADMIN_ORG_COL_5]         = "IBFYPAY"
             row[PLATFORM_ORDER_NO_COL_5] = k
             amt = str(ibfpay_lk.at[key, "代付金额"]).strip() if "代付金额" in ibfpay_lk.columns else ""
             fee = str(ibfpay_lk.at[key, "手续费"]).strip()   if "手续费"   in ibfpay_lk.columns else ""
@@ -513,6 +514,7 @@ def _build_platform_only_rows_5(
             row = {c: "" for c in result_cols}
             row[ADMIN_JOIN_COL_5]        = k
             row[MATCH_STATUS_COL_5]      = "平台多余"
+            row[ADMIN_ORG_COL_5]         = "SUPERPAY"
             sp_no     = str(superpay_lk.at[key, SUPERPAY_PLATFORM_NO_COL_5]).strip()  if SUPERPAY_PLATFORM_NO_COL_5  in superpay_lk.columns else ""
             sp_amt    = str(superpay_lk.at[key, SUPERPAY_AMOUNT_COL_5]).strip()       if SUPERPAY_AMOUNT_COL_5       in superpay_lk.columns else ""
             sp_fee    = str(superpay_lk.at[key, SUPERPAY_FEE_TOTAL_COL_5]).strip()    if SUPERPAY_FEE_TOTAL_COL_5    in superpay_lk.columns else ""
@@ -539,6 +541,7 @@ def _build_platform_only_rows_5(
             row = {c: "" for c in result_cols}
             row[ADMIN_JOIN_COL_5]        = k
             row[MATCH_STATUS_COL_5]      = "平台多余"
+            row[ADMIN_ORG_COL_5]         = "WANGGUYPAY"
             wg_no     = str(wangguypay_lk.at[key, WANGGUYPAY_PLATFORM_NO_COL_5]).strip() if WANGGUYPAY_PLATFORM_NO_COL_5  in wangguypay_lk.columns else ""
             wg_amt    = str(wangguypay_lk.at[key, WANGGUYPAY_AMOUNT_COL_5]).strip()      if WANGGUYPAY_AMOUNT_COL_5       in wangguypay_lk.columns else ""
             wg_fee    = str(wangguypay_lk.at[key, WANGGUYPAY_FEE_COL_5]).strip()         if WANGGUYPAY_FEE_COL_5          in wangguypay_lk.columns else ""
@@ -760,7 +763,7 @@ def build_summary_sheet_5(result_df: pd.DataFrame) -> pd.DataFrame:
         汇总 DataFrame，供写入 OUTPUT_SUMMARY_SHEET_5。
     """
     summary_cols = ["机构", "笔数", "代付金额合计", "手续费合计", "到账金额合计"]
-    matched = result_df[result_df[MATCH_STATUS_COL_5] == "是"].copy()
+    matched = result_df[result_df[MATCH_STATUS_COL_5].isin(["是", "平台多余"])].copy()
     if matched.empty or ADMIN_ORG_COL_5 not in matched.columns:
         return pd.DataFrame(columns=summary_cols)
 

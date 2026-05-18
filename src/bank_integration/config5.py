@@ -22,20 +22,23 @@ ADMIN_ORDER_TYPE_COL_5 = "订单类型"
 ADMIN_ORG_COL_5        = "机构"
 ADMIN_PRIZE_COL_5      = "奖品名称"
 
-# ── IBFYPAY 平台（XLSX，sheet="Sheet"，header=0）─────────────────────────────
-# 注意：IBFYPAY 无手续费列和到账金额列，匹配后 FEE_COL_5 / ARRIVE_AMOUNT_COL_5 留空串
-IBFYPAY_SHEET_5            = "Sheet"
-IBFYPAY_HEADER_5           = 0
-IBFYPAY_JOIN_COL_5         = "订单号"       # 直接对应 admin.订单号
-IBFYPAY_PLATFORM_NO_COL_5  = "系统流水号"
-IBFYPAY_PRODUCT_COL_5      = "支付产品"
-IBFYPAY_AMOUNT_COL_5       = "金额"
-IBFYPAY_STATUS_COL_5       = "状态"
-IBFYPAY_REMARK_COL_5       = "备注"
-IBFYPAY_CALLBACK_COL_5     = "回调状态"
-IBFYPAY_CREATE_TIME_COL_5  = "创建时间"
-IBFYPAY_FINISH_TIME_COL_5  = "完成时间"
-IBFYPAY_PAY_INFO_COL_5     = "付款信息"
+# ── IBFYPAY 平台（资金流水账格式；xlsx，sheet="Sheet"，header=0）──────────────
+# 文件命名前缀：ibf平台（如 IBF平台兑换资金流水明细202604.xlsx）
+# 每笔代付对应两行，通过 系统流水号 匹配：
+#   类型="代付扣款"        → 代付金额（变动金额 取绝对值）
+#   类型="代付扣除手续费"   → 手续费（变动金额 取绝对值）
+# admin 侧关联键：ADMIN_TP_ORDER_COL_5（第三方订单号），非通用 ADMIN_JOIN_COL_5（订单号）
+IBFYPAY_SHEET_5           = "Sheet"
+IBFYPAY_HEADER_5          = 0
+IBFYPAY_JOIN_COL_5        = "系统流水号"        # 平台侧关联键
+IBFYPAY_ADMIN_JOIN_COL_5  = "第三方订单号"      # admin 侧关联键（不同于其他平台用 订单号）
+IBFYPAY_TYPE_COL_5        = "类型"
+IBFYPAY_TYPE_PAYOUT_5     = "代付扣款"          # 过滤代付扣款行
+IBFYPAY_TYPE_FEE_5        = "代付扣除手续费"     # 过滤手续费行
+IBFYPAY_AMOUNT_COL_5      = "变动金额"          # 金额列（负数，取绝对值）
+IBFYPAY_TIME_COL_5        = "变动时间"          # 交易时间
+IBFYPAY_ACCOUNT_COL_5     = "账户"
+IBFYPAY_REMARK_COL_5      = "备注"
 
 # ── SUPERPAY 平台（XLSX，sheet="sheet1"，header=0）───────────────────────────
 SUPERPAY_SHEET_5             = "sheet1"
@@ -79,7 +82,7 @@ WANGGUYPAY_FAIL_INFO_COL_5     = "失败信息"
 # wangupay-（实际文件名少一个"g"）和 wangguypay- 均支持
 PLATFORM_PREFIXES_5: dict = {
     "admin":      ["admin-"],
-    "ibfpay":     ["ibfpay-"],
+    "ibfpay":     ["ibfpay-", "ibf平台"],    # ibf平台 识别资金流水账格式文件
     "superpay":   ["superpay-"],
     "wangguypay": ["wangupay-", "wangguypay-"],
 }

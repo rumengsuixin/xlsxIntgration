@@ -9,6 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **代号2**：海外银行，源文件命名携带币种，汇总到 `银行汇总.xlsx`，余额表每行代表"银行+币种"组合
 - **代号3**：游戏订单匹配，将游戏方后台 admin 订单表与 Adyen / 华为 / Google Play 商户平台订单通过流水号关联，追加「平台支付方式」列后输出到 `订单匹配结果_{YYYYMMDD}.xlsx`
 - **代号4**：后台充值订单浏览器导出，按支付日期逐日打开导出 URL，复用独立 Chrome 登录态并集中下载到 `data/output/4/`
+- **代号5**：代付订单对账，将 admin 代付订单与 IBFYPAY / SUPERPAY / WANGGUYPAY 三平台通过订单号关联，输出到 `代付对账结果_{YYYYMMDD}.xlsx`
 
 ## 常用命令
 
@@ -26,6 +27,9 @@ venv/Scripts/python.exe 整合3.py
 
 # 代号4：后台充值订单浏览器导出
 venv/Scripts/python.exe 整合4.py
+
+# 代号5：代付订单对账
+venv/Scripts/python.exe 整合5.py
 # 手动指定日期范围
 venv/Scripts/python.exe 整合4.py --date-range 2026-04-01 2026-04-30
 # 手动指定日期范围和每批等待秒数
@@ -54,11 +58,13 @@ venv/Scripts/pip.exe install -r requirements.txt
 整合2.py                    # 代号2入口（调用 src/bank_integration/app2.main()）
 整合3.py                    # 代号3入口（调用 src/bank_integration/app3.main()）
 整合4.py                    # 代号4入口（调用 src/bank_integration/app4.main()）
+整合5.py                    # 代号5入口（调用 src/bank_integration/app5.main()）
 src/bank_integration/
     config.py               # 代号1：路径常量、各银行读取配置、余额列/日期列映射
     config2.py              # 代号2：路径常量、各银行读取配置、余额列/日期列映射
     config3.py              # 代号3：路径常量、各平台列名映射
     config4.py              # 代号4：导出URL模板、Chrome profile和下载目录
+    config5.py              # 代号5：路径常量、各平台列名映射、文件识别前缀、输出新增列定义
     scanner.py              # 扫描源文件目录（scan_source_files / scan_source_files_2）
     readers.py              # 按银行配置读取 CSV/XLS/XLSX，返回清洗后的 DataFrame
     balances.py             # 提取期末余额、定位/写入余额工作表的行列
@@ -67,6 +73,7 @@ src/bank_integration/
     app2.py                 # 代号2 main()，串联各模块流程
     app3.py                 # 代号3 main()，游戏订单匹配逻辑
     app4.py                 # 代号4 main()，充值订单浏览器导出逻辑
+    app5.py                 # 代号5 main()，代付订单对账逻辑
 template/
     1/
         国内银行汇总.xlsx   # 代号1模板（必须预先存在）
@@ -77,12 +84,14 @@ data/
     input/2/                # 代号2：{公司代号}-{银行全称}-{币种}.{扩展名} 源文件
     input/3/                # 代号3：admin + ADYEN- + 华为平台- + Googol- 源文件
     input/raw/              # 原始未命名样例（不被扫描）
+    input/raw/5/            # 代号5：admin- / ibf平台 / superpay- / wangupay- 源文件
     browser_profile/4/      # 代号4：独立 Chrome 登录态目录（运行时生成）
     output/
         国内银行汇总.xlsx           # 代号1运行时从模板复制的工作副本（最终输出）
         银行汇总.xlsx               # 代号2运行时从模板复制的工作副本（最终输出）
         订单匹配结果_{YYYYMMDD}.xlsx # 代号3运行时生成（每日覆盖）
         4/                          # 代号4浏览器下载目录
+        代付对账结果_{YYYYMMDD}.xlsx # 代号5运行时生成（每日覆盖）
 tests/
     test_bank_integration.py
 ```
@@ -115,6 +124,36 @@ tests/
 8. 按批次等待下载完成；`--wait-seconds` / `MODE4_BATCH_WAIT_SECONDS` 保留兼容，实际重试由检查机会和检查间隔控制，机会用完才重试
 9. 全部日期齐备后，按日期选择最新完成文件并合并为 `data/output/4/后台充值订单导出合并_{start}_{end}.xlsx`
 10. 合并读取 `.xls` 时若 `xlrd` 无法直接读取，会尝试用 LibreOffice 或 Windows Excel 临时转换为 `.xlsx` 后再读取
+
+## 代号5数据流
+
+1. `scan_source_files_5`：在 `data/input/raw/5/` 扫描 `.xls`/`.xlsx`，按 stem 小写前缀分类（跳过 `~$` 临时文件）
+2. `read_admin_5`：engine=xlrd，sheet="Simple"，找不到时回退查找含 `订单号` 列的 sheet；`dropna+fillna`
+3. `read_ibfpay_5`：自动检测资金流水账格式（有 `类型` 列，两行合并）或订单明细格式（无 `类型` 列，手续费置0）
+4. `read_superpay_5` / `read_wangguypay_5`：`_select_sheet_by_columns_5` 自动定位含必要列的 sheet
+5. `build_*_lookup_5`：三平台各构建以关联键为索引的查找表，去重并打 warning
+6. `enrich_admin_5`：admin 为主表，优先级 IBFYPAY > SUPERPAY > WANGGUYPAY 逐行匹配，追加 7 个新增列；末尾追加平台多余行（`机构` 填平台名称）
+7. `write_output_5`：输出 3 个 sheet 到 `data/output/代付对账结果_{YYYYMMDD}.xlsx`
+
+## 各平台读取配置——代号5（config5.py）
+
+| 平台 | 格式 | sheet | header | 关联键（平台侧） | 关联键（admin侧） | 特殊处理 |
+|---|---|---|---|---|---|---|
+| Admin | XLS | Simple | 0 | — | — | engine=xlrd；sheet 不存在时回退查找 |
+| IBFYPAY（资金流水账） | XLSX | Sheet | 0 | 系统流水号 | 第三方订单号 | 两行合并：代付扣款+代付扣除手续费 |
+| IBFYPAY（订单明细） | XLSX | Sheet | 0 | 系统流水号 | 第三方订单号 | 无 `类型` 列时自动识别，手续费置0 |
+| SUPERPAY | XLSX | sheet1 | 0 | 商户订单号 | 订单号 | 手续费=代付金额−实收（取绝对值） |
+| WANGGUYPAY | XLSX | 付款订单 | 1 | 商户订单号 | 订单号 | header=1（第1行为冗余标题） |
+
+## 代号5输出结构
+
+输出文件：`data/output/代付对账结果_{YYYYMMDD}.xlsx`，含 3 个 sheet：
+
+| Sheet | 内容 |
+|---|---|
+| 代付对账结果 | admin 全部原始列 + 7 个新增列（是否匹配/平台流水号/平台代付金额/平台状态/手续费/到账金额/交易日期） |
+| 匹配失败订单 | `是否匹配 == "否"` 的行 |
+| 平台汇总 | 按 `机构` 聚合：笔数/代付金额合计/手续费合计/到账金额合计（仅统计匹配成功行） |
 
 ## 各银行读取配置——代号1（config.py）
 
@@ -195,6 +234,21 @@ tests/
 - **页码**：`p=[PAGE]` 原样保留，本版本不做分页循环
 - **macOS 复用**：启动 Chrome 时固定 `--user-data-dir=data/browser_profile/4` 和 `--profile-directory=Default`；普通 Chrome 手动打开不共享该登录态
 - **Cookie 判定**：只把 `data/browser_profile/4/Default/Cookies` 作为可复用登录态判断依据，`Default/Network/Cookies` 仅打印诊断日志
+
+### 代号5
+- **源文件目录**：`data/input/raw/5/`，所有文件平铺放置
+- **文件识别规则**（stem 小写前缀匹配，来自 `PLATFORM_PREFIXES_5`）：
+  - `admin-` → admin 后台主表（XLS）
+  - `ibfpay-` → IBFYPAY 订单明细格式（无 `类型` 列，手续费置0）
+  - `ibf平台` → IBFYPAY 资金流水账格式（有 `类型` 列，两行合并）
+  - `superpay-` → SUPERPAY 平台
+  - `wangupay-` 或 `wangguypay-` → WANGGUYPAY 平台
+- **匹配优先级**：IBFYPAY > SUPERPAY > WANGGUYPAY
+- **IBFYPAY 关联键**：admin.`第三方订单号` ↔ ibfpay.`系统流水号`
+- **SUPERPAY / WANGGUYPAY 关联键**：admin.`订单号` ↔ 平台.`商户订单号`
+- **手续费计算**：IBFYPAY = 代付金额 − 手续费（源文件已有）；SUPERPAY = abs(代付金额 − 实收)；WANGGUYPAY = 源文件 `手续费(try)` 列
+- **平台多余行**：平台有、admin 无的记录，`是否匹配 = "平台多余"`，`机构` 填平台名称（IBFYPAY/SUPERPAY/WANGGUYPAY）
+- **admin 必须存在**：找不到 admin 文件时直接退出并打印错误
 
 ### 代号3
 - **源文件目录**：`data/input/3/`，所有文件平铺放置（均为 `.xlsx`）

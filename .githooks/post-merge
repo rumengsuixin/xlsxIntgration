@@ -1,0 +1,3 @@
+#!/bin/sh
+# 清除 macOS quarantine 属性，避免 Python/Excel 文件被拦截
+xattr -dr com.apple.quarantine . 2>/dev/null || true

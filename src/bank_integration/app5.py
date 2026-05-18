@@ -519,10 +519,13 @@ def _build_platform_only_rows_5(
             sp_actual = str(superpay_lk.at[key, SUPERPAY_ACTUAL_COL_5]).strip()       if SUPERPAY_ACTUAL_COL_5       in superpay_lk.columns else ""
             sp_status = str(superpay_lk.at[key, SUPERPAY_STATUS_COL_5]).strip()       if SUPERPAY_STATUS_COL_5       in superpay_lk.columns else ""
             sp_time   = str(superpay_lk.at[key, SUPERPAY_FINISH_TIME_COL_5]).strip()  if SUPERPAY_FINISH_TIME_COL_5  in superpay_lk.columns else ""
+            sp_amt_f    = _to_float_5(sp_amt) or 0.0
+            sp_actual_f = _to_float_5(sp_actual) or 0.0
+            sp_calc_fee = str(round(sp_amt_f - sp_actual_f, 2)) if (sp_amt or sp_actual) else ""
             row[PLATFORM_ORDER_NO_COL_5] = sp_no
             row[PLATFORM_AMOUNT_COL_5]   = sp_amt
             row[PLATFORM_STATUS_COL_5]   = sp_status
-            row[FEE_COL_5]               = sp_fee
+            row[FEE_COL_5]               = sp_calc_fee
             row[ARRIVE_AMOUNT_COL_5]     = sp_actual
             row[TRANSACTION_DATE_COL_5]  = _format_date_5(sp_time)
             extra.append(row)
@@ -668,11 +671,14 @@ def enrich_admin_5(
             arrive_amount_list.append(str(arrive))
             transaction_date_list.append(_format_date_5(ibf_time))
         elif sp_hit:
+            sp_amt_f    = _to_float_5(sp_amt) or 0.0
+            sp_actual_f = _to_float_5(sp_actual) or 0.0
+            sp_calc_fee = str(round(sp_amt_f - sp_actual_f, 2))
             match_status_list.append("是")
             platform_order_no_list.append(sp_no)
             platform_amount_list.append(sp_amt)
             platform_status_list.append(sp_status)
-            fee_list.append(sp_fee)
+            fee_list.append(sp_calc_fee)
             arrive_amount_list.append(sp_actual)
             transaction_date_list.append(_format_date_5(sp_time) or _format_date_5(sp_ctime))
         elif wg_hit:

@@ -57,7 +57,14 @@ from src.bank_integration.app4 import (
     parse_date,
     wait_for_export_files,
 )
-from src.bank_integration.app5 import build_ibfpay_lookup_5, build_summary_sheet_5, enrich_admin_5
+from src.bank_integration.app5 import (
+    build_ibfpay_lookup_5,
+    build_summary_sheet_5,
+    build_wangguypay_lookup_5,
+    enrich_admin_5,
+    read_wangguypay_5,
+    scan_source_files_5,
+)
 from src.bank_integration.config4 import (
     get_mode4_batch_size,
     get_mode4_batch_wait_seconds,
@@ -68,6 +75,7 @@ from src.bank_integration.config4 import (
 from src.bank_integration.config5 import (
     ADMIN_JOIN_COL_5,
     ADMIN_ORG_COL_5,
+    ADMIN_TP_ORDER_COL_5,
     ARRIVE_AMOUNT_COL_5,
     FEE_COL_5,
     IBFYPAY_ADMIN_JOIN_COL_5,
@@ -88,10 +96,13 @@ from src.bank_integration.config5 import (
     WANGGUYPAY_AMOUNT_COL_5,
     WANGGUYPAY_ARRIVE_COL_5,
     WANGGUYPAY_CREATE_TIME_COL_5,
+    WANGGUYPAY_FEE_COL_5,
     WANGGUYPAY_FINISH_TIME_COL_5,
     WANGGUYPAY_JOIN_COL_5,
     WANGGUYPAY_PLATFORM_NO_COL_5,
     WANGGUYPAY_STATUS_COL_5,
+    WANGGUYPAY_FUND_AMOUNT_COL_5,
+    WANGGUYPAY_FUND_TYPE_COL_5,
 )
 from src.bank_integration.config3 import (
     ADMIN_AMOUNT_COL,
@@ -199,6 +210,105 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         self.assertEqual(len(lookup), 1)
         self.assertAlmostEqual(float(lookup.at["O2026041509250257673401", "手续费"]), 0.0)
+
+    def test_wangguypay_fund_file_reads_any_sheet_and_builds_lookup(self):
+        source = pd.DataFrame(
+            [
+                {
+                    WANGGUYPAY_PLATFORM_NO_COL_5: "P100",
+                    WANGGUYPAY_FUND_TYPE_COL_5: "扣除代付结算手续费",
+                    WANGGUYPAY_FUND_AMOUNT_COL_5: "-40",
+                    WANGGUYPAY_CREATE_TIME_COL_5: "2026-05-18 12:11:23",
+                    WANGGUYPAY_FINISH_TIME_COL_5: "2026-05-18 14:04:27",
+                },
+                {
+                    WANGGUYPAY_PLATFORM_NO_COL_5: "P100",
+                    WANGGUYPAY_FUND_TYPE_COL_5: "付款结算",
+                    WANGGUYPAY_FUND_AMOUNT_COL_5: "-2000",
+                    WANGGUYPAY_CREATE_TIME_COL_5: "2026-05-18 12:11:23",
+                    WANGGUYPAY_FINISH_TIME_COL_5: "2026-05-18 14:04:27",
+                },
+                {
+                    WANGGUYPAY_PLATFORM_NO_COL_5: "P200",
+                    WANGGUYPAY_FUND_TYPE_COL_5: "代付驳回",
+                    WANGGUYPAY_FUND_AMOUNT_COL_5: "2000",
+                    WANGGUYPAY_CREATE_TIME_COL_5: "2026-05-18 12:11:23",
+                    WANGGUYPAY_FINISH_TIME_COL_5: "2026-05-18 14:04:27",
+                },
+                {
+                    WANGGUYPAY_PLATFORM_NO_COL_5: "P200",
+                    WANGGUYPAY_FUND_TYPE_COL_5: "代付结算驳回退回手续费",
+                    WANGGUYPAY_FUND_AMOUNT_COL_5: "40",
+                    WANGGUYPAY_CREATE_TIME_COL_5: "2026-05-18 12:11:23",
+                    WANGGUYPAY_FINISH_TIME_COL_5: "2026-05-18 14:04:27",
+                },
+                {
+                    WANGGUYPAY_PLATFORM_NO_COL_5: "P300",
+                    WANGGUYPAY_FUND_TYPE_COL_5: "手动增加",
+                    WANGGUYPAY_FUND_AMOUNT_COL_5: "100",
+                    WANGGUYPAY_CREATE_TIME_COL_5: "2026-05-18 12:11:23",
+                    WANGGUYPAY_FINISH_TIME_COL_5: "2026-05-18 14:04:27",
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Wangupay资金记录测试.xlsx"
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                pd.DataFrame([["无关标题"]]).to_excel(writer, sheet_name="任意名称", index=False, header=False)
+                source.to_excel(writer, sheet_name="任意名称", index=False, startrow=1)
+
+            raw = read_wangguypay_5(path)
+            lookup = build_wangguypay_lookup_5(raw)
+
+        self.assertEqual(list(lookup.index), ["P100"])
+        self.assertAlmostEqual(float(lookup.at["P100", WANGGUYPAY_AMOUNT_COL_5]), 2000.0)
+        self.assertAlmostEqual(float(lookup.at["P100", WANGGUYPAY_FEE_COL_5]), 40.0)
+        self.assertAlmostEqual(float(lookup.at["P100", WANGGUYPAY_ARRIVE_COL_5]), 1960.0)
+        self.assertEqual(lookup.at["P100", WANGGUYPAY_STATUS_COL_5], "成功")
+
+    def test_wangguypay_matches_admin_third_party_order_no(self):
+        admin = pd.DataFrame(
+            [
+                {
+                    ADMIN_JOIN_COL_5: "ADMIN-ORDER-1",
+                    ADMIN_TP_ORDER_COL_5: "P100",
+                },
+                {
+                    ADMIN_JOIN_COL_5: "P100",
+                    ADMIN_TP_ORDER_COL_5: "",
+                    IBFYPAY_ADMIN_JOIN_COL_5: "",
+                },
+            ]
+        )
+        wangguypay = pd.DataFrame(
+            [{
+                WANGGUYPAY_PLATFORM_NO_COL_5: "P100",
+                WANGGUYPAY_AMOUNT_COL_5: "2000",
+                WANGGUYPAY_FEE_COL_5: "40",
+                WANGGUYPAY_ARRIVE_COL_5: "1960",
+                WANGGUYPAY_STATUS_COL_5: "成功",
+                WANGGUYPAY_CREATE_TIME_COL_5: "2026-05-18 12:11:23",
+                WANGGUYPAY_FINISH_TIME_COL_5: "2026-05-18 14:04:27",
+            }],
+            index=pd.Index(["P100"], name=WANGGUYPAY_PLATFORM_NO_COL_5),
+        )
+
+        result = enrich_admin_5(admin, None, None, wangguypay)
+        keyed = {row[ADMIN_JOIN_COL_5]: row for _, row in result.iterrows() if row[ADMIN_JOIN_COL_5]}
+
+        self.assertEqual(keyed["ADMIN-ORDER-1"][MATCH_STATUS_COL_5], "是")
+        self.assertEqual(keyed["ADMIN-ORDER-1"][PLATFORM_ORDER_NO_COL_5], "P100")
+        self.assertEqual(keyed["P100"][MATCH_STATUS_COL_5], "否")
+
+    def test_wangguypay_fund_file_takes_priority_over_old_order_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Wangupay资金记录202605.xlsx").touch()
+            (root / "wangupay-代付订单202605.xlsx").touch()
+
+            files = scan_source_files_5(root)
+
+        self.assertEqual([p.name for p in files["wangguypay"]], ["Wangupay资金记录202605.xlsx"])
 
     def test_payout_summary_groups_by_month_and_org(self):
         result = pd.DataFrame(
@@ -323,15 +433,15 @@ class BankIntegrationSampleTests(unittest.TestCase):
     def test_payout_platform_status_is_normalized(self):
         admin = pd.DataFrame(
             [
-                {ADMIN_JOIN_COL_5: "SP-SUCCESS", IBFYPAY_ADMIN_JOIN_COL_5: ""},
-                {ADMIN_JOIN_COL_5: "SP-FAILED", IBFYPAY_ADMIN_JOIN_COL_5: ""},
-                {ADMIN_JOIN_COL_5: "SP-CLOSED", IBFYPAY_ADMIN_JOIN_COL_5: ""},
-                {ADMIN_JOIN_COL_5: "WG-SUCCESS", IBFYPAY_ADMIN_JOIN_COL_5: ""},
-                {ADMIN_JOIN_COL_5: "WG-FAILED", IBFYPAY_ADMIN_JOIN_COL_5: ""},
-                {ADMIN_JOIN_COL_5: "WG-PENDING", IBFYPAY_ADMIN_JOIN_COL_5: ""},
-                {ADMIN_JOIN_COL_5: "IBF-ORDER", IBFYPAY_ADMIN_JOIN_COL_5: "IBF-KEY"},
-                {ADMIN_JOIN_COL_5: "NO-MATCH", IBFYPAY_ADMIN_JOIN_COL_5: ""},
-                {ADMIN_JOIN_COL_5: "UNKNOWN", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "SP-SUCCESS", ADMIN_TP_ORDER_COL_5: "", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "SP-FAILED", ADMIN_TP_ORDER_COL_5: "", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "SP-CLOSED", ADMIN_TP_ORDER_COL_5: "", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "WG-SUCCESS", ADMIN_TP_ORDER_COL_5: "WG-SUCCESS"},
+                {ADMIN_JOIN_COL_5: "WG-FAILED", ADMIN_TP_ORDER_COL_5: "WG-FAILED"},
+                {ADMIN_JOIN_COL_5: "WG-PENDING", ADMIN_TP_ORDER_COL_5: "WG-PENDING"},
+                {ADMIN_JOIN_COL_5: "IBF-ORDER", ADMIN_TP_ORDER_COL_5: "", IBFYPAY_ADMIN_JOIN_COL_5: "IBF-KEY"},
+                {ADMIN_JOIN_COL_5: "NO-MATCH", ADMIN_TP_ORDER_COL_5: "", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "UNKNOWN", ADMIN_TP_ORDER_COL_5: "", IBFYPAY_ADMIN_JOIN_COL_5: ""},
             ]
         )
         ibfpay = pd.DataFrame(

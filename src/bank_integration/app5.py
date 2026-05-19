@@ -41,6 +41,7 @@ from .config5 import (
     ADMIN_AMOUNT_COL_5,
     ADMIN_STATUS_COL_5,
     ADMIN_ORG_COL_5,
+    ADMIN_TP_ORDER_COL_5,
     IBFYPAY_SHEET_5,
     IBFYPAY_HEADER_5,
     IBFYPAY_JOIN_COL_5,
@@ -72,6 +73,12 @@ from .config5 import (
     WANGGUYPAY_STATUS_COL_5,
     WANGGUYPAY_CREATE_TIME_COL_5,
     WANGGUYPAY_FINISH_TIME_COL_5,
+    WANGGUYPAY_FUND_TYPE_COL_5,
+    WANGGUYPAY_FUND_AMOUNT_COL_5,
+    WANGGUYPAY_FUND_TYPE_PAYOUT_5,
+    WANGGUYPAY_FUND_TYPE_FEE_5,
+    WANGGUYPAY_FUND_STATUS_5,
+    WANGGUYPAY_FUND_FILE_PREFIXES_5,
     MATCH_STATUS_COL_5,
     PLATFORM_ORDER_NO_COL_5,
     PLATFORM_AMOUNT_COL_5,
@@ -85,6 +92,9 @@ from .config5 import (
 
 
 IBFYPAY_SOURCE_PRIORITY_COL_5 = "_ibfpay_source_priority"
+WANGGUYPAY_FORMAT_COL_5 = "_wangguypay_format"
+WANGGUYPAY_FORMAT_FUND_5 = "fund"
+WANGGUYPAY_FORMAT_ORDER_5 = "order"
 PLATFORM_STATUS_MAP_5 = {
     "SUPERPAY": {
         "代付成功": "成功",
@@ -95,6 +105,7 @@ PLATFORM_STATUS_MAP_5 = {
         "付款成功": "成功",
         "付款失败": "失败",
         "处理中": "处理中",
+        WANGGUYPAY_FUND_STATUS_5: "成功",
     },
 }
 
@@ -178,7 +189,7 @@ def scan_source_files_5(input_dir: Path) -> dict:
         admin-          → admin 后台主表（XLS，engine=xlrd）
         ibfpay-/ibf平台 → IBFYPAY 平台（XLSX）
         superpay-       → SUPERPAY 平台（XLSX）
-        wangupay- 或 wangguypay- → WANGGUYPAY 平台（XLSX）
+        wangupay-/wangguypay- 或 Wangupay资金记录 → WANGGUYPAY 平台（XLS/XLSX）
 
     跳过临时文件（"~$" 前缀）和非 xls/xlsx 格式。
     同平台多文件时全部收录，由调用方合并。
@@ -203,6 +214,17 @@ def scan_source_files_5(input_dir: Path) -> dict:
                 break
         if not matched:
             logging.warning("未识别文件，已跳过: %s", f.name)
+
+    wangguypay_files = result.get("wangguypay", [])
+    fund_files = [
+        f for f in wangguypay_files
+        if any(f.stem.lower().startswith(p) for p in WANGGUYPAY_FUND_FILE_PREFIXES_5)
+    ]
+    if fund_files:
+        ignored = [f.name for f in wangguypay_files if f not in fund_files]
+        if ignored:
+            logging.info("WANGGUYPAY 已发现资金记录文件，忽略旧付款订单文件: %s", ignored)
+        result["wangguypay"] = fund_files
 
     for key, files in result.items():
         if len(files) > 1:
@@ -261,7 +283,7 @@ def _select_sheet_by_columns_5(
                 continue
             cols = _normalize_columns_5(preview.columns)
             if all(c in cols for c in required_columns):
-                if sheet_name != default_name:
+                if default_name is not None and sheet_name != default_name:
                     logging.warning(
                         "【%s】默认 sheet '%s' 在 %s 中不可用；使用包含所需列 %s 的 sheet '%s'。可用 sheets: %s",
                         label, default_sheet, filepath.name, required_columns, sheet_name, sheet_names,
@@ -405,27 +427,45 @@ def read_superpay_5(filepath: Path) -> pd.DataFrame:
 
 
 def read_wangguypay_5(filepath: Path) -> pd.DataFrame:
-    """读取 WANGGUYPAY 平台文件（XLSX，sheet="付款订单"，header=1），全列字符串。
+    """读取 WANGGUYPAY 文件，自动兼容资金记录和旧付款订单格式。
 
-    关键点：
-      - 表头在第2行（header=1），第1行为无用大标题行
-      - _select_sheet_by_columns_5 的 header 参数也必须传 1，否则预览到错误列头
-
-    Args:
-        filepath: WANGGUYPAY XLSX 文件路径。
-
-    Returns:
-        包含 WANGGUYPAY 全部列的 DataFrame（已跳过第1行冗余标题）。
+    资金记录格式不依赖固定 sheet 名；遍历全部 sheet，使用 header=1 预览，
+    找到同时包含 平台订单号、交易类型、变动金额(try) 的 sheet 后读取。
+    旧付款订单格式继续按付款订单列读取。
     """
+    fund_required = [
+        WANGGUYPAY_PLATFORM_NO_COL_5,
+        WANGGUYPAY_FUND_TYPE_COL_5,
+        WANGGUYPAY_FUND_AMOUNT_COL_5,
+    ]
+    try:
+        sheet = _select_sheet_by_columns_5(
+            filepath,
+            default_sheet=None,
+            header=WANGGUYPAY_HEADER_5,
+            required_columns=fund_required,
+            label="WANGGUYPAY资金记录",
+        )
+        df = pd.read_excel(filepath, sheet_name=sheet, header=WANGGUYPAY_HEADER_5, dtype=str)
+        df = df.dropna(how="all").fillna("")
+        df.columns = [str(c).strip() for c in df.columns]
+        df[WANGGUYPAY_FORMAT_COL_5] = WANGGUYPAY_FORMAT_FUND_5
+        return df
+    except ValueError:
+        pass
+
     sheet = _select_sheet_by_columns_5(
         filepath,
         default_sheet=WANGGUYPAY_SHEET_5,
         header=WANGGUYPAY_HEADER_5,
         required_columns=[WANGGUYPAY_JOIN_COL_5, WANGGUYPAY_AMOUNT_COL_5, WANGGUYPAY_STATUS_COL_5],
-        label="WANGGUYPAY",
+        label="WANGGUYPAY付款订单",
     )
     df = pd.read_excel(filepath, sheet_name=sheet, header=WANGGUYPAY_HEADER_5, dtype=str)
-    return df.dropna(how="all").fillna("")
+    df = df.dropna(how="all").fillna("")
+    df.columns = [str(c).strip() for c in df.columns]
+    df[WANGGUYPAY_FORMAT_COL_5] = WANGGUYPAY_FORMAT_ORDER_5
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -494,16 +534,79 @@ def build_superpay_lookup_5(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_wangguypay_lookup_5(df: pd.DataFrame) -> pd.DataFrame:
-    """构建以 WANGGUYPAY_JOIN_COL_5（商户订单号）为索引的 WANGGUYPAY 查找表。
+    """构建以 WANGGUYPAY 平台订单号为索引的查找表。
 
-    Args:
-        df: read_wangguypay_5 返回的原始 DataFrame。
-
-    Returns:
-        以 WANGGUYPAY_JOIN_COL_5 为索引的 lookup DataFrame。
+    新资金记录格式按 平台订单号 聚合：付款结算为代付金额，扣除代付结算手续费为手续费。
+    旧付款订单格式也统一改用平台订单号作为索引，以便与 admin.第三方订单号 匹配。
     """
+    is_fund = (
+        WANGGUYPAY_FORMAT_COL_5 in df.columns
+        and (df[WANGGUYPAY_FORMAT_COL_5].astype(str).str.strip() == WANGGUYPAY_FORMAT_FUND_5).any()
+    ) or all(c in df.columns for c in [
+        WANGGUYPAY_PLATFORM_NO_COL_5,
+        WANGGUYPAY_FUND_TYPE_COL_5,
+        WANGGUYPAY_FUND_AMOUNT_COL_5,
+    ])
+
+    if is_fund:
+        required = [
+            WANGGUYPAY_PLATFORM_NO_COL_5,
+            WANGGUYPAY_FUND_TYPE_COL_5,
+            WANGGUYPAY_FUND_AMOUNT_COL_5,
+        ]
+        if not all(c in df.columns for c in required):
+            logging.warning("【WANGGUYPAY】资金记录缺少必要列 %s，跳过", required)
+            return pd.DataFrame(columns=[
+                WANGGUYPAY_AMOUNT_COL_5,
+                WANGGUYPAY_FEE_COL_5,
+                WANGGUYPAY_ARRIVE_COL_5,
+                WANGGUYPAY_STATUS_COL_5,
+                WANGGUYPAY_CREATE_TIME_COL_5,
+                WANGGUYPAY_FINISH_TIME_COL_5,
+            ])
+
+        work = df.copy()
+        work[WANGGUYPAY_PLATFORM_NO_COL_5] = work[WANGGUYPAY_PLATFORM_NO_COL_5].astype(str).str.strip()
+        work[WANGGUYPAY_FUND_TYPE_COL_5] = work[WANGGUYPAY_FUND_TYPE_COL_5].astype(str).str.strip()
+        work["_fund_amount"] = pd.to_numeric(
+            work[WANGGUYPAY_FUND_AMOUNT_COL_5].astype(str).str.replace(",", "", regex=False).str.strip(),
+            errors="coerce",
+        ).fillna(0.0).abs()
+
+        payout = work[work[WANGGUYPAY_FUND_TYPE_COL_5] == WANGGUYPAY_FUND_TYPE_PAYOUT_5].copy()
+        fee = work[work[WANGGUYPAY_FUND_TYPE_COL_5] == WANGGUYPAY_FUND_TYPE_FEE_5].copy()
+
+        payout_cols = [WANGGUYPAY_PLATFORM_NO_COL_5, "_fund_amount"]
+        for c in (WANGGUYPAY_CREATE_TIME_COL_5, WANGGUYPAY_FINISH_TIME_COL_5):
+            if c in payout.columns:
+                payout_cols.append(c)
+        payout = payout[payout_cols].rename(columns={"_fund_amount": WANGGUYPAY_AMOUNT_COL_5})
+        fee = fee[[WANGGUYPAY_PLATFORM_NO_COL_5, "_fund_amount"]].rename(
+            columns={"_fund_amount": WANGGUYPAY_FEE_COL_5}
+        )
+        merged = payout.merge(fee, on=WANGGUYPAY_PLATFORM_NO_COL_5, how="left")
+        merged[WANGGUYPAY_FEE_COL_5] = pd.to_numeric(
+            merged[WANGGUYPAY_FEE_COL_5], errors="coerce"
+        ).fillna(0.0)
+        merged[WANGGUYPAY_ARRIVE_COL_5] = (
+            pd.to_numeric(merged[WANGGUYPAY_AMOUNT_COL_5], errors="coerce").fillna(0.0)
+            - merged[WANGGUYPAY_FEE_COL_5]
+        ).round(2)
+        merged[WANGGUYPAY_STATUS_COL_5] = WANGGUYPAY_FUND_STATUS_5
+
+        keep_cols = [c for c in [
+            WANGGUYPAY_PLATFORM_NO_COL_5,
+            WANGGUYPAY_AMOUNT_COL_5,
+            WANGGUYPAY_FEE_COL_5,
+            WANGGUYPAY_ARRIVE_COL_5,
+            WANGGUYPAY_STATUS_COL_5,
+            WANGGUYPAY_CREATE_TIME_COL_5,
+            WANGGUYPAY_FINISH_TIME_COL_5,
+        ] if c in merged.columns]
+        result = _dedup_lookup_5(merged[keep_cols], WANGGUYPAY_PLATFORM_NO_COL_5, "WANGGUYPAY资金记录")
+        return result.set_index(WANGGUYPAY_PLATFORM_NO_COL_5, drop=False)
+
     keep_cols = [c for c in [
-        WANGGUYPAY_JOIN_COL_5,
         WANGGUYPAY_PLATFORM_NO_COL_5,
         WANGGUYPAY_AMOUNT_COL_5,
         WANGGUYPAY_FEE_COL_5,
@@ -512,8 +615,8 @@ def build_wangguypay_lookup_5(df: pd.DataFrame) -> pd.DataFrame:
         WANGGUYPAY_CREATE_TIME_COL_5,
         WANGGUYPAY_FINISH_TIME_COL_5,
     ] if c in df.columns]
-    result = _dedup_lookup_5(df[keep_cols], WANGGUYPAY_JOIN_COL_5, "WANGGUYPAY")
-    return result.set_index(WANGGUYPAY_JOIN_COL_5)
+    result = _dedup_lookup_5(df[keep_cols], WANGGUYPAY_PLATFORM_NO_COL_5, "WANGGUYPAY")
+    return result.set_index(WANGGUYPAY_PLATFORM_NO_COL_5, drop=False)
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +627,7 @@ def _build_platform_only_rows_5(
     result_cols: list,
     admin_ibfpay_keys: Set[str],
     admin_order_keys: Set[str],
+    admin_wangguypay_keys: Set[str],
     ibfpay_lk: Optional[pd.DataFrame],
     superpay_lk: Optional[pd.DataFrame],
     wangguypay_lk: Optional[pd.DataFrame],
@@ -531,7 +635,8 @@ def _build_platform_only_rows_5(
     """构建平台有、admin 无的多余行（MATCH_STATUS_COL_5 = "平台多余"）。
 
     admin_ibfpay_keys: admin.第三方订单号 集合，与 ibfpay_lk.index（系统流水号）比对
-    admin_order_keys:  admin.订单号 集合，与 superpay/wangguypay_lk.index（商户订单号）比对
+    admin_order_keys:  admin.订单号 集合，与 superpay_lk.index（商户订单号）比对
+    admin_wangguypay_keys: admin.第三方订单号 集合，与 wangguypay_lk.index（平台订单号）比对
     """
     extra = []
 
@@ -588,10 +693,10 @@ def _build_platform_only_rows_5(
     if wangguypay_lk is not None:
         for key in wangguypay_lk.index:
             k = str(key).strip()
-            if not k or k in admin_order_keys:
+            if not k or k in admin_wangguypay_keys:
                 continue
             row = {c: "" for c in result_cols}
-            row[ADMIN_JOIN_COL_5]        = k
+            row[ADMIN_TP_ORDER_COL_5]    = k
             row[MATCH_STATUS_COL_5]      = "平台多余"
             row[ADMIN_ORG_COL_5]         = "WANGGUYPAY"
             wg_no     = str(wangguypay_lk.at[key, WANGGUYPAY_PLATFORM_NO_COL_5]).strip() if WANGGUYPAY_PLATFORM_NO_COL_5  in wangguypay_lk.columns else ""
@@ -623,7 +728,8 @@ def enrich_admin_5(
 
     匹配逻辑（优先级：IBFYPAY > SUPERPAY > WANGGUYPAY）：
       - IBFYPAY：以 admin.IBFYPAY_ADMIN_JOIN_COL_5（第三方订单号）↔ ibfpay_lk.index（系统流水号）关联
-      - SUPERPAY / WANGGUYPAY：以 admin.ADMIN_JOIN_COL_5（订单号）↔ 平台 lookup.index（商户订单号）关联
+      - SUPERPAY：以 admin.ADMIN_JOIN_COL_5（订单号）↔ 平台 lookup.index（商户订单号）关联
+      - WANGGUYPAY：以 admin.ADMIN_TP_ORDER_COL_5（第三方订单号）↔ 平台 lookup.index（平台订单号）关联
       - 任一平台命中 → 是否匹配=是，填充该平台的流水号/代付金额/手续费/到账金额/交易日期
       - 均未命中 → 是否匹配=否
       - 追加平台多余行（_build_platform_only_rows_5）
@@ -670,7 +776,7 @@ def enrich_admin_5(
     if superpay_avail:
         result = _safe_merge(result, superpay_lk, ADMIN_JOIN_COL_5, "_s_", "SUPERPAY")
     if wangguypay_avail:
-        result = _safe_merge(result, wangguypay_lk, ADMIN_JOIN_COL_5, "_w_", "WANGGUYPAY")
+        result = _safe_merge(result, wangguypay_lk, ADMIN_TP_ORDER_COL_5, "_w_", "WANGGUYPAY")
 
     match_status_list      = []
     platform_order_no_list = []
@@ -698,7 +804,7 @@ def enrich_admin_5(
         sp_ctime  = str(row.get(f"_s_{SUPERPAY_CREATE_TIME_COL_5}","")).strip() if superpay_avail else ""
         sp_hit    = sp_amt != ""
 
-        # WANGGUYPAY 命中判断（join 键：admin.订单号 ↔ wangguypay.商户订单号）
+        # WANGGUYPAY 命中判断（join 键：admin.第三方订单号 ↔ wangguypay.平台订单号）
         wg_amt    = str(row.get(f"_w_{WANGGUYPAY_AMOUNT_COL_5}",    "")).strip() if wangguypay_avail else ""
         wg_no     = str(row.get(f"_w_{WANGGUYPAY_PLATFORM_NO_COL_5}","")).strip() if wangguypay_avail else ""
         wg_fee    = str(row.get(f"_w_{WANGGUYPAY_FEE_COL_5}",        "")).strip() if wangguypay_avail else ""
@@ -774,12 +880,17 @@ def enrich_admin_5(
         {str(v).strip() for v in admin_df[ADMIN_JOIN_COL_5] if str(v).strip()}
         if ADMIN_JOIN_COL_5 in admin_df.columns else set()
     )
+    admin_wangguypay_keys: Set[str] = (
+        {str(v).strip() for v in admin_df[ADMIN_TP_ORDER_COL_5] if str(v).strip()}
+        if ADMIN_TP_ORDER_COL_5 in admin_df.columns else set()
+    )
 
     result_cols = list(result.columns)
     extra_df = _build_platform_only_rows_5(
         result_cols,
         admin_ibfpay_keys,
         admin_order_keys,
+        admin_wangguypay_keys,
         ibfpay_lk if ibfpay_avail else None,
         superpay_lk if superpay_avail else None,
         wangguypay_lk if wangguypay_avail else None,

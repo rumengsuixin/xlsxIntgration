@@ -59,10 +59,10 @@ SUPERPAY_STATUS_COL_5        = "支付状态"
 SUPERPAY_CREATE_TIME_COL_5   = "创建时间"
 SUPERPAY_FINISH_TIME_COL_5   = "订单支付成功时间"
 
-# ── WANGGUYPAY 平台（XLSX，sheet="付款订单"，header=1，表头在第2行！）─────────
+# ── WANGGUYPAY 平台（旧付款订单 + 新资金记录，表头均在第2行）────────────────
 WANGGUYPAY_SHEET_5             = "付款订单"
 WANGGUYPAY_HEADER_5            = 1              # 关键：实际文件第1行是无用大标题，列头在第2行
-WANGGUYPAY_JOIN_COL_5          = "商户订单号"   # 对应 admin.订单号
+WANGGUYPAY_JOIN_COL_5          = "商户订单号"   # 旧付款订单列；新资金记录改用 平台订单号 ↔ admin.第三方订单号
 WANGGUYPAY_PLATFORM_NO_COL_5   = "平台订单号"
 WANGGUYPAY_AMOUNT_COL_5        = "交易金额(try)"
 WANGGUYPAY_FEE_RATE_COL_5      = "费率"
@@ -77,6 +77,12 @@ WANGGUYPAY_FINISH_TIME_COL_5   = "完成时间"
 WANGGUYPAY_STATUS_COL_5        = "交易状态"
 WANGGUYPAY_CALLBACK_COL_5      = "回调状态"
 WANGGUYPAY_FAIL_INFO_COL_5     = "失败信息"
+WANGGUYPAY_FUND_TYPE_COL_5     = "交易类型"
+WANGGUYPAY_FUND_AMOUNT_COL_5   = "变动金额(try)"
+WANGGUYPAY_FUND_TYPE_PAYOUT_5  = "付款结算"
+WANGGUYPAY_FUND_TYPE_FEE_5     = "扣除代付结算手续费"
+WANGGUYPAY_FUND_STATUS_5       = "成功"
+WANGGUYPAY_FUND_FILE_PREFIXES_5 = ["wangupay资金记录", "wangguypay资金记录"]
 
 # ── 文件识别前缀映射（stem.lower() startswith 任意一个前缀即命中）─────────────
 # wangupay-（实际文件名少一个"g"）和 wangguypay- 均支持
@@ -84,7 +90,7 @@ PLATFORM_PREFIXES_5: dict = {
     "admin":      ["admin-"],
     "ibfpay":     ["ibfpay-", "ibf平台"],    # ibf平台 识别资金流水账格式文件
     "superpay":   ["superpay-"],
-    "wangguypay": ["wangupay-", "wangguypay-"],
+    "wangguypay": ["wangupay-", "wangguypay-", "wangupay资金记录", "wangguypay资金记录"],
 }
 
 # ── 输出新增列（追加在 admin 原始列末尾，共 7 列）──────────────────────────

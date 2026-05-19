@@ -60,10 +60,12 @@ from src.bank_integration.app4 import (
 from src.bank_integration.app5 import (
     build_platform_balance_summary_5,
     build_ibfpay_lookup_5,
+    build_phonecard_lookup_5,
     build_summary_sheet_5,
     build_wangguypay_lookup_5,
     enrich_admin_5,
     read_ibfpay_5,
+    read_phonecard_5,
     read_wangguypay_5,
     scan_source_files_5,
 )
@@ -92,6 +94,14 @@ from src.bank_integration.config5 import (
     IBFYPAY_TYPE_REJECT_5,
     IBFYPAY_TYPE_SYSTEM_5,
     MATCH_STATUS_COL_5,
+    PHONECARD_AMOUNT_COL_5,
+    PHONECARD_DATE_COL_5,
+    PHONECARD_JOIN_COL_5,
+    PHONECARD_ORDER_TYPE_COL_5,
+    PHONECARD_PLATFORM_NAME_5,
+    PHONECARD_PLATFORM_NO_COL_5,
+    PHONECARD_PRIZE_COL_5,
+    PHONECARD_STATUS_COL_5,
     PLATFORM_AMOUNT_COL_5,
     PLATFORM_ORDER_NO_COL_5,
     PLATFORM_STATUS_COL_5,
@@ -340,6 +350,158 @@ class BankIntegrationSampleTests(unittest.TestCase):
             files = scan_source_files_5(root)
 
         self.assertEqual([p.name for p in files["wangguypay"]], ["Wangupay资金记录202605.xlsx"])
+
+    def test_phonecard_file_is_scanned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Okey话费卡结算（20260201-20260413）.xlsx").touch()
+
+            files = scan_source_files_5(root)
+
+        self.assertEqual(
+            [p.name for p in files["phonecard"]],
+            ["Okey话费卡结算（20260201-20260413）.xlsx"],
+        )
+
+    def test_phonecard_reads_order_detail_columns_from_summary_sheet(self):
+        detail = pd.DataFrame(
+            [
+                {
+                    PHONECARD_DATE_COL_5: "2026-04-01 08:38:54",
+                    PHONECARD_JOIN_COL_5: "PC-ORDER-1",
+                    PHONECARD_PRIZE_COL_5: "Faturasız 250 TL",
+                    PHONECARD_AMOUNT_COL_5: "250",
+                    PHONECARD_STATUS_COL_5: "已完成",
+                    PHONECARD_PLATFORM_NO_COL_5: "10007838",
+                    PHONECARD_ORDER_TYPE_COL_5: "实物",
+                    "面值（里拉）": "100",
+                    "数量": "5",
+                    "总额（里拉）": "500",
+                    "兑换美元汇率": "45",
+                    "手续费": "0.1",
+                    "总金额（美元）": "12.22",
+                },
+                {
+                    PHONECARD_DATE_COL_5: "2026-04-02 10:40:06",
+                    PHONECARD_JOIN_COL_5: "PC-ORDER-2",
+                    PHONECARD_PRIZE_COL_5: "Faturasız 500 TL",
+                    PHONECARD_AMOUNT_COL_5: "500",
+                    PHONECARD_STATUS_COL_5: "已完成",
+                    PHONECARD_PLATFORM_NO_COL_5: "10008889",
+                    PHONECARD_ORDER_TYPE_COL_5: "实物",
+                    "面值（里拉）": "",
+                    "数量": "",
+                    "总额（里拉）": "",
+                    "兑换美元汇率": "",
+                    "手续费": "",
+                    "总金额（美元）": "",
+                },
+            ]
+        )
+        fallback = detail[[PHONECARD_DATE_COL_5, PHONECARD_JOIN_COL_5, PHONECARD_PRIZE_COL_5,
+                           PHONECARD_AMOUNT_COL_5, PHONECARD_STATUS_COL_5,
+                           PHONECARD_PLATFORM_NO_COL_5, PHONECARD_ORDER_TYPE_COL_5]].copy()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Okey话费卡结算测试.xlsx"
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                fallback.to_excel(writer, sheet_name="Sheet3", index=False)
+                detail.to_excel(writer, sheet_name="0201-0430汇总", index=False)
+
+            raw = read_phonecard_5(path)
+            lookup = build_phonecard_lookup_5(raw)
+
+        self.assertEqual(list(raw.columns), [
+            PHONECARD_DATE_COL_5,
+            PHONECARD_JOIN_COL_5,
+            PHONECARD_PRIZE_COL_5,
+            PHONECARD_AMOUNT_COL_5,
+            PHONECARD_STATUS_COL_5,
+            PHONECARD_PLATFORM_NO_COL_5,
+            PHONECARD_ORDER_TYPE_COL_5,
+        ])
+        self.assertNotIn("手续费", raw.columns)
+        self.assertEqual(list(lookup.index), ["PC-ORDER-1", "PC-ORDER-2"])
+
+    def test_phonecard_matches_admin_and_normalizes_status(self):
+        admin = pd.DataFrame(
+            [
+                {
+                    ADMIN_JOIN_COL_5: "PC-ORDER-1",
+                    ADMIN_TP_ORDER_COL_5: "",
+                    IBFYPAY_ADMIN_JOIN_COL_5: "",
+                    ADMIN_ORG_COL_5: "",
+                },
+                {
+                    ADMIN_JOIN_COL_5: "NO-MATCH",
+                    ADMIN_TP_ORDER_COL_5: "",
+                    IBFYPAY_ADMIN_JOIN_COL_5: "",
+                    ADMIN_ORG_COL_5: "",
+                },
+            ]
+        )
+        phonecard = pd.DataFrame(
+            [{
+                PHONECARD_PLATFORM_NO_COL_5: "10007838",
+                PHONECARD_AMOUNT_COL_5: "250",
+                PHONECARD_STATUS_COL_5: "已完成",
+                PHONECARD_DATE_COL_5: "2026-04-01 08:38:54",
+            }],
+            index=pd.Index(["PC-ORDER-1"], name=PHONECARD_JOIN_COL_5),
+        )
+
+        result = enrich_admin_5(admin, None, None, None, phonecard)
+        keyed = {row[ADMIN_JOIN_COL_5]: row for _, row in result.iterrows() if row[ADMIN_JOIN_COL_5]}
+
+        self.assertEqual(keyed["PC-ORDER-1"][MATCH_STATUS_COL_5], "是")
+        self.assertEqual(keyed["PC-ORDER-1"][ADMIN_ORG_COL_5], PHONECARD_PLATFORM_NAME_5)
+        self.assertEqual(keyed["PC-ORDER-1"][PLATFORM_ORDER_NO_COL_5], "10007838")
+        self.assertEqual(keyed["PC-ORDER-1"][PLATFORM_AMOUNT_COL_5], "250")
+        self.assertEqual(keyed["PC-ORDER-1"][PLATFORM_STATUS_COL_5], "成功")
+        self.assertEqual(keyed["PC-ORDER-1"][FEE_COL_5], "")
+        self.assertEqual(keyed["PC-ORDER-1"][ARRIVE_AMOUNT_COL_5], "250")
+        self.assertEqual(keyed["PC-ORDER-1"][TRANSACTION_DATE_COL_5], "2026-04-01")
+        self.assertEqual(keyed["NO-MATCH"][MATCH_STATUS_COL_5], "否")
+
+    def test_phonecard_platform_extra_row_and_summary(self):
+        admin = pd.DataFrame([{
+            ADMIN_JOIN_COL_5: "PC-ORDER-1",
+            ADMIN_TP_ORDER_COL_5: "",
+            IBFYPAY_ADMIN_JOIN_COL_5: "",
+            ADMIN_ORG_COL_5: "",
+        }])
+        phonecard = pd.DataFrame(
+            [
+                {
+                    PHONECARD_PLATFORM_NO_COL_5: "10007838",
+                    PHONECARD_AMOUNT_COL_5: "250",
+                    PHONECARD_STATUS_COL_5: "已完成",
+                    PHONECARD_DATE_COL_5: "2026-04-01 08:38:54",
+                },
+                {
+                    PHONECARD_PLATFORM_NO_COL_5: "10008889",
+                    PHONECARD_AMOUNT_COL_5: "500",
+                    PHONECARD_STATUS_COL_5: "已完成",
+                    PHONECARD_DATE_COL_5: "2026-04-02 10:40:06",
+                },
+            ],
+            index=pd.Index(["PC-ORDER-1", "PC-EXTRA"], name=PHONECARD_JOIN_COL_5),
+        )
+
+        result = enrich_admin_5(admin, None, None, None, phonecard)
+        extra = result[result[MATCH_STATUS_COL_5] == "平台多余"].iloc[0]
+        self.assertEqual(extra[ADMIN_ORG_COL_5], PHONECARD_PLATFORM_NAME_5)
+        self.assertEqual(extra[ADMIN_JOIN_COL_5], "PC-EXTRA")
+        self.assertEqual(extra[PLATFORM_STATUS_COL_5], "成功")
+
+        summary = build_summary_sheet_5(result)
+        row = summary.iloc[0]
+        self.assertEqual(row["交易月份"], "2026-04")
+        self.assertEqual(row["机构"], PHONECARD_PLATFORM_NAME_5)
+        self.assertEqual(row["笔数"], 2)
+        self.assertAlmostEqual(row["代付金额合计"], 750.0)
+        self.assertAlmostEqual(row["手续费合计"], 0.0)
+        self.assertAlmostEqual(row["到账金额合计"], 750.0)
 
     def test_payout_summary_groups_by_month_and_org(self):
         result = pd.DataFrame(

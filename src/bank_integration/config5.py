@@ -90,6 +90,17 @@ WANGGUYPAY_FUND_TYPE_FEE_5     = "扣除代付结算手续费"
 WANGGUYPAY_FUND_STATUS_5       = "成功"
 WANGGUYPAY_FUND_FILE_PREFIXES_5 = ["wangupay资金记录", "wangguypay资金记录"]
 
+# ── 话费卡结算（XLSX，订单明细 sheet 自动识别）──────────────────────────────
+PHONECARD_PLATFORM_NAME_5     = "话费卡"
+PHONECARD_JOIN_COL_5          = "订单号"
+PHONECARD_AMOUNT_COL_5        = "金额"
+PHONECARD_STATUS_COL_5        = "状态"
+PHONECARD_DATE_COL_5          = "日期"
+PHONECARD_PLATFORM_NO_COL_5   = "第三方订单号"
+PHONECARD_ORDER_TYPE_COL_5    = "订单类型"
+PHONECARD_PRIZE_COL_5         = "奖品名称"
+PHONECARD_PREFERRED_SHEET_KEY_5 = "汇总"
+
 # ── 文件识别前缀映射（stem.lower() startswith 任意一个前缀即命中）─────────────
 # wangupay-（实际文件名少一个"g"）和 wangguypay- 均支持
 PLATFORM_PREFIXES_5: dict = {
@@ -97,6 +108,7 @@ PLATFORM_PREFIXES_5: dict = {
     "ibfpay":     ["ibfpay-", "ibf平台"],    # ibf平台 识别资金流水账格式文件
     "superpay":   ["superpay-"],
     "wangguypay": ["wangupay-", "wangguypay-", "wangupay资金记录", "wangguypay资金记录"],
+    "phonecard":  ["okey话费卡结算"],
 }
 
 # ── 输出新增列（追加在 admin 原始列末尾，共 7 列）──────────────────────────

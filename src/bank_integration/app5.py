@@ -3,9 +3,9 @@
 数据流：
     data/input/raw/5/  →  scan_source_files_5()
                                │
-        read_admin_5 / read_ibfpay_5 / read_superpay_5 / read_wangguypay_5
+        read_admin_5 / read_ibfpay_5 / read_superpay_5 / read_wangguypay_5 / read_phonecard_5
                                │
-    build_ibfpay_lookup_5 / build_superpay_lookup_5 / build_wangguypay_lookup_5
+    build_ibfpay_lookup_5 / build_superpay_lookup_5 / build_wangguypay_lookup_5 / build_phonecard_lookup_5
                                │
                       enrich_admin_5()   ← left-join 三个查找表
                                │
@@ -85,6 +85,15 @@ from .config5 import (
     WANGGUYPAY_FUND_TYPE_FEE_5,
     WANGGUYPAY_FUND_STATUS_5,
     WANGGUYPAY_FUND_FILE_PREFIXES_5,
+    PHONECARD_PLATFORM_NAME_5,
+    PHONECARD_JOIN_COL_5,
+    PHONECARD_AMOUNT_COL_5,
+    PHONECARD_STATUS_COL_5,
+    PHONECARD_DATE_COL_5,
+    PHONECARD_PLATFORM_NO_COL_5,
+    PHONECARD_ORDER_TYPE_COL_5,
+    PHONECARD_PRIZE_COL_5,
+    PHONECARD_PREFERRED_SHEET_KEY_5,
     MATCH_STATUS_COL_5,
     PLATFORM_ORDER_NO_COL_5,
     PLATFORM_AMOUNT_COL_5,
@@ -121,6 +130,13 @@ PLATFORM_STATUS_MAP_5 = {
         "付款失败": "失败",
         "处理中": "处理中",
         WANGGUYPAY_FUND_STATUS_5: "成功",
+    },
+    "PHONECARD": {
+        "已完成": "成功",
+        "成功": "成功",
+        "失败": "失败",
+        "处理中": "处理中",
+        "关闭": "关闭",
     },
 }
 
@@ -578,6 +594,65 @@ def read_wangguypay_5(filepath: Path) -> pd.DataFrame:
     return df
 
 
+def _select_phonecard_sheet_5(filepath: Path) -> str:
+    """选择话费卡订单明细 sheet，优先使用名称含“汇总”的 sheet。"""
+    required = [
+        PHONECARD_DATE_COL_5,
+        PHONECARD_JOIN_COL_5,
+        PHONECARD_PRIZE_COL_5,
+        PHONECARD_AMOUNT_COL_5,
+        PHONECARD_STATUS_COL_5,
+        PHONECARD_PLATFORM_NO_COL_5,
+        PHONECARD_ORDER_TYPE_COL_5,
+    ]
+    with pd.ExcelFile(filepath) as xls:
+        candidates = []
+        for sheet_name in xls.sheet_names:
+            try:
+                preview = pd.read_excel(xls, sheet_name=sheet_name, nrows=0, dtype=str)
+            except Exception:
+                logging.warning("无法检查话费卡文件 sheet '%s' 的表头", sheet_name)
+                continue
+            cols = _normalize_columns_5(preview.columns)
+            if all(c in cols for c in required):
+                candidates.append(sheet_name)
+
+    if not candidates:
+        raise ValueError(f"【话费卡】{filepath.name} 中找不到含必要列 {required!r} 的 sheet")
+
+    preferred = [
+        s for s in candidates
+        if PHONECARD_PREFERRED_SHEET_KEY_5 in str(s)
+    ]
+    return preferred[0] if preferred else candidates[0]
+
+
+def read_phonecard_5(filepath: Path) -> pd.DataFrame:
+    """读取 Okey 话费卡结算文件的订单明细列。
+
+    样例文件的“0201-0430汇总”左侧是逐单明细，右侧是结算汇总。此处只保留
+    逐单对账所需列，避免把右侧汇总字段误当成逐单手续费或结算金额。
+    """
+    sheet = _select_phonecard_sheet_5(filepath)
+    df = pd.read_excel(filepath, sheet_name=sheet, dtype=str)
+    df = df.dropna(how="all").fillna("")
+    df.columns = [str(c).strip() for c in df.columns]
+    keep_cols = [
+        PHONECARD_DATE_COL_5,
+        PHONECARD_JOIN_COL_5,
+        PHONECARD_PRIZE_COL_5,
+        PHONECARD_AMOUNT_COL_5,
+        PHONECARD_STATUS_COL_5,
+        PHONECARD_PLATFORM_NO_COL_5,
+        PHONECARD_ORDER_TYPE_COL_5,
+    ]
+    missing = [c for c in keep_cols if c not in df.columns]
+    if missing:
+        logging.warning("【话费卡】%s 缺少列 %s，跳过", filepath.name, missing)
+        return pd.DataFrame(columns=keep_cols)
+    return df[keep_cols].copy()
+
+
 # ---------------------------------------------------------------------------
 # 查找表构建
 # ---------------------------------------------------------------------------
@@ -730,6 +805,22 @@ def build_wangguypay_lookup_5(df: pd.DataFrame) -> pd.DataFrame:
     return result.set_index(WANGGUYPAY_PLATFORM_NO_COL_5, drop=False)
 
 
+def build_phonecard_lookup_5(df: pd.DataFrame) -> pd.DataFrame:
+    """构建以话费卡订单号为索引的查找表。"""
+    keep_cols = [c for c in [
+        PHONECARD_JOIN_COL_5,
+        PHONECARD_PLATFORM_NO_COL_5,
+        PHONECARD_AMOUNT_COL_5,
+        PHONECARD_STATUS_COL_5,
+        PHONECARD_DATE_COL_5,
+    ] if c in df.columns]
+    if PHONECARD_JOIN_COL_5 not in keep_cols:
+        logging.warning("【话费卡】缺少关联列 '%s'，跳过", PHONECARD_JOIN_COL_5)
+        return pd.DataFrame(columns=keep_cols)
+    result = _dedup_lookup_5(df[keep_cols], PHONECARD_JOIN_COL_5, "话费卡")
+    return result.set_index(PHONECARD_JOIN_COL_5)
+
+
 # ---------------------------------------------------------------------------
 # 主匹配逻辑
 # ---------------------------------------------------------------------------
@@ -742,6 +833,7 @@ def _build_platform_only_rows_5(
     ibfpay_lk: Optional[pd.DataFrame],
     superpay_lk: Optional[pd.DataFrame],
     wangguypay_lk: Optional[pd.DataFrame],
+    phonecard_lk: Optional[pd.DataFrame],
 ) -> pd.DataFrame:
     """构建平台有、admin 无的多余行（MATCH_STATUS_COL_5 = "平台多余"）。
 
@@ -828,6 +920,28 @@ def _build_platform_only_rows_5(
             row[TRANSACTION_DATE_COL_5]  = _format_date_5(wg_time)
             extra.append(row)
 
+    # ── 话费卡多余行 ─────────────────────────────────────────
+    if phonecard_lk is not None:
+        for key in phonecard_lk.index:
+            k = str(key).strip()
+            if not k or k in admin_order_keys:
+                continue
+            row = {c: "" for c in result_cols}
+            row[ADMIN_JOIN_COL_5]        = k
+            row[MATCH_STATUS_COL_5]      = "平台多余"
+            row[ADMIN_ORG_COL_5]         = PHONECARD_PLATFORM_NAME_5
+            pc_no     = str(phonecard_lk.at[key, PHONECARD_PLATFORM_NO_COL_5]).strip() if PHONECARD_PLATFORM_NO_COL_5 in phonecard_lk.columns else ""
+            pc_amt    = str(phonecard_lk.at[key, PHONECARD_AMOUNT_COL_5]).strip()      if PHONECARD_AMOUNT_COL_5      in phonecard_lk.columns else ""
+            pc_status = str(phonecard_lk.at[key, PHONECARD_STATUS_COL_5]).strip()      if PHONECARD_STATUS_COL_5      in phonecard_lk.columns else ""
+            pc_time   = str(phonecard_lk.at[key, PHONECARD_DATE_COL_5]).strip()        if PHONECARD_DATE_COL_5        in phonecard_lk.columns else ""
+            row[PLATFORM_ORDER_NO_COL_5] = pc_no
+            row[PLATFORM_AMOUNT_COL_5]   = pc_amt
+            row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5("PHONECARD", pc_status)
+            row[FEE_COL_5]               = ""
+            row[ARRIVE_AMOUNT_COL_5]     = pc_amt
+            row[TRANSACTION_DATE_COL_5]  = _format_date_5(pc_time)
+            extra.append(row)
+
     if not extra:
         return pd.DataFrame(columns=result_cols)
     return pd.DataFrame(extra, columns=result_cols)
@@ -838,6 +952,7 @@ def enrich_admin_5(
     ibfpay_lk: Optional[pd.DataFrame],
     superpay_lk: Optional[pd.DataFrame],
     wangguypay_lk: Optional[pd.DataFrame],
+    phonecard_lk: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """以 admin 为主表，通过订单号与三平台查找表 left-join，追加新增列。
 
@@ -845,6 +960,7 @@ def enrich_admin_5(
       - IBFYPAY：以 admin.IBFYPAY_ADMIN_JOIN_COL_5（第三方订单号）↔ ibfpay_lk.index（系统流水号）关联
       - SUPERPAY：以 admin.ADMIN_JOIN_COL_5（订单号）↔ 平台 lookup.index（商户订单号）关联
       - WANGGUYPAY：以 admin.ADMIN_TP_ORDER_COL_5（第三方订单号）↔ 平台 lookup.index（平台订单号）关联
+      - 话费卡：以 admin.ADMIN_JOIN_COL_5（订单号）↔ phonecard_lk.index（订单号）关联
       - 任一平台命中 → 是否匹配=是，填充该平台的流水号/代付金额/手续费/到账金额/交易日期
       - 均未命中 → 是否匹配=否
       - 追加平台多余行（_build_platform_only_rows_5）
@@ -885,6 +1001,7 @@ def enrich_admin_5(
     ibfpay_avail     = ibfpay_lk is not None    and not ibfpay_lk.empty
     superpay_avail   = superpay_lk is not None  and not superpay_lk.empty
     wangguypay_avail = wangguypay_lk is not None and not wangguypay_lk.empty
+    phonecard_avail  = phonecard_lk is not None and not phonecard_lk.empty
 
     if ibfpay_avail:
         result = _safe_merge(result, ibfpay_lk, IBFYPAY_ADMIN_JOIN_COL_5, "_i_", "IBFYPAY")
@@ -892,6 +1009,8 @@ def enrich_admin_5(
         result = _safe_merge(result, superpay_lk, ADMIN_JOIN_COL_5, "_s_", "SUPERPAY")
     if wangguypay_avail:
         result = _safe_merge(result, wangguypay_lk, ADMIN_TP_ORDER_COL_5, "_w_", "WANGGUYPAY")
+    if phonecard_avail:
+        result = _safe_merge(result, phonecard_lk, ADMIN_JOIN_COL_5, "_p_", "PHONECARD")
 
     match_status_list      = []
     platform_order_no_list = []
@@ -900,6 +1019,7 @@ def enrich_admin_5(
     fee_list               = []
     arrive_amount_list     = []
     transaction_date_list  = []
+    org_output_list        = []
 
     for _, row in result.iterrows():
         # IBFYPAY 命中判断（join 键：admin.第三方订单号 ↔ ibfpay.系统流水号）
@@ -933,7 +1053,14 @@ def enrich_admin_5(
         wg_ctime  = str(row.get(f"_w_{WANGGUYPAY_CREATE_TIME_COL_5}","")).strip() if wangguypay_avail else ""
         wg_hit    = wg_amt != ""
 
-        if ibf_hit and (sp_hit or wg_hit):
+        # 话费卡命中判断（join 键：admin.订单号 ↔ 话费卡.订单号）
+        pc_amt    = str(row.get(f"_p_{PHONECARD_AMOUNT_COL_5}",      "")).strip() if phonecard_avail else ""
+        pc_no     = str(row.get(f"_p_{PHONECARD_PLATFORM_NO_COL_5}", "")).strip() if phonecard_avail else ""
+        pc_status = str(row.get(f"_p_{PHONECARD_STATUS_COL_5}",      "")).strip() if phonecard_avail else ""
+        pc_time   = str(row.get(f"_p_{PHONECARD_DATE_COL_5}",        "")).strip() if phonecard_avail else ""
+        pc_hit    = pc_amt != ""
+
+        if ibf_hit and (sp_hit or wg_hit or pc_hit):
             logging.warning(
                 "订单 %s 同时命中多个平台，取 IBFYPAY",
                 str(row.get(ADMIN_JOIN_COL_5, "")).strip(),
@@ -950,6 +1077,7 @@ def enrich_admin_5(
             fee_list.append(ibf_fee)
             arrive_amount_list.append(str(arrive))
             transaction_date_list.append(_format_date_5(ibf_time))
+            org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
         elif sp_hit:
             sp_amt_f    = _to_float_5(sp_amt) or 0.0
             sp_actual_f = _to_float_5(sp_actual) or 0.0
@@ -961,6 +1089,7 @@ def enrich_admin_5(
             fee_list.append(sp_calc_fee)
             arrive_amount_list.append(sp_actual)
             transaction_date_list.append(_format_date_5(sp_time) or _format_date_5(sp_ctime))
+            org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
         elif wg_hit:
             match_status_list.append("是")
             platform_order_no_list.append(wg_no)
@@ -969,6 +1098,16 @@ def enrich_admin_5(
             fee_list.append(wg_fee)
             arrive_amount_list.append(wg_arrive)
             transaction_date_list.append(_format_date_5(wg_time) or _format_date_5(wg_ctime))
+            org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
+        elif pc_hit:
+            match_status_list.append("是")
+            platform_order_no_list.append(pc_no)
+            platform_amount_list.append(pc_amt)
+            platform_status_list.append(_normalize_platform_status_5("PHONECARD", pc_status))
+            fee_list.append("")
+            arrive_amount_list.append(pc_amt)
+            transaction_date_list.append(_format_date_5(pc_time))
+            org_output_list.append(PHONECARD_PLATFORM_NAME_5)
         else:
             match_status_list.append("否")
             platform_order_no_list.append("")
@@ -977,10 +1116,13 @@ def enrich_admin_5(
             fee_list.append("")
             arrive_amount_list.append("")
             transaction_date_list.append("")
+            org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
 
     # 还原为仅 admin 原始列，再追加 7 个新增列
     admin_cols = list(admin_df.columns)
     result = result[admin_cols].copy()
+    if ADMIN_ORG_COL_5 in result.columns:
+        result[ADMIN_ORG_COL_5] = org_output_list
 
     result[MATCH_STATUS_COL_5]      = match_status_list
     result[PLATFORM_ORDER_NO_COL_5] = platform_order_no_list
@@ -1013,6 +1155,7 @@ def enrich_admin_5(
         ibfpay_lk if ibfpay_avail else None,
         superpay_lk if superpay_avail else None,
         wangguypay_lk if wangguypay_avail else None,
+        phonecard_lk if phonecard_avail else None,
     )
 
     if not extra_df.empty:
@@ -1329,10 +1472,18 @@ def main() -> int:
         wangguypay_lk = build_wangguypay_lookup_5(wangguypay_raw)
         logging.info("WANGGUYPAY 查找表共 %d 条", len(wangguypay_lk))
 
+    # ── 话费卡 ────────────────────────────────────────────────
+    phonecard_lk: Optional[pd.DataFrame] = None
+    if files["phonecard"]:
+        frames = [read_phonecard_5(fp) for fp in files["phonecard"]]
+        raw = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        phonecard_lk = build_phonecard_lookup_5(raw)
+        logging.info("话费卡 查找表共 %d 条", len(phonecard_lk))
+
     platform_balance_summary = build_platform_balance_summary_5(ibfpay_balance_raw, wangguypay_raw)
 
     # ── 匹配 ──────────────────────────────────────────────────
-    result_df = enrich_admin_5(admin_df, ibfpay_lk, superpay_lk, wangguypay_lk)
+    result_df = enrich_admin_5(admin_df, ibfpay_lk, superpay_lk, wangguypay_lk, phonecard_lk)
     log_match_stats_5(result_df)
 
     # ── 输出 ──────────────────────────────────────────────────

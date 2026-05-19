@@ -84,6 +84,21 @@ from .config5 import (
 )
 
 
+IBFYPAY_SOURCE_PRIORITY_COL_5 = "_ibfpay_source_priority"
+PLATFORM_STATUS_MAP_5 = {
+    "SUPERPAY": {
+        "代付成功": "成功",
+        "代付失败": "失败",
+        "代付关闭": "关闭",
+    },
+    "WANGGUYPAY": {
+        "付款成功": "成功",
+        "付款失败": "失败",
+        "处理中": "处理中",
+    },
+}
+
+
 # ---------------------------------------------------------------------------
 # 工具函数
 # ---------------------------------------------------------------------------
@@ -120,6 +135,25 @@ def _to_float_5(val) -> Optional[float]:
         return float(str(val).strip().replace(",", ""))
     except (ValueError, TypeError):
         return None
+
+
+def _normalize_platform_status_5(platform: str, raw_status: str = "") -> str:
+    """将各平台原始状态统一为 成功/失败/处理中/关闭。"""
+    platform_key = str(platform).strip().upper()
+    if platform_key == "IBFYPAY":
+        return "成功"
+
+    status = str(raw_status).strip()
+    if not status:
+        return ""
+
+    mapping = PLATFORM_STATUS_MAP_5.get(platform_key, {})
+    normalized = mapping.get(status)
+    if normalized is not None:
+        return normalized
+
+    logging.warning("【%s】发现未识别平台状态 '%s'，保留原值", platform_key or platform, status)
+    return status
 
 
 def _dedup_lookup_5(df: pd.DataFrame, key_col: str, label: str) -> pd.DataFrame:
@@ -322,6 +356,7 @@ def read_ibfpay_5(filepath: Path) -> pd.DataFrame:
             columns={IBFYPAY_AMOUNT_COL_5: "手续费"}
         )
         merged = payout_df.merge(fee_df, on=IBFYPAY_JOIN_COL_5, how="left")
+        merged[IBFYPAY_SOURCE_PRIORITY_COL_5] = 2
     else:
         # 订单明细格式：一行一笔，无独立手续费行
         logging.info("【IBFYPAY】%s 为订单明细格式（无「%s」列），手续费置0", filepath.name, IBFYPAY_TYPE_COL_5)
@@ -336,6 +371,7 @@ def read_ibfpay_5(filepath: Path) -> pd.DataFrame:
             rename_map[time_col] = IBFYPAY_TIME_COL_5
         merged = df[keep].rename(columns=rename_map)
         merged["手续费"] = "0"
+        merged[IBFYPAY_SOURCE_PRIORITY_COL_5] = 1
         if IBFYPAY_TIME_COL_5 not in merged.columns:
             merged[IBFYPAY_TIME_COL_5] = ""
 
@@ -408,13 +444,29 @@ def build_ibfpay_lookup_5(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         以 IBFYPAY_JOIN_COL_5（系统流水号）为索引的 lookup DataFrame。
     """
+    work = df.copy()
+    if "手续费" in work.columns:
+        work["_ibfpay_fee_nonzero"] = (
+            pd.to_numeric(work["手续费"], errors="coerce").fillna(0.0).abs() > 0
+        ).astype(int)
+    else:
+        work["_ibfpay_fee_nonzero"] = 0
+    if IBFYPAY_SOURCE_PRIORITY_COL_5 not in work.columns:
+        work[IBFYPAY_SOURCE_PRIORITY_COL_5] = 0
+
+    work = work.sort_values(
+        by=["_ibfpay_fee_nonzero", IBFYPAY_SOURCE_PRIORITY_COL_5],
+        ascending=[False, False],
+        kind="mergesort",
+    )
+
     keep_cols = [c for c in [
         IBFYPAY_JOIN_COL_5,
         "代付金额",
         "手续费",
         IBFYPAY_TIME_COL_5,
-    ] if c in df.columns]
-    result = _dedup_lookup_5(df[keep_cols], IBFYPAY_JOIN_COL_5, "IBFYPAY")
+    ] if c in work.columns]
+    result = _dedup_lookup_5(work[keep_cols], IBFYPAY_JOIN_COL_5, "IBFYPAY")
     return result.set_index(IBFYPAY_JOIN_COL_5)
 
 
@@ -498,7 +550,7 @@ def _build_platform_only_rows_5(
             amt_f = _to_float_5(amt) or 0.0
             fee_f = _to_float_5(fee) or 0.0
             row[PLATFORM_AMOUNT_COL_5] = amt
-            row[PLATFORM_STATUS_COL_5] = ""
+            row[PLATFORM_STATUS_COL_5] = _normalize_platform_status_5("IBFYPAY")
             row[FEE_COL_5]             = fee
             row[ARRIVE_AMOUNT_COL_5]   = str(round(amt_f - fee_f, 2))
             if IBFYPAY_TIME_COL_5 in ibfpay_lk.columns:
@@ -526,7 +578,7 @@ def _build_platform_only_rows_5(
             sp_calc_fee = str(round(abs(sp_amt_f - sp_actual_f), 2)) if (sp_amt or sp_actual) else ""
             row[PLATFORM_ORDER_NO_COL_5] = sp_no
             row[PLATFORM_AMOUNT_COL_5]   = sp_amt
-            row[PLATFORM_STATUS_COL_5]   = sp_status
+            row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5("SUPERPAY", sp_status)
             row[FEE_COL_5]               = sp_calc_fee
             row[ARRIVE_AMOUNT_COL_5]     = sp_actual
             row[TRANSACTION_DATE_COL_5]  = _format_date_5(sp_time)
@@ -550,7 +602,7 @@ def _build_platform_only_rows_5(
             wg_time   = str(wangguypay_lk.at[key, WANGGUYPAY_FINISH_TIME_COL_5]).strip() if WANGGUYPAY_FINISH_TIME_COL_5  in wangguypay_lk.columns else ""
             row[PLATFORM_ORDER_NO_COL_5] = wg_no
             row[PLATFORM_AMOUNT_COL_5]   = wg_amt
-            row[PLATFORM_STATUS_COL_5]   = wg_status
+            row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5("WANGGUYPAY", wg_status)
             row[FEE_COL_5]               = wg_fee
             row[ARRIVE_AMOUNT_COL_5]     = wg_arrive
             row[TRANSACTION_DATE_COL_5]  = _format_date_5(wg_time)
@@ -669,7 +721,7 @@ def enrich_admin_5(
             match_status_list.append("是")
             platform_order_no_list.append(ibf_tp)
             platform_amount_list.append(ibf_amt)
-            platform_status_list.append("")
+            platform_status_list.append(_normalize_platform_status_5("IBFYPAY"))
             fee_list.append(ibf_fee)
             arrive_amount_list.append(str(arrive))
             transaction_date_list.append(_format_date_5(ibf_time))
@@ -680,7 +732,7 @@ def enrich_admin_5(
             match_status_list.append("是")
             platform_order_no_list.append(sp_no)
             platform_amount_list.append(sp_amt)
-            platform_status_list.append(sp_status)
+            platform_status_list.append(_normalize_platform_status_5("SUPERPAY", sp_status))
             fee_list.append(sp_calc_fee)
             arrive_amount_list.append(sp_actual)
             transaction_date_list.append(_format_date_5(sp_time) or _format_date_5(sp_ctime))
@@ -688,7 +740,7 @@ def enrich_admin_5(
             match_status_list.append("是")
             platform_order_no_list.append(wg_no)
             platform_amount_list.append(wg_amt)
-            platform_status_list.append(wg_status)
+            platform_status_list.append(_normalize_platform_status_5("WANGGUYPAY", wg_status))
             fee_list.append(wg_fee)
             arrive_amount_list.append(wg_arrive)
             transaction_date_list.append(_format_date_5(wg_time) or _format_date_5(wg_ctime))
@@ -751,10 +803,11 @@ def log_match_stats_5(result_df: pd.DataFrame) -> None:
 
 
 def build_summary_sheet_5(result_df: pd.DataFrame) -> pd.DataFrame:
-    """按平台汇总代付金额、手续费、到账金额（仅统计匹配成功的行）。
+    """按交易月份和平台汇总代付金额、手续费、到账金额。
 
-    分组键：机构列（ADMIN_ORG_COL_5）。
+    分组键：交易日期归属月份（YYYY-MM） + 机构列（ADMIN_ORG_COL_5）。
     汇总列：成功笔数、代付金额合计、手续费合计、到账金额合计。
+    仅统计平台状态为 "成功" 的行；交易日期为空或无法解析时，交易月份保留为空字符串。
 
     Args:
         result_df: enrich_admin_5 返回的完整结果 DataFrame。
@@ -762,16 +815,26 @@ def build_summary_sheet_5(result_df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         汇总 DataFrame，供写入 OUTPUT_SUMMARY_SHEET_5。
     """
-    summary_cols = ["机构", "笔数", "代付金额合计", "手续费合计", "到账金额合计"]
-    matched = result_df[result_df[MATCH_STATUS_COL_5].isin(["是", "平台多余"])].copy()
+    month_col = "交易月份"
+    summary_cols = [month_col, "机构", "笔数", "代付金额合计", "手续费合计", "到账金额合计"]
+    if PLATFORM_STATUS_COL_5 not in result_df.columns:
+        return pd.DataFrame(columns=summary_cols)
+    matched = result_df[result_df[PLATFORM_STATUS_COL_5].astype(str).str.strip() == "成功"].copy()
     if matched.empty or ADMIN_ORG_COL_5 not in matched.columns:
         return pd.DataFrame(columns=summary_cols)
+
+    if TRANSACTION_DATE_COL_5 in matched.columns:
+        matched[month_col] = matched[TRANSACTION_DATE_COL_5].apply(
+            lambda v: (_format_date_5(v)[:7] if _format_date_5(v) else "")
+        )
+    else:
+        matched[month_col] = ""
 
     matched["_amt"]    = matched[PLATFORM_AMOUNT_COL_5].apply(lambda v: _to_float_5(v) or 0.0)
     matched["_fee"]    = matched[FEE_COL_5].apply(lambda v: _to_float_5(v) or 0.0)
     matched["_arrive"] = matched[ARRIVE_AMOUNT_COL_5].apply(lambda v: _to_float_5(v) or 0.0)
 
-    grp = matched.groupby(ADMIN_ORG_COL_5, as_index=False).agg(
+    grp = matched.groupby([month_col, ADMIN_ORG_COL_5], as_index=False).agg(
         笔数=("_amt", "count"),
         代付金额合计=("_amt", "sum"),
         手续费合计=("_fee", "sum"),

@@ -57,12 +57,41 @@ from src.bank_integration.app4 import (
     parse_date,
     wait_for_export_files,
 )
+from src.bank_integration.app5 import build_ibfpay_lookup_5, build_summary_sheet_5, enrich_admin_5
 from src.bank_integration.config4 import (
     get_mode4_batch_size,
     get_mode4_batch_wait_seconds,
     get_mode4_check_interval_seconds,
     get_mode4_missing_check_chances,
     get_mode4_retry_limit,
+)
+from src.bank_integration.config5 import (
+    ADMIN_JOIN_COL_5,
+    ADMIN_ORG_COL_5,
+    ARRIVE_AMOUNT_COL_5,
+    FEE_COL_5,
+    IBFYPAY_ADMIN_JOIN_COL_5,
+    IBFYPAY_JOIN_COL_5,
+    IBFYPAY_TIME_COL_5,
+    MATCH_STATUS_COL_5,
+    PLATFORM_AMOUNT_COL_5,
+    PLATFORM_ORDER_NO_COL_5,
+    PLATFORM_STATUS_COL_5,
+    SUPERPAY_ACTUAL_COL_5,
+    SUPERPAY_AMOUNT_COL_5,
+    SUPERPAY_CREATE_TIME_COL_5,
+    SUPERPAY_FINISH_TIME_COL_5,
+    SUPERPAY_JOIN_COL_5,
+    SUPERPAY_PLATFORM_NO_COL_5,
+    SUPERPAY_STATUS_COL_5,
+    TRANSACTION_DATE_COL_5,
+    WANGGUYPAY_AMOUNT_COL_5,
+    WANGGUYPAY_ARRIVE_COL_5,
+    WANGGUYPAY_CREATE_TIME_COL_5,
+    WANGGUYPAY_FINISH_TIME_COL_5,
+    WANGGUYPAY_JOIN_COL_5,
+    WANGGUYPAY_PLATFORM_NO_COL_5,
+    WANGGUYPAY_STATUS_COL_5,
 )
 from src.bank_integration.config3 import (
     ADMIN_AMOUNT_COL,
@@ -131,6 +160,301 @@ HUAMEI_PDF = ROOT / "华美银行电子对账单-2025.02.pdf"
 
 
 class BankIntegrationSampleTests(unittest.TestCase):
+    def test_ibfpay_lookup_prefers_nonzero_fee_duplicate(self):
+        df = pd.DataFrame(
+            [
+                {
+                    IBFYPAY_JOIN_COL_5: "O2026041509294775859402",
+                    "代付金额": 1.0,
+                    "手续费": 0.0,
+                    IBFYPAY_TIME_COL_5: "2026-04-15 09:29:47",
+                },
+                {
+                    IBFYPAY_JOIN_COL_5: "O2026041509294775859402",
+                    "代付金额": 1.0,
+                    "手续费": 0.07,
+                    IBFYPAY_TIME_COL_5: "2026-04-15 09:29:47",
+                },
+            ]
+        )
+
+        lookup = build_ibfpay_lookup_5(df)
+
+        self.assertEqual(len(lookup), 1)
+        self.assertAlmostEqual(float(lookup.at["O2026041509294775859402", "手续费"]), 0.07)
+
+    def test_ibfpay_lookup_keeps_zero_fee_when_only_detail_exists(self):
+        df = pd.DataFrame(
+            [
+                {
+                    IBFYPAY_JOIN_COL_5: "O2026041509250257673401",
+                    "代付金额": 1.0,
+                    "手续费": 0.0,
+                    IBFYPAY_TIME_COL_5: "2026-04-15 09:25:02",
+                },
+            ]
+        )
+
+        lookup = build_ibfpay_lookup_5(df)
+
+        self.assertEqual(len(lookup), 1)
+        self.assertAlmostEqual(float(lookup.at["O2026041509250257673401", "手续费"]), 0.0)
+
+    def test_payout_summary_groups_by_month_and_org(self):
+        result = pd.DataFrame(
+            [
+                {
+                    MATCH_STATUS_COL_5: "是",
+                    PLATFORM_STATUS_COL_5: "成功",
+                    TRANSACTION_DATE_COL_5: "2026-04-15",
+                    ADMIN_ORG_COL_5: "IBFYPAY",
+                    PLATFORM_AMOUNT_COL_5: "100.00",
+                    FEE_COL_5: "1.00",
+                    ARRIVE_AMOUNT_COL_5: "99.00",
+                },
+                {
+                    MATCH_STATUS_COL_5: "平台多余",
+                    PLATFORM_STATUS_COL_5: "成功",
+                    TRANSACTION_DATE_COL_5: "2026-04-20",
+                    ADMIN_ORG_COL_5: "IBFYPAY",
+                    PLATFORM_AMOUNT_COL_5: "50.00",
+                    FEE_COL_5: "0.50",
+                    ARRIVE_AMOUNT_COL_5: "49.50",
+                },
+                {
+                    MATCH_STATUS_COL_5: "是",
+                    PLATFORM_STATUS_COL_5: "失败",
+                    TRANSACTION_DATE_COL_5: "2026-05-01",
+                    ADMIN_ORG_COL_5: "IBFYPAY",
+                    PLATFORM_AMOUNT_COL_5: "30.00",
+                    FEE_COL_5: "0.30",
+                    ARRIVE_AMOUNT_COL_5: "29.70",
+                },
+                {
+                    MATCH_STATUS_COL_5: "是",
+                    PLATFORM_STATUS_COL_5: "成功",
+                    TRANSACTION_DATE_COL_5: "2026-04-18",
+                    ADMIN_ORG_COL_5: "SUPERPAY",
+                    PLATFORM_AMOUNT_COL_5: "20.00",
+                    FEE_COL_5: "0.20",
+                    ARRIVE_AMOUNT_COL_5: "19.80",
+                },
+                {
+                    MATCH_STATUS_COL_5: "否",
+                    PLATFORM_STATUS_COL_5: "",
+                    TRANSACTION_DATE_COL_5: "2026-04-19",
+                    ADMIN_ORG_COL_5: "IBFYPAY",
+                    PLATFORM_AMOUNT_COL_5: "999.00",
+                    FEE_COL_5: "9.99",
+                    ARRIVE_AMOUNT_COL_5: "989.01",
+                },
+                {
+                    MATCH_STATUS_COL_5: "是",
+                    PLATFORM_STATUS_COL_5: "成功",
+                    TRANSACTION_DATE_COL_5: "",
+                    ADMIN_ORG_COL_5: "WANGGUYPAY",
+                    PLATFORM_AMOUNT_COL_5: "10.00",
+                    FEE_COL_5: "0.10",
+                    ARRIVE_AMOUNT_COL_5: "9.90",
+                },
+            ]
+        )
+
+        summary = build_summary_sheet_5(result)
+
+        self.assertEqual(
+            list(summary.columns),
+            ["交易月份", "机构", "笔数", "代付金额合计", "手续费合计", "到账金额合计"],
+        )
+        keyed = {(row["交易月份"], row["机构"]): row for _, row in summary.iterrows()}
+        self.assertEqual(set(keyed), {
+            ("2026-04", "IBFYPAY"),
+            ("2026-04", "SUPERPAY"),
+            ("", "WANGGUYPAY"),
+        })
+        self.assertEqual(keyed[("2026-04", "IBFYPAY")]["笔数"], 2)
+        self.assertAlmostEqual(keyed[("2026-04", "IBFYPAY")]["代付金额合计"], 150.0)
+        self.assertAlmostEqual(keyed[("2026-04", "IBFYPAY")]["手续费合计"], 1.5)
+        self.assertAlmostEqual(keyed[("2026-04", "IBFYPAY")]["到账金额合计"], 148.5)
+        self.assertNotIn(("2026-05", "IBFYPAY"), keyed)
+        self.assertEqual(keyed[("", "WANGGUYPAY")]["笔数"], 1)
+
+    def test_payout_summary_returns_empty_when_no_success_status(self):
+        result = pd.DataFrame(
+            [
+                {
+                    MATCH_STATUS_COL_5: "是",
+                    PLATFORM_STATUS_COL_5: "失败",
+                    TRANSACTION_DATE_COL_5: "2026-04-15",
+                    ADMIN_ORG_COL_5: "IBFYPAY",
+                    PLATFORM_AMOUNT_COL_5: "100.00",
+                    FEE_COL_5: "1.00",
+                    ARRIVE_AMOUNT_COL_5: "99.00",
+                },
+                {
+                    MATCH_STATUS_COL_5: "平台多余",
+                    PLATFORM_STATUS_COL_5: "处理中",
+                    TRANSACTION_DATE_COL_5: "2026-04-20",
+                    ADMIN_ORG_COL_5: "SUPERPAY",
+                    PLATFORM_AMOUNT_COL_5: "50.00",
+                    FEE_COL_5: "0.50",
+                    ARRIVE_AMOUNT_COL_5: "49.50",
+                },
+                {
+                    MATCH_STATUS_COL_5: "是",
+                    PLATFORM_STATUS_COL_5: "关闭",
+                    TRANSACTION_DATE_COL_5: "2026-04-21",
+                    ADMIN_ORG_COL_5: "WANGGUYPAY",
+                    PLATFORM_AMOUNT_COL_5: "30.00",
+                    FEE_COL_5: "0.30",
+                    ARRIVE_AMOUNT_COL_5: "29.70",
+                },
+            ]
+        )
+
+        summary = build_summary_sheet_5(result)
+
+        self.assertEqual(
+            list(summary.columns),
+            ["交易月份", "机构", "笔数", "代付金额合计", "手续费合计", "到账金额合计"],
+        )
+        self.assertTrue(summary.empty)
+
+    def test_payout_platform_status_is_normalized(self):
+        admin = pd.DataFrame(
+            [
+                {ADMIN_JOIN_COL_5: "SP-SUCCESS", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "SP-FAILED", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "SP-CLOSED", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "WG-SUCCESS", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "WG-FAILED", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "WG-PENDING", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "IBF-ORDER", IBFYPAY_ADMIN_JOIN_COL_5: "IBF-KEY"},
+                {ADMIN_JOIN_COL_5: "NO-MATCH", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "UNKNOWN", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+            ]
+        )
+        ibfpay = pd.DataFrame(
+            [{"代付金额": "10", "手续费": "1", IBFYPAY_TIME_COL_5: "2026-04-01"}],
+            index=pd.Index(["IBF-KEY"], name=IBFYPAY_JOIN_COL_5),
+        )
+        superpay = pd.DataFrame(
+            [
+                {
+                    SUPERPAY_PLATFORM_NO_COL_5: "SP1",
+                    SUPERPAY_AMOUNT_COL_5: "100",
+                    SUPERPAY_ACTUAL_COL_5: "99",
+                    SUPERPAY_STATUS_COL_5: "代付成功",
+                    SUPERPAY_CREATE_TIME_COL_5: "2026-04-01",
+                    SUPERPAY_FINISH_TIME_COL_5: "2026-04-01",
+                },
+                {
+                    SUPERPAY_PLATFORM_NO_COL_5: "SP2",
+                    SUPERPAY_AMOUNT_COL_5: "100",
+                    SUPERPAY_ACTUAL_COL_5: "99",
+                    SUPERPAY_STATUS_COL_5: "代付失败",
+                    SUPERPAY_CREATE_TIME_COL_5: "2026-04-01",
+                    SUPERPAY_FINISH_TIME_COL_5: "2026-04-01",
+                },
+                {
+                    SUPERPAY_PLATFORM_NO_COL_5: "SP3",
+                    SUPERPAY_AMOUNT_COL_5: "100",
+                    SUPERPAY_ACTUAL_COL_5: "99",
+                    SUPERPAY_STATUS_COL_5: "代付关闭",
+                    SUPERPAY_CREATE_TIME_COL_5: "2026-04-01",
+                    SUPERPAY_FINISH_TIME_COL_5: "2026-04-01",
+                },
+                {
+                    SUPERPAY_PLATFORM_NO_COL_5: "SP4",
+                    SUPERPAY_AMOUNT_COL_5: "100",
+                    SUPERPAY_ACTUAL_COL_5: "99",
+                    SUPERPAY_STATUS_COL_5: "人工复核",
+                    SUPERPAY_CREATE_TIME_COL_5: "2026-04-01",
+                    SUPERPAY_FINISH_TIME_COL_5: "2026-04-01",
+                },
+            ],
+            index=pd.Index(["SP-SUCCESS", "SP-FAILED", "SP-CLOSED", "UNKNOWN"], name=SUPERPAY_JOIN_COL_5),
+        )
+        wangguypay = pd.DataFrame(
+            [
+                {
+                    WANGGUYPAY_PLATFORM_NO_COL_5: "WG1",
+                    WANGGUYPAY_AMOUNT_COL_5: "50",
+                    WANGGUYPAY_ARRIVE_COL_5: "49",
+                    WANGGUYPAY_STATUS_COL_5: "付款成功",
+                    WANGGUYPAY_CREATE_TIME_COL_5: "2026-04-01",
+                    WANGGUYPAY_FINISH_TIME_COL_5: "2026-04-01",
+                },
+                {
+                    WANGGUYPAY_PLATFORM_NO_COL_5: "WG2",
+                    WANGGUYPAY_AMOUNT_COL_5: "50",
+                    WANGGUYPAY_ARRIVE_COL_5: "49",
+                    WANGGUYPAY_STATUS_COL_5: "付款失败",
+                    WANGGUYPAY_CREATE_TIME_COL_5: "2026-04-01",
+                    WANGGUYPAY_FINISH_TIME_COL_5: "2026-04-01",
+                },
+                {
+                    WANGGUYPAY_PLATFORM_NO_COL_5: "WG3",
+                    WANGGUYPAY_AMOUNT_COL_5: "50",
+                    WANGGUYPAY_ARRIVE_COL_5: "49",
+                    WANGGUYPAY_STATUS_COL_5: "处理中",
+                    WANGGUYPAY_CREATE_TIME_COL_5: "2026-04-01",
+                    WANGGUYPAY_FINISH_TIME_COL_5: "",
+                },
+            ],
+            index=pd.Index(["WG-SUCCESS", "WG-FAILED", "WG-PENDING"], name=WANGGUYPAY_JOIN_COL_5),
+        )
+
+        result = enrich_admin_5(admin, ibfpay, superpay, wangguypay)
+        keyed = {row[ADMIN_JOIN_COL_5]: row for _, row in result.iterrows() if row[ADMIN_JOIN_COL_5]}
+
+        self.assertEqual(keyed["SP-SUCCESS"][PLATFORM_STATUS_COL_5], "成功")
+        self.assertEqual(keyed["SP-FAILED"][PLATFORM_STATUS_COL_5], "失败")
+        self.assertEqual(keyed["SP-CLOSED"][PLATFORM_STATUS_COL_5], "关闭")
+        self.assertEqual(keyed["WG-SUCCESS"][PLATFORM_STATUS_COL_5], "成功")
+        self.assertEqual(keyed["WG-FAILED"][PLATFORM_STATUS_COL_5], "失败")
+        self.assertEqual(keyed["WG-PENDING"][PLATFORM_STATUS_COL_5], "处理中")
+        self.assertEqual(keyed["IBF-ORDER"][PLATFORM_STATUS_COL_5], "成功")
+        self.assertEqual(keyed["NO-MATCH"][PLATFORM_STATUS_COL_5], "")
+        self.assertEqual(keyed["UNKNOWN"][PLATFORM_STATUS_COL_5], "人工复核")
+
+    def test_payout_platform_extra_status_is_normalized(self):
+        admin = pd.DataFrame([{ADMIN_JOIN_COL_5: "", IBFYPAY_ADMIN_JOIN_COL_5: ""}])
+        ibfpay = pd.DataFrame(
+            [{"代付金额": "10", "手续费": "1", IBFYPAY_TIME_COL_5: "2026-04-01"}],
+            index=pd.Index(["IBF-EXTRA"], name=IBFYPAY_JOIN_COL_5),
+        )
+        superpay = pd.DataFrame(
+            [{
+                SUPERPAY_PLATFORM_NO_COL_5: "SP-EXTRA-NO",
+                SUPERPAY_AMOUNT_COL_5: "100",
+                SUPERPAY_ACTUAL_COL_5: "99",
+                SUPERPAY_STATUS_COL_5: "代付关闭",
+                SUPERPAY_CREATE_TIME_COL_5: "2026-04-01",
+                SUPERPAY_FINISH_TIME_COL_5: "2026-04-01",
+            }],
+            index=pd.Index(["SP-EXTRA"], name=SUPERPAY_JOIN_COL_5),
+        )
+        wangguypay = pd.DataFrame(
+            [{
+                WANGGUYPAY_PLATFORM_NO_COL_5: "WG-EXTRA-NO",
+                WANGGUYPAY_AMOUNT_COL_5: "50",
+                WANGGUYPAY_ARRIVE_COL_5: "49",
+                WANGGUYPAY_STATUS_COL_5: "处理中",
+                WANGGUYPAY_CREATE_TIME_COL_5: "2026-04-01",
+                WANGGUYPAY_FINISH_TIME_COL_5: "",
+            }],
+            index=pd.Index(["WG-EXTRA"], name=WANGGUYPAY_JOIN_COL_5),
+        )
+
+        result = enrich_admin_5(admin, ibfpay, superpay, wangguypay)
+        extra = result[result[MATCH_STATUS_COL_5] == "平台多余"]
+        keyed = {row[PLATFORM_ORDER_NO_COL_5]: row[PLATFORM_STATUS_COL_5] for _, row in extra.iterrows()}
+
+        self.assertEqual(keyed["IBF-EXTRA"], "成功")
+        self.assertEqual(keyed["SP-EXTRA-NO"], "关闭")
+        self.assertEqual(keyed["WG-EXTRA-NO"], "处理中")
+
     def test_format_date_normalizes_platform_dates(self):
         cases = {
             "Jan 1, 2026": "2026-01-01",

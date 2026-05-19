@@ -33,9 +33,13 @@ IBFYPAY_HEADER_5          = 0
 IBFYPAY_JOIN_COL_5        = "系统流水号"        # 平台侧关联键
 IBFYPAY_ADMIN_JOIN_COL_5  = "第三方订单号"      # admin 侧关联键（不同于其他平台用 订单号）
 IBFYPAY_TYPE_COL_5        = "类型"
+IBFYPAY_TYPE_SYSTEM_5     = "系统操作"
 IBFYPAY_TYPE_PAYOUT_5     = "代付扣款"          # 过滤代付扣款行
 IBFYPAY_TYPE_FEE_5        = "代付扣除手续费"     # 过滤手续费行
+IBFYPAY_TYPE_REJECT_5     = "代付驳回"            # 驳回行（代付被拒后原路退款）
 IBFYPAY_AMOUNT_COL_5      = "变动金额"          # 金额列（负数，取绝对值）
+IBFYPAY_BEGIN_AMOUNT_COL_5 = "原金额"
+IBFYPAY_END_AMOUNT_COL_5   = "变动后金额"
 IBFYPAY_TIME_COL_5        = "变动时间"          # 交易时间
 IBFYPAY_ACCOUNT_COL_5     = "账户"
 IBFYPAY_REMARK_COL_5      = "备注"
@@ -78,7 +82,9 @@ WANGGUYPAY_STATUS_COL_5        = "交易状态"
 WANGGUYPAY_CALLBACK_COL_5      = "回调状态"
 WANGGUYPAY_FAIL_INFO_COL_5     = "失败信息"
 WANGGUYPAY_FUND_TYPE_COL_5     = "交易类型"
+WANGGUYPAY_BEGIN_AMOUNT_COL_5   = "期初金额(try)"
 WANGGUYPAY_FUND_AMOUNT_COL_5   = "变动金额(try)"
+WANGGUYPAY_END_AMOUNT_COL_5     = "期末金额(try)"
 WANGGUYPAY_FUND_TYPE_PAYOUT_5  = "付款结算"
 WANGGUYPAY_FUND_TYPE_FEE_5     = "扣除代付结算手续费"
 WANGGUYPAY_FUND_STATUS_5       = "成功"
@@ -111,3 +117,21 @@ OUTPUT_NEW_COLS_5 = [
     ARRIVE_AMOUNT_COL_5,
     TRANSACTION_DATE_COL_5,
 ]
+
+# ── 平台汇总余额列 ──────────────────────────────────────────────────────────
+SUMMARY_BEGIN_BALANCE_COL_5        = "期初余额"
+SUMMARY_RECHARGE_COL_5             = "充值"
+SUMMARY_WITHDRAWAL_COL_5           = "提现"
+SUMMARY_CALC_END_BALANCE_COL_5     = "期末余额（计算）"
+SUMMARY_PLATFORM_END_BALANCE_COL_5 = "期末余额（平台余额）"
+SUMMARY_BALANCE_COLS_5 = [
+    SUMMARY_BEGIN_BALANCE_COL_5,
+    SUMMARY_RECHARGE_COL_5,
+    SUMMARY_WITHDRAWAL_COL_5,
+    SUMMARY_CALC_END_BALANCE_COL_5,
+    SUMMARY_PLATFORM_END_BALANCE_COL_5,
+]
+
+BALANCE_RECHARGE_KEYWORDS_5 = ("充值", "入金", "加款", "手动增加")
+BALANCE_RECHARGE_EXCLUDE_KEYWORDS_5 = ("退", "驳回", "退款", "退还", "返还", "冲正")
+BALANCE_WITHDRAWAL_KEYWORDS_5 = ("提现", "出金", "提款")

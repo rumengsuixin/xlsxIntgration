@@ -58,10 +58,12 @@ from src.bank_integration.app4 import (
     wait_for_export_files,
 )
 from src.bank_integration.app5 import (
+    build_platform_balance_summary_5,
     build_ibfpay_lookup_5,
     build_summary_sheet_5,
     build_wangguypay_lookup_5,
     enrich_admin_5,
+    read_ibfpay_5,
     read_wangguypay_5,
     scan_source_files_5,
 )
@@ -78,9 +80,17 @@ from src.bank_integration.config5 import (
     ADMIN_TP_ORDER_COL_5,
     ARRIVE_AMOUNT_COL_5,
     FEE_COL_5,
+    IBFYPAY_AMOUNT_COL_5,
     IBFYPAY_ADMIN_JOIN_COL_5,
+    IBFYPAY_BEGIN_AMOUNT_COL_5,
+    IBFYPAY_END_AMOUNT_COL_5,
     IBFYPAY_JOIN_COL_5,
     IBFYPAY_TIME_COL_5,
+    IBFYPAY_TYPE_COL_5,
+    IBFYPAY_TYPE_PAYOUT_5,
+    IBFYPAY_TYPE_FEE_5,
+    IBFYPAY_TYPE_REJECT_5,
+    IBFYPAY_TYPE_SYSTEM_5,
     MATCH_STATUS_COL_5,
     PLATFORM_AMOUNT_COL_5,
     PLATFORM_ORDER_NO_COL_5,
@@ -92,10 +102,17 @@ from src.bank_integration.config5 import (
     SUPERPAY_JOIN_COL_5,
     SUPERPAY_PLATFORM_NO_COL_5,
     SUPERPAY_STATUS_COL_5,
+    SUMMARY_BEGIN_BALANCE_COL_5,
+    SUMMARY_RECHARGE_COL_5,
+    SUMMARY_WITHDRAWAL_COL_5,
+    SUMMARY_CALC_END_BALANCE_COL_5,
+    SUMMARY_PLATFORM_END_BALANCE_COL_5,
     TRANSACTION_DATE_COL_5,
     WANGGUYPAY_AMOUNT_COL_5,
     WANGGUYPAY_ARRIVE_COL_5,
+    WANGGUYPAY_BEGIN_AMOUNT_COL_5,
     WANGGUYPAY_CREATE_TIME_COL_5,
+    WANGGUYPAY_END_AMOUNT_COL_5,
     WANGGUYPAY_FEE_COL_5,
     WANGGUYPAY_FINISH_TIME_COL_5,
     WANGGUYPAY_JOIN_COL_5,
@@ -171,6 +188,20 @@ HUAMEI_PDF = ROOT / "华美银行电子对账单-2025.02.pdf"
 
 
 class BankIntegrationSampleTests(unittest.TestCase):
+    payout_summary_cols = [
+        "交易月份",
+        "机构",
+        "笔数",
+        SUMMARY_BEGIN_BALANCE_COL_5,
+        "代付金额合计",
+        "手续费合计",
+        "到账金额合计",
+        SUMMARY_RECHARGE_COL_5,
+        SUMMARY_WITHDRAWAL_COL_5,
+        SUMMARY_CALC_END_BALANCE_COL_5,
+        SUMMARY_PLATFORM_END_BALANCE_COL_5,
+    ]
+
     def test_ibfpay_lookup_prefers_nonzero_fee_duplicate(self):
         df = pd.DataFrame(
             [
@@ -374,7 +405,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         self.assertEqual(
             list(summary.columns),
-            ["交易月份", "机构", "笔数", "代付金额合计", "手续费合计", "到账金额合计"],
+            self.payout_summary_cols,
         )
         keyed = {(row["交易月份"], row["机构"]): row for _, row in summary.iterrows()}
         self.assertEqual(set(keyed), {
@@ -388,6 +419,131 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertAlmostEqual(keyed[("2026-04", "IBFYPAY")]["到账金额合计"], 148.5)
         self.assertNotIn(("2026-05", "IBFYPAY"), keyed)
         self.assertEqual(keyed[("", "WANGGUYPAY")]["笔数"], 1)
+        self.assertEqual(keyed[("2026-04", "SUPERPAY")][SUMMARY_BEGIN_BALANCE_COL_5], "")
+        self.assertEqual(keyed[("2026-04", "SUPERPAY")][SUMMARY_RECHARGE_COL_5], "")
+        self.assertEqual(keyed[("2026-04", "SUPERPAY")][SUMMARY_WITHDRAWAL_COL_5], "")
+        self.assertEqual(keyed[("2026-04", "SUPERPAY")][SUMMARY_CALC_END_BALANCE_COL_5], "")
+        self.assertEqual(keyed[("2026-04", "SUPERPAY")][SUMMARY_PLATFORM_END_BALANCE_COL_5], "")
+
+    def test_payout_summary_merges_ibfpay_balance_columns(self):
+        result = pd.DataFrame(
+            [
+                {
+                    MATCH_STATUS_COL_5: "是",
+                    PLATFORM_STATUS_COL_5: "成功",
+                    TRANSACTION_DATE_COL_5: "2026-04-15",
+                    ADMIN_ORG_COL_5: "IBFYPAY",
+                    PLATFORM_AMOUNT_COL_5: "100.00",
+                    FEE_COL_5: "1.00",
+                    ARRIVE_AMOUNT_COL_5: "99.00",
+                }
+            ]
+        )
+        ibfpay_raw = pd.DataFrame(
+            [
+                {
+                    IBFYPAY_TYPE_COL_5: "充值",
+                    IBFYPAY_BEGIN_AMOUNT_COL_5: "1000",
+                    IBFYPAY_AMOUNT_COL_5: "500",
+                    IBFYPAY_END_AMOUNT_COL_5: "1500",
+                    IBFYPAY_TIME_COL_5: "2026-04-01 00:00:00",
+                },
+                {
+                    IBFYPAY_TYPE_COL_5: IBFYPAY_TYPE_SYSTEM_5,
+                    IBFYPAY_BEGIN_AMOUNT_COL_5: "1500",
+                    IBFYPAY_AMOUNT_COL_5: "200",
+                    IBFYPAY_END_AMOUNT_COL_5: "1700",
+                    IBFYPAY_TIME_COL_5: "2026-04-02 00:00:00",
+                },
+                {
+                    IBFYPAY_TYPE_COL_5: IBFYPAY_TYPE_SYSTEM_5,
+                    IBFYPAY_BEGIN_AMOUNT_COL_5: "1700",
+                    IBFYPAY_AMOUNT_COL_5: "-50",
+                    IBFYPAY_END_AMOUNT_COL_5: "1650",
+                    IBFYPAY_TIME_COL_5: "2026-04-03 00:00:00",
+                },
+                {
+                    IBFYPAY_TYPE_COL_5: "代付扣款",
+                    IBFYPAY_BEGIN_AMOUNT_COL_5: "1650",
+                    IBFYPAY_AMOUNT_COL_5: "-100",
+                    IBFYPAY_END_AMOUNT_COL_5: "1550",
+                    IBFYPAY_TIME_COL_5: "2026-04-15 10:00:00",
+                },
+                {
+                    IBFYPAY_TYPE_COL_5: "代付驳回",
+                    IBFYPAY_BEGIN_AMOUNT_COL_5: "1550",
+                    IBFYPAY_AMOUNT_COL_5: "100",
+                    IBFYPAY_END_AMOUNT_COL_5: "1650",
+                    IBFYPAY_TIME_COL_5: "2026-04-16 10:00:00",
+                },
+            ]
+        )
+
+        balances = build_platform_balance_summary_5(ibfpay_raw=ibfpay_raw)
+        summary = build_summary_sheet_5(result, balances)
+        row = summary.iloc[0]
+
+        self.assertAlmostEqual(row[SUMMARY_BEGIN_BALANCE_COL_5], 1000.0)
+        self.assertAlmostEqual(row[SUMMARY_RECHARGE_COL_5], 700.0)
+        self.assertAlmostEqual(row[SUMMARY_WITHDRAWAL_COL_5], 50.0)
+        self.assertAlmostEqual(row[SUMMARY_CALC_END_BALANCE_COL_5], 1549.0)
+        self.assertAlmostEqual(row[SUMMARY_PLATFORM_END_BALANCE_COL_5], 1650.0)
+
+    def test_payout_summary_merges_wangguypay_balance_columns(self):
+        result = pd.DataFrame(
+            [
+                {
+                    MATCH_STATUS_COL_5: "是",
+                    PLATFORM_STATUS_COL_5: "成功",
+                    TRANSACTION_DATE_COL_5: "2026-05-18",
+                    ADMIN_ORG_COL_5: "WANGGUYPAY",
+                    PLATFORM_AMOUNT_COL_5: "2000.00",
+                    FEE_COL_5: "40.00",
+                    ARRIVE_AMOUNT_COL_5: "1960.00",
+                }
+            ]
+        )
+        wangguypay_raw = pd.DataFrame(
+            [
+                {
+                    WANGGUYPAY_PLATFORM_NO_COL_5: "R1",
+                    WANGGUYPAY_FUND_TYPE_COL_5: "手动增加",
+                    WANGGUYPAY_BEGIN_AMOUNT_COL_5: "3000",
+                    WANGGUYPAY_FUND_AMOUNT_COL_5: "1000",
+                    WANGGUYPAY_END_AMOUNT_COL_5: "4000",
+                    WANGGUYPAY_CREATE_TIME_COL_5: "2026-05-01 09:00:00",
+                    WANGGUYPAY_FINISH_TIME_COL_5: "",
+                },
+                {
+                    WANGGUYPAY_PLATFORM_NO_COL_5: "P1",
+                    WANGGUYPAY_FUND_TYPE_COL_5: "付款结算",
+                    WANGGUYPAY_BEGIN_AMOUNT_COL_5: "4000",
+                    WANGGUYPAY_FUND_AMOUNT_COL_5: "-2000",
+                    WANGGUYPAY_END_AMOUNT_COL_5: "2000",
+                    WANGGUYPAY_CREATE_TIME_COL_5: "2026-05-18 12:00:00",
+                    WANGGUYPAY_FINISH_TIME_COL_5: "2026-05-18 14:00:00",
+                },
+                {
+                    WANGGUYPAY_PLATFORM_NO_COL_5: "P1",
+                    WANGGUYPAY_FUND_TYPE_COL_5: "扣除代付结算手续费",
+                    WANGGUYPAY_BEGIN_AMOUNT_COL_5: "2000",
+                    WANGGUYPAY_FUND_AMOUNT_COL_5: "-40",
+                    WANGGUYPAY_END_AMOUNT_COL_5: "1960",
+                    WANGGUYPAY_CREATE_TIME_COL_5: "2026-05-18 12:00:00",
+                    WANGGUYPAY_FINISH_TIME_COL_5: "2026-05-18 14:00:01",
+                },
+            ]
+        )
+
+        balances = build_platform_balance_summary_5(wangguypay_raw=wangguypay_raw)
+        summary = build_summary_sheet_5(result, balances)
+        row = summary.iloc[0]
+
+        self.assertAlmostEqual(row[SUMMARY_BEGIN_BALANCE_COL_5], 3000.0)
+        self.assertAlmostEqual(row[SUMMARY_RECHARGE_COL_5], 1000.0)
+        self.assertAlmostEqual(row[SUMMARY_WITHDRAWAL_COL_5], 0.0)
+        self.assertAlmostEqual(row[SUMMARY_CALC_END_BALANCE_COL_5], 1960.0)
+        self.assertAlmostEqual(row[SUMMARY_PLATFORM_END_BALANCE_COL_5], 1960.0)
 
     def test_payout_summary_returns_empty_when_no_success_status(self):
         result = pd.DataFrame(
@@ -426,7 +582,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         self.assertEqual(
             list(summary.columns),
-            ["交易月份", "机构", "笔数", "代付金额合计", "手续费合计", "到账金额合计"],
+            self.payout_summary_cols,
         )
         self.assertTrue(summary.empty)
 
@@ -564,6 +720,67 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(keyed["IBF-EXTRA"], "成功")
         self.assertEqual(keyed["SP-EXTRA-NO"], "关闭")
         self.assertEqual(keyed["WG-EXTRA-NO"], "处理中")
+
+    def test_ibfpay_rejected_order_status_is_rejected(self):
+        """含 代付驳回 行的流水账：对应订单平台状态应为"驳回"，未驳回订单仍为"成功"。"""
+        raw_data = pd.DataFrame([
+            {IBFYPAY_JOIN_COL_5: "REJ-001", IBFYPAY_TYPE_COL_5: IBFYPAY_TYPE_PAYOUT_5,
+             IBFYPAY_AMOUNT_COL_5: "-100", IBFYPAY_TIME_COL_5: "2026-04-01 10:00:00"},
+            {IBFYPAY_JOIN_COL_5: "REJ-001", IBFYPAY_TYPE_COL_5: IBFYPAY_TYPE_FEE_5,
+             IBFYPAY_AMOUNT_COL_5: "-1", IBFYPAY_TIME_COL_5: "2026-04-01 10:00:00"},
+            {IBFYPAY_JOIN_COL_5: "REJ-001", IBFYPAY_TYPE_COL_5: IBFYPAY_TYPE_REJECT_5,
+             IBFYPAY_AMOUNT_COL_5: "100", IBFYPAY_TIME_COL_5: "2026-04-01 11:00:00"},
+            {IBFYPAY_JOIN_COL_5: "OK-002",  IBFYPAY_TYPE_COL_5: IBFYPAY_TYPE_PAYOUT_5,
+             IBFYPAY_AMOUNT_COL_5: "-50",  IBFYPAY_TIME_COL_5: "2026-04-02 10:00:00"},
+            {IBFYPAY_JOIN_COL_5: "OK-002",  IBFYPAY_TYPE_COL_5: IBFYPAY_TYPE_FEE_5,
+             IBFYPAY_AMOUNT_COL_5: "-0.5", IBFYPAY_TIME_COL_5: "2026-04-02 10:00:00"},
+        ])
+
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
+            tmp = f.name
+        try:
+            raw_data.to_excel(tmp, sheet_name="Sheet", index=False)
+            merged = read_ibfpay_5(Path(tmp))
+        finally:
+            os.unlink(tmp)
+
+        by_key = merged.set_index(IBFYPAY_JOIN_COL_5)
+        self.assertTrue(bool(by_key.at["REJ-001", "_ibfpay_rejected"]))
+        self.assertFalse(bool(by_key.at["OK-002",  "_ibfpay_rejected"]))
+
+        lookup = build_ibfpay_lookup_5(merged)
+        self.assertTrue(bool(lookup.at["REJ-001", "_ibfpay_rejected"]))
+        self.assertFalse(bool(lookup.at["OK-002",  "_ibfpay_rejected"]))
+
+        admin = pd.DataFrame([
+            {ADMIN_JOIN_COL_5: "A1", ADMIN_TP_ORDER_COL_5: "", IBFYPAY_ADMIN_JOIN_COL_5: "REJ-001"},
+            {ADMIN_JOIN_COL_5: "A2", ADMIN_TP_ORDER_COL_5: "", IBFYPAY_ADMIN_JOIN_COL_5: "OK-002"},
+            {ADMIN_JOIN_COL_5: "",   ADMIN_TP_ORDER_COL_5: "", IBFYPAY_ADMIN_JOIN_COL_5: ""},
+        ])
+        result = enrich_admin_5(admin, lookup, None, None)
+
+        matched = {row[ADMIN_JOIN_COL_5]: row[PLATFORM_STATUS_COL_5]
+                   for _, row in result.iterrows() if row[ADMIN_JOIN_COL_5]}
+        self.assertEqual(matched["A1"], "驳回")
+        self.assertEqual(matched["A2"], "成功")
+
+        extra = result[result[MATCH_STATUS_COL_5] == "平台多余"]
+        self.assertEqual(len(extra), 0)
+
+    def test_ibfpay_rejected_platform_extra_status_is_rejected(self):
+        """平台多余且被驳回的 IBF 订单，平台状态应为"驳回"。"""
+        lookup = pd.DataFrame(
+            [{"代付金额": "10", "手续费": "1",
+              IBFYPAY_TIME_COL_5: "2026-04-01", "_ibfpay_rejected": True}],
+            index=pd.Index(["REJ-EXTRA"], name=IBFYPAY_JOIN_COL_5),
+        )
+        admin = pd.DataFrame([{ADMIN_JOIN_COL_5: "", ADMIN_TP_ORDER_COL_5: "",
+                                IBFYPAY_ADMIN_JOIN_COL_5: ""}])
+        result = enrich_admin_5(admin, lookup, None, None)
+        extra = result[result[MATCH_STATUS_COL_5] == "平台多余"]
+        self.assertEqual(len(extra), 1)
+        self.assertEqual(extra.iloc[0][PLATFORM_STATUS_COL_5], "驳回")
 
     def test_format_date_normalizes_platform_dates(self):
         cases = {

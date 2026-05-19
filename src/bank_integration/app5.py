@@ -47,9 +47,13 @@ from .config5 import (
     IBFYPAY_JOIN_COL_5,
     IBFYPAY_ADMIN_JOIN_COL_5,
     IBFYPAY_TYPE_COL_5,
+    IBFYPAY_TYPE_SYSTEM_5,
     IBFYPAY_TYPE_PAYOUT_5,
     IBFYPAY_TYPE_FEE_5,
+    IBFYPAY_TYPE_REJECT_5,
     IBFYPAY_AMOUNT_COL_5,
+    IBFYPAY_BEGIN_AMOUNT_COL_5,
+    IBFYPAY_END_AMOUNT_COL_5,
     IBFYPAY_TIME_COL_5,
     IBFYPAY_ACCOUNT_COL_5,
     IBFYPAY_REMARK_COL_5,
@@ -74,7 +78,9 @@ from .config5 import (
     WANGGUYPAY_CREATE_TIME_COL_5,
     WANGGUYPAY_FINISH_TIME_COL_5,
     WANGGUYPAY_FUND_TYPE_COL_5,
+    WANGGUYPAY_BEGIN_AMOUNT_COL_5,
     WANGGUYPAY_FUND_AMOUNT_COL_5,
+    WANGGUYPAY_END_AMOUNT_COL_5,
     WANGGUYPAY_FUND_TYPE_PAYOUT_5,
     WANGGUYPAY_FUND_TYPE_FEE_5,
     WANGGUYPAY_FUND_STATUS_5,
@@ -88,6 +94,15 @@ from .config5 import (
     TRANSACTION_DATE_COL_5,
     OUTPUT_NEW_COLS_5,
     PLATFORM_PREFIXES_5,
+    SUMMARY_BEGIN_BALANCE_COL_5,
+    SUMMARY_RECHARGE_COL_5,
+    SUMMARY_WITHDRAWAL_COL_5,
+    SUMMARY_CALC_END_BALANCE_COL_5,
+    SUMMARY_PLATFORM_END_BALANCE_COL_5,
+    SUMMARY_BALANCE_COLS_5,
+    BALANCE_RECHARGE_KEYWORDS_5,
+    BALANCE_RECHARGE_EXCLUDE_KEYWORDS_5,
+    BALANCE_WITHDRAWAL_KEYWORDS_5,
 )
 
 
@@ -148,11 +163,82 @@ def _to_float_5(val) -> Optional[float]:
         return None
 
 
-def _normalize_platform_status_5(platform: str, raw_status: str = "") -> str:
-    """将各平台原始状态统一为 成功/失败/处理中/关闭。"""
+def _to_datetime_5(val):
+    """将任意时间值转为 pandas Timestamp，失败返回 NaT。"""
+    try:
+        if pd.isna(val):
+            return pd.NaT
+    except (TypeError, ValueError):
+        pass
+    return pd.to_datetime(str(val).strip(), errors="coerce")
+
+
+def _is_recharge_type_5(raw_type: str) -> bool:
+    """判断资金流水类型是否为明确的充值/入金类。"""
+    text = str(raw_type).strip()
+    if not text:
+        return False
+    if any(k in text for k in BALANCE_RECHARGE_EXCLUDE_KEYWORDS_5):
+        return False
+    return any(k in text for k in BALANCE_RECHARGE_KEYWORDS_5)
+
+
+def _is_withdrawal_type_5(raw_type: str) -> bool:
+    """判断资金流水类型是否为提现/出金类。"""
+    text = str(raw_type).strip()
+    if not text:
+        return False
+    return any(k in text for k in BALANCE_WITHDRAWAL_KEYWORDS_5)
+
+
+def _first_valid_float_5(values, *, reverse: bool = False) -> Optional[float]:
+    """从序列中取第一个有效数字。"""
+    items = list(values)
+    if reverse:
+        items = list(reversed(items))
+    for value in items:
+        if value is None:
+            continue
+        try:
+            if pd.isna(value):
+                continue
+        except (TypeError, ValueError):
+            pass
+        return float(value)
+    return None
+
+
+def _pick_chain_begin_5(grp: pd.DataFrame) -> Optional[float]:
+    """同一时间多条流水时，取不被其他行期末承接的期初余额。"""
+    first_time = grp["_balance_time"].min()
+    rows = grp[grp["_balance_time"] == first_time]
+    end_values = {round(float(v), 6) for v in rows["_end"].tolist() if not pd.isna(v)}
+    for value in rows["_begin"].tolist():
+        if value is None or pd.isna(value):
+            continue
+        if round(float(value), 6) not in end_values:
+            return float(value)
+    return _first_valid_float_5(rows["_begin"].tolist())
+
+
+def _pick_chain_end_5(grp: pd.DataFrame) -> Optional[float]:
+    """同一时间多条流水时，取不再作为其他行期初的期末余额。"""
+    last_time = grp["_balance_time"].max()
+    rows = grp[grp["_balance_time"] == last_time]
+    begin_values = {round(float(v), 6) for v in rows["_begin"].tolist() if not pd.isna(v)}
+    for value in reversed(rows["_end"].tolist()):
+        if value is None or pd.isna(value):
+            continue
+        if round(float(value), 6) not in begin_values:
+            return float(value)
+    return _first_valid_float_5(rows["_end"].tolist(), reverse=True)
+
+
+def _normalize_platform_status_5(platform: str, raw_status: str = "", *, rejected: bool = False) -> str:
+    """将各平台原始状态统一为 成功/失败/处理中/关闭/驳回。"""
     platform_key = str(platform).strip().upper()
     if platform_key == "IBFYPAY":
-        return "成功"
+        return "驳回" if rejected else "成功"
 
     status = str(raw_status).strip()
     if not status:
@@ -379,6 +465,11 @@ def read_ibfpay_5(filepath: Path) -> pd.DataFrame:
         )
         merged = payout_df.merge(fee_df, on=IBFYPAY_JOIN_COL_5, how="left")
         merged[IBFYPAY_SOURCE_PRIORITY_COL_5] = 2
+        reject_keys = set(
+            df.loc[df[IBFYPAY_TYPE_COL_5].str.strip() == IBFYPAY_TYPE_REJECT_5, IBFYPAY_JOIN_COL_5]
+            .astype(str).str.strip()
+        )
+        merged["_ibfpay_rejected"] = merged[IBFYPAY_JOIN_COL_5].isin(reject_keys)
     else:
         # 订单明细格式：一行一笔，无独立手续费行
         logging.info("【IBFYPAY】%s 为订单明细格式（无「%s」列），手续费置0", filepath.name, IBFYPAY_TYPE_COL_5)
@@ -394,6 +485,7 @@ def read_ibfpay_5(filepath: Path) -> pd.DataFrame:
         merged = df[keep].rename(columns=rename_map)
         merged["手续费"] = "0"
         merged[IBFYPAY_SOURCE_PRIORITY_COL_5] = 1
+        merged["_ibfpay_rejected"] = False
         if IBFYPAY_TIME_COL_5 not in merged.columns:
             merged[IBFYPAY_TIME_COL_5] = ""
 
@@ -404,6 +496,24 @@ def read_ibfpay_5(filepath: Path) -> pd.DataFrame:
         ).fillna(0.0).abs()
 
     return merged
+
+
+def read_ibfpay_balance_source_5(filepath: Path) -> pd.DataFrame:
+    """读取 IBFYPAY 原始资金流水列，用于平台汇总余额计算。"""
+    df = pd.read_excel(filepath, sheet_name=IBFYPAY_SHEET_5, header=IBFYPAY_HEADER_5, dtype=str)
+    df = df.dropna(how="all").fillna("")
+    df.columns = [str(c).strip() for c in df.columns]
+    required = [
+        IBFYPAY_TYPE_COL_5,
+        IBFYPAY_BEGIN_AMOUNT_COL_5,
+        IBFYPAY_AMOUNT_COL_5,
+        IBFYPAY_END_AMOUNT_COL_5,
+        IBFYPAY_TIME_COL_5,
+    ]
+    if not all(c in df.columns for c in required):
+        logging.info("【IBFYPAY】%s 无完整余额流水列，跳过平台余额提取", filepath.name)
+        return pd.DataFrame(columns=required)
+    return df[required].copy()
 
 
 def read_superpay_5(filepath: Path) -> pd.DataFrame:
@@ -505,6 +615,7 @@ def build_ibfpay_lookup_5(df: pd.DataFrame) -> pd.DataFrame:
         "代付金额",
         "手续费",
         IBFYPAY_TIME_COL_5,
+        "_ibfpay_rejected",
     ] if c in work.columns]
     result = _dedup_lookup_5(work[keep_cols], IBFYPAY_JOIN_COL_5, "IBFYPAY")
     return result.set_index(IBFYPAY_JOIN_COL_5)
@@ -654,8 +765,12 @@ def _build_platform_only_rows_5(
             fee = str(ibfpay_lk.at[key, "手续费"]).strip()   if "手续费"   in ibfpay_lk.columns else ""
             amt_f = _to_float_5(amt) or 0.0
             fee_f = _to_float_5(fee) or 0.0
+            is_rejected = (
+                bool(ibfpay_lk.at[key, "_ibfpay_rejected"])
+                if "_ibfpay_rejected" in ibfpay_lk.columns else False
+            )
             row[PLATFORM_AMOUNT_COL_5] = amt
-            row[PLATFORM_STATUS_COL_5] = _normalize_platform_status_5("IBFYPAY")
+            row[PLATFORM_STATUS_COL_5] = _normalize_platform_status_5("IBFYPAY", rejected=is_rejected)
             row[FEE_COL_5]             = fee
             row[ARRIVE_AMOUNT_COL_5]   = str(round(amt_f - fee_f, 2))
             if IBFYPAY_TIME_COL_5 in ibfpay_lk.columns:
@@ -793,6 +908,10 @@ def enrich_admin_5(
         ibf_time = str(row.get(f"_i_{IBFYPAY_TIME_COL_5}",  "")).strip() if ibfpay_avail    else ""
         ibf_tp   = str(row.get(IBFYPAY_ADMIN_JOIN_COL_5,    "")).strip()
         ibf_hit  = ibf_amt != ""
+        ibf_rejected = (
+            str(row.get("_i__ibfpay_rejected", "")).strip().lower() == "true"
+            if ibfpay_avail else False
+        )
 
         # SUPERPAY 命中判断（join 键：admin.订单号 ↔ superpay.商户订单号）
         sp_amt    = str(row.get(f"_s_{SUPERPAY_AMOUNT_COL_5}",     "")).strip() if superpay_avail else ""
@@ -827,7 +946,7 @@ def enrich_admin_5(
             match_status_list.append("是")
             platform_order_no_list.append(ibf_tp)
             platform_amount_list.append(ibf_amt)
-            platform_status_list.append(_normalize_platform_status_5("IBFYPAY"))
+            platform_status_list.append(_normalize_platform_status_5("IBFYPAY", rejected=ibf_rejected))
             fee_list.append(ibf_fee)
             arrive_amount_list.append(str(arrive))
             transaction_date_list.append(_format_date_5(ibf_time))
@@ -913,7 +1032,114 @@ def log_match_stats_5(result_df: pd.DataFrame) -> None:
         logging.warning("存在 %d 条未匹配记录，请查看【匹配失败订单】sheet", unmatched)
 
 
-def build_summary_sheet_5(result_df: pd.DataFrame) -> pd.DataFrame:
+def _build_one_platform_balance_summary_5(
+    df: Optional[pd.DataFrame],
+    *,
+    platform: str,
+    type_col: str,
+    begin_col: str,
+    change_col: str,
+    end_col: str,
+    time_cols: List[str],
+) -> pd.DataFrame:
+    """按月提取单个平台资金流水的期初、充值和平台期末余额。"""
+    output_cols = ["交易月份", "机构"] + SUMMARY_BALANCE_COLS_5
+    if df is None or df.empty:
+        return pd.DataFrame(columns=output_cols)
+
+    required = [type_col, begin_col, change_col, end_col]
+    if not all(c in df.columns for c in required):
+        return pd.DataFrame(columns=output_cols)
+
+    work = df.copy()
+    existing_time_cols = [c for c in time_cols if c in work.columns]
+    if not existing_time_cols:
+        return pd.DataFrame(columns=output_cols)
+
+    work["_balance_time"] = pd.NaT
+    for c in existing_time_cols:
+        parsed = work[c].apply(_to_datetime_5)
+        work["_balance_time"] = work["_balance_time"].fillna(parsed)
+    work = work[~work["_balance_time"].isna()].copy()
+    if work.empty:
+        return pd.DataFrame(columns=output_cols)
+
+    work["_month"] = work["_balance_time"].dt.strftime("%Y-%m")
+    work["_begin"] = work[begin_col].apply(_to_float_5)
+    work["_change"] = work[change_col].apply(_to_float_5)
+    work["_end"] = work[end_col].apply(_to_float_5)
+    work["_is_recharge"] = work[type_col].apply(_is_recharge_type_5)
+    work["_is_withdrawal"] = work[type_col].apply(_is_withdrawal_type_5)
+    if platform == "IBFYPAY":
+        ibfpay_system = work[type_col].astype(str).str.strip().eq(IBFYPAY_TYPE_SYSTEM_5)
+        work["_is_recharge"] = work["_is_recharge"] | (
+            ibfpay_system & (work["_change"].fillna(0.0) > 0)
+        )
+        work["_is_withdrawal"] = work["_is_withdrawal"] | (
+            ibfpay_system & (work["_change"].fillna(0.0) < 0)
+        )
+    work = work.sort_values("_balance_time", kind="mergesort")
+
+    rows = []
+    for month, grp in work.groupby("_month", sort=True):
+        begin = _pick_chain_begin_5(grp)
+        end = _pick_chain_end_5(grp)
+        recharge = grp.loc[
+            grp["_is_recharge"] & (grp["_change"].fillna(0.0) > 0),
+            "_change",
+        ].sum()
+        withdrawal = abs(grp.loc[
+            grp["_is_withdrawal"],
+            "_change",
+        ].fillna(0.0).sum())
+        rows.append({
+            "交易月份": month,
+            "机构": platform,
+            SUMMARY_BEGIN_BALANCE_COL_5: round(begin, 2) if begin is not None else "",
+            SUMMARY_RECHARGE_COL_5: round(float(recharge), 2),
+            SUMMARY_WITHDRAWAL_COL_5: round(float(withdrawal), 2),
+            SUMMARY_CALC_END_BALANCE_COL_5: "",
+            SUMMARY_PLATFORM_END_BALANCE_COL_5: round(end, 2) if end is not None else "",
+        })
+    return pd.DataFrame(rows, columns=output_cols)
+
+
+def build_platform_balance_summary_5(
+    ibfpay_raw: Optional[pd.DataFrame] = None,
+    wangguypay_raw: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """构建平台汇总可合并的余额数据。SUPERPAY 当前无余额源列，故不产生余额行。"""
+    frames = [
+        _build_one_platform_balance_summary_5(
+            ibfpay_raw,
+            platform="IBFYPAY",
+            type_col=IBFYPAY_TYPE_COL_5,
+            begin_col=IBFYPAY_BEGIN_AMOUNT_COL_5,
+            change_col=IBFYPAY_AMOUNT_COL_5,
+            end_col=IBFYPAY_END_AMOUNT_COL_5,
+            time_cols=[IBFYPAY_TIME_COL_5],
+        ),
+        _build_one_platform_balance_summary_5(
+            wangguypay_raw,
+            platform="WANGGUYPAY",
+            type_col=WANGGUYPAY_FUND_TYPE_COL_5,
+            begin_col=WANGGUYPAY_BEGIN_AMOUNT_COL_5,
+            change_col=WANGGUYPAY_FUND_AMOUNT_COL_5,
+            end_col=WANGGUYPAY_END_AMOUNT_COL_5,
+            time_cols=[WANGGUYPAY_FINISH_TIME_COL_5, WANGGUYPAY_CREATE_TIME_COL_5],
+        ),
+    ]
+    frames = [f for f in frames if f is not None and not f.empty]
+    cols = ["交易月份", "机构"] + SUMMARY_BALANCE_COLS_5
+    if not frames:
+        return pd.DataFrame(columns=cols)
+    return pd.concat(frames, ignore_index=True)[cols]
+
+
+def build_summary_sheet_5(
+    result_df: pd.DataFrame,
+    platform_balance_summary: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
     """按交易月份和平台汇总代付金额、手续费、到账金额。
 
     分组键：交易日期归属月份（YYYY-MM） + 机构列（ADMIN_ORG_COL_5）。
@@ -927,7 +1153,19 @@ def build_summary_sheet_5(result_df: pd.DataFrame) -> pd.DataFrame:
         汇总 DataFrame，供写入 OUTPUT_SUMMARY_SHEET_5。
     """
     month_col = "交易月份"
-    summary_cols = [month_col, "机构", "笔数", "代付金额合计", "手续费合计", "到账金额合计"]
+    summary_cols = [
+        month_col,
+        "机构",
+        "笔数",
+        SUMMARY_BEGIN_BALANCE_COL_5,
+        "代付金额合计",
+        "手续费合计",
+        "到账金额合计",
+        SUMMARY_RECHARGE_COL_5,
+        SUMMARY_WITHDRAWAL_COL_5,
+        SUMMARY_CALC_END_BALANCE_COL_5,
+        SUMMARY_PLATFORM_END_BALANCE_COL_5,
+    ]
     if PLATFORM_STATUS_COL_5 not in result_df.columns:
         return pd.DataFrame(columns=summary_cols)
     matched = result_df[result_df[PLATFORM_STATUS_COL_5].astype(str).str.strip() == "成功"].copy()
@@ -954,6 +1192,32 @@ def build_summary_sheet_5(result_df: pd.DataFrame) -> pd.DataFrame:
     grp = grp.rename(columns={ADMIN_ORG_COL_5: "机构"})
     for col in ["代付金额合计", "手续费合计", "到账金额合计"]:
         grp[col] = grp[col].round(2)
+
+    for col in SUMMARY_BALANCE_COLS_5:
+        grp[col] = ""
+    if platform_balance_summary is not None and not platform_balance_summary.empty:
+        balance_cols = [month_col, "机构"] + SUMMARY_BALANCE_COLS_5
+        balance_df = platform_balance_summary.copy()
+        balance_df = balance_df[[c for c in balance_cols if c in balance_df.columns]]
+        grp = grp.drop(columns=SUMMARY_BALANCE_COLS_5).merge(
+            balance_df,
+            on=[month_col, "机构"],
+            how="left",
+        )
+        for col in SUMMARY_BALANCE_COLS_5:
+            if col not in grp.columns:
+                grp[col] = ""
+            else:
+                grp[col] = grp[col].fillna("")
+
+    calc_mask = grp[SUMMARY_BEGIN_BALANCE_COL_5].astype(str).str.strip() != ""
+    grp.loc[calc_mask, SUMMARY_CALC_END_BALANCE_COL_5] = (
+        grp.loc[calc_mask, SUMMARY_BEGIN_BALANCE_COL_5].astype(float)
+        + grp.loc[calc_mask, SUMMARY_RECHARGE_COL_5].replace("", 0).astype(float)
+        - grp.loc[calc_mask, SUMMARY_WITHDRAWAL_COL_5].replace("", 0).astype(float)
+        - grp.loc[calc_mask, "代付金额合计"].astype(float)
+        - grp.loc[calc_mask, "手续费合计"].astype(float)
+    ).round(2)
     return grp[summary_cols]
 
 
@@ -964,6 +1228,7 @@ def build_summary_sheet_5(result_df: pd.DataFrame) -> pd.DataFrame:
 def write_output_5(
     result_df: pd.DataFrame,
     output_dir: Path,
+    platform_balance_summary: Optional[pd.DataFrame] = None,
 ) -> Path:
     """将结果写入 data/output/代付对账结果_{YYYYMMDD}.xlsx。
 
@@ -985,7 +1250,7 @@ def write_output_5(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     failed_df  = result_df[result_df[MATCH_STATUS_COL_5] == "否"].copy()
-    summary_df = build_summary_sheet_5(result_df)
+    summary_df = build_summary_sheet_5(result_df, platform_balance_summary)
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         result_df.to_excel(writer, sheet_name=OUTPUT_SHEET_5, index=False)
@@ -1036,10 +1301,15 @@ def main() -> int:
 
     # ── IBFYPAY ───────────────────────────────────────────────
     ibfpay_lk: Optional[pd.DataFrame] = None
+    ibfpay_balance_raw: Optional[pd.DataFrame] = None
     if files["ibfpay"]:
         frames = [read_ibfpay_5(fp) for fp in files["ibfpay"]]
         raw = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         ibfpay_lk = build_ibfpay_lookup_5(raw)
+        balance_frames = [read_ibfpay_balance_source_5(fp) for fp in files["ibfpay"]]
+        balance_frames = [f for f in balance_frames if not f.empty]
+        if balance_frames:
+            ibfpay_balance_raw = pd.concat(balance_frames, ignore_index=True)
         logging.info("IBFYPAY 查找表共 %d 条", len(ibfpay_lk))
 
     # ── SUPERPAY ──────────────────────────────────────────────
@@ -1052,11 +1322,14 @@ def main() -> int:
 
     # ── WANGGUYPAY ────────────────────────────────────────────
     wangguypay_lk: Optional[pd.DataFrame] = None
+    wangguypay_raw: Optional[pd.DataFrame] = None
     if files["wangguypay"]:
         frames = [read_wangguypay_5(fp) for fp in files["wangguypay"]]
-        raw = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
-        wangguypay_lk = build_wangguypay_lookup_5(raw)
+        wangguypay_raw = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        wangguypay_lk = build_wangguypay_lookup_5(wangguypay_raw)
         logging.info("WANGGUYPAY 查找表共 %d 条", len(wangguypay_lk))
+
+    platform_balance_summary = build_platform_balance_summary_5(ibfpay_balance_raw, wangguypay_raw)
 
     # ── 匹配 ──────────────────────────────────────────────────
     result_df = enrich_admin_5(admin_df, ibfpay_lk, superpay_lk, wangguypay_lk)
@@ -1064,7 +1337,7 @@ def main() -> int:
 
     # ── 输出 ──────────────────────────────────────────────────
     try:
-        output_path = write_output_5(result_df, OUTPUT_DIR)
+        output_path = write_output_5(result_df, OUTPUT_DIR, platform_balance_summary)
         logging.info("完成。输出文件: %s", output_path)
     except PermissionError:
         logging.error("无法写入输出文件，请确认文件未在 Excel 中打开后重试。")

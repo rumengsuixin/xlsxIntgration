@@ -120,3 +120,18 @@ EXPORT_RETRY_LIMIT_4 = get_mode4_retry_limit()
 EXPORT_MISSING_CHECK_CHANCES_4 = get_mode4_missing_check_chances()
 EXPORT_CHECK_INTERVAL_SECONDS_4 = get_mode4_check_interval_seconds()
 EXPORT_COMPLETED_SUFFIXES_4 = (".xls", ".xlsx", ".csv")
+
+MODE4_DEBUG_PORT_ENV = "MODE4_DEBUG_PORT"
+DEFAULT_CHROME_DEBUG_PORT_4 = 9224
+
+
+def get_mode4_debug_port(
+    env=None,
+    env_path=None,
+    default: int = DEFAULT_CHROME_DEBUG_PORT_4,
+) -> int:
+    """Return mode 4 Chrome remote debugging port from environment or .env."""
+    return _get_positive_int_config(MODE4_DEBUG_PORT_ENV, default, env, env_path)
+
+
+CHROME_DEBUG_PORT_4 = get_mode4_debug_port()

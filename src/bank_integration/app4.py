@@ -19,6 +19,7 @@ from typing import Callable, Iterable, List, Optional, Sequence, Tuple, TypeVar
 import pandas as pd
 
 from .config4 import (
+    CHROME_DEBUG_PORT_4,
     CHROME_PROFILE_DIR_4,
     EXPORT_BATCH_SIZE_4,
     EXPORT_BATCH_WAIT_SECONDS_4,
@@ -215,22 +216,34 @@ def log_cookie_store_status(profile_dir: Path) -> None:
         logging.info("  %s", network_cookie_path)
 
 
-def build_chrome_args(chrome_path: str, profile_dir: Path, urls: List[str]) -> List[str]:
+def build_chrome_args(
+    chrome_path: str,
+    profile_dir: Path,
+    urls: List[str],
+    debug_port: int = 0,
+) -> List[str]:
     args = [
         chrome_path,
         f"--user-data-dir={profile_dir.resolve()}",
         f"--profile-directory={PROFILE_NAME}",
         "--no-first-run",
         "--no-default-browser-check",
-        "--remote-debugging-port=0",
+        f"--remote-debugging-port={debug_port}",
         "--class=bank-integration-export",
     ]
+    if debug_port != 0:
+        args.append("--remote-allow-origins=*")
     args.extend(urls)
     return args
 
 
-def launch_chrome(chrome_path: str, profile_dir: Path, urls: List[str]) -> subprocess.Popen:
-    args = build_chrome_args(chrome_path, profile_dir, urls)
+def launch_chrome(
+    chrome_path: str,
+    profile_dir: Path,
+    urls: List[str],
+    debug_port: int = CHROME_DEBUG_PORT_4,
+) -> subprocess.Popen:
+    args = build_chrome_args(chrome_path, profile_dir, urls, debug_port)
     return subprocess.Popen(args)
 
 

@@ -144,6 +144,7 @@ from src.bank_integration.config3 import (
     ADYEN_INTERCHANGE_COL,
     ADYEN_JOIN_COL,
     ADYEN_MARKUP_COL,
+    ADYEN_MSI_FEE_COL,
     ADYEN_PAYABLE_COL,
     ADYEN_RECORD_TYPE_COL,
     ADYEN_SCHEME_FEES_COL,
@@ -154,6 +155,7 @@ from src.bank_integration.config3 import (
     ADYEN_SETTLE_JOURNAL_COL,
     ADYEN_SETTLEMENT_CURRENCY_COL,
     COUNTRY_TAX_COL,
+    FEE_COL,
     GOOGLE_CHARGE_TYPE,
     GOOGLE_DATE_COL,
     GOOGLE_BUYER_AMOUNT_COL,
@@ -183,6 +185,7 @@ from src.bank_integration.config3 import (
     PLATFORM_AMOUNT_COL,
     PLATFORM_CURRENCY_COL,
     SETTLEMENT_CURRENCY_COL,
+    SETTLEMENT_AMOUNT_COL,
     STATUS_COL,
     TRANSACTION_DATE_COL,
 )
@@ -1006,7 +1009,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                 read_adyen,
                 "Data",
                 0,
-                pd.DataFrame({ADYEN_JOIN_COL: ["PSP-FALLBACK"], ADYEN_RECORD_TYPE_COL: ["SentForSettle"]}),
+                pd.DataFrame({ADYEN_JOIN_COL: ["PSP-FALLBACK"], ADYEN_RECORD_TYPE_COL: ["Settled"]}),
                 ADYEN_JOIN_COL,
                 "PSP-FALLBACK",
             ),
@@ -1295,33 +1298,33 @@ class BankIntegrationSampleTests(unittest.TestCase):
         result = enrich_admin(self._admin_df(psp), lookup, None, None)
         return result.loc[0, STATUS_COL], result.loc[0, PLATFORM_AMOUNT_COL], lookup
 
-    def test_adyen_refused_overrides_sent_for_settle(self):
+    def test_adyen_only_settled_records_match(self):
         status, amount, lookup = self._adyen_status_for(
-            "PSP-REFUSED-SETTLED",
+            "PSP-SETTLED",
             [
-                {ADYEN_JOIN_COL: "PSP-REFUSED-SETTLED", ADYEN_RECORD_TYPE_COL: "SentForSettle"},
-                {ADYEN_JOIN_COL: "PSP-REFUSED-SETTLED", ADYEN_RECORD_TYPE_COL: "Refused"},
+                {ADYEN_JOIN_COL: "PSP-SETTLED", ADYEN_RECORD_TYPE_COL: "SentForSettle", ADYEN_AMOUNT_COL: "8.00"},
+                {ADYEN_JOIN_COL: "PSP-SETTLED", ADYEN_RECORD_TYPE_COL: "Settled", ADYEN_AMOUNT_COL: "10.00"},
             ],
         )
 
-        self.assertNotIn("PSP-REFUSED-SETTLED", lookup.index)
-        self.assertEqual(status, "失败")
-        self.assertEqual(amount, "")
+        self.assertIn("PSP-SETTLED", lookup.index)
+        self.assertEqual(lookup.at["PSP-SETTLED", ADYEN_AMOUNT_COL], "10.00")
+        self.assertEqual(status, "成功")
+        self.assertEqual(amount, "10.00")
 
-    def test_adyen_refused_overrides_authorised(self):
+    def test_adyen_sent_for_settle_no_longer_matches(self):
         status, amount, lookup = self._adyen_status_for(
-            "PSP-REFUSED-AUTH",
+            "PSP-SENT-FOR-SETTLE",
             [
-                {ADYEN_JOIN_COL: "PSP-REFUSED-AUTH", ADYEN_RECORD_TYPE_COL: "Authorised"},
-                {ADYEN_JOIN_COL: "PSP-REFUSED-AUTH", ADYEN_RECORD_TYPE_COL: "Refused"},
+                {ADYEN_JOIN_COL: "PSP-SENT-FOR-SETTLE", ADYEN_RECORD_TYPE_COL: "SentForSettle"},
             ],
         )
 
-        self.assertNotIn("PSP-REFUSED-AUTH", lookup.index)
-        self.assertEqual(status, "失败")
+        self.assertNotIn("PSP-SENT-FOR-SETTLE", lookup.index)
+        self.assertEqual(status, "")
         self.assertEqual(amount, "")
 
-    def test_adyen_received_and_refused_is_failed(self):
+    def test_adyen_non_settled_records_do_not_match(self):
         status, amount, lookup = self._adyen_status_for(
             "PSP-RECEIVED-REFUSED",
             [
@@ -1331,22 +1334,29 @@ class BankIntegrationSampleTests(unittest.TestCase):
         )
 
         self.assertNotIn("PSP-RECEIVED-REFUSED", lookup.index)
-        self.assertEqual(status, "失败")
+        self.assertEqual(status, "")
         self.assertEqual(amount, "")
 
-    def test_adyen_success_types_still_match_without_refused(self):
+    def test_adyen_msi_fee_is_added_to_result_rows(self):
         status, amount, lookup = self._adyen_status_for(
-            "PSP-SUCCESS",
+            "PSP-MSI",
             [
-                {ADYEN_JOIN_COL: "PSP-SUCCESS", ADYEN_RECORD_TYPE_COL: "Authorised", ADYEN_AMOUNT_COL: "8.00"},
-                {ADYEN_JOIN_COL: "PSP-SUCCESS", ADYEN_RECORD_TYPE_COL: "SentForSettle", ADYEN_AMOUNT_COL: "10.00"},
+                {
+                    ADYEN_JOIN_COL: "PSP-MSI",
+                    ADYEN_RECORD_TYPE_COL: "Settled",
+                    ADYEN_AMOUNT_COL: "10.00",
+                    ADYEN_MARKUP_COL: "0.10",
+                    ADYEN_SCHEME_FEES_COL: "0.20",
+                    ADYEN_INTERCHANGE_COL: "0.30",
+                },
             ],
         )
+        result = enrich_admin(self._admin_df("PSP-MSI"), lookup, None, None)
 
-        self.assertIn("PSP-SUCCESS", lookup.index)
-        self.assertEqual(lookup.at["PSP-SUCCESS", ADYEN_AMOUNT_COL], "10.00")
         self.assertEqual(status, "成功")
         self.assertEqual(amount, "10.00")
+        self.assertAlmostEqual(float(result.loc[0, ADYEN_MSI_FEE_COL]), 0.60, places=2)
+        self.assertEqual(result.loc[0, FEE_COL], "0")
 
     def test_enrich_admin_adds_settlement_currency_after_platform_currency(self):
         lookup = build_adyen_lookup(
@@ -1354,7 +1364,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                 [
                     {
                         ADYEN_JOIN_COL: "PSP-SETTLEMENT-CCY",
-                        ADYEN_RECORD_TYPE_COL: "SentForSettle",
+                        ADYEN_RECORD_TYPE_COL: "Settled",
                         ADYEN_CURRENCY_COL: "TRY",
                         ADYEN_SETTLEMENT_CURRENCY_COL: "USD",
                     }
@@ -1376,8 +1386,8 @@ class BankIntegrationSampleTests(unittest.TestCase):
         lookup = build_adyen_lookup(
             self._adyen_df(
                 [
-                    {ADYEN_JOIN_COL: "PSP-MATCH", ADYEN_RECORD_TYPE_COL: "SentForSettle"},
-                    {ADYEN_JOIN_COL: "PSP-PLATFORM-ONLY", ADYEN_RECORD_TYPE_COL: "SentForSettle"},
+                    {ADYEN_JOIN_COL: "PSP-MATCH", ADYEN_RECORD_TYPE_COL: "Settled"},
+                    {ADYEN_JOIN_COL: "PSP-PLATFORM-ONLY", ADYEN_RECORD_TYPE_COL: "Settled"},
                 ]
             )
         )
@@ -1406,6 +1416,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(by_key.at["PSP-MATCH", MATCH_STATUS_COL], "是")
         self.assertEqual(by_key.at["PSP-NO-MATCH", MATCH_STATUS_COL], "否")
         self.assertEqual(by_key.at["PSP-PLATFORM-ONLY", MATCH_STATUS_COL], "平台多余")
+        self.assertAlmostEqual(float(by_key.at["PSP-PLATFORM-ONLY", ADYEN_MSI_FEE_COL]), 0.50, places=2)
 
     def test_enrich_admin_defaults_settlement_currency_for_huawei_and_google(self):
         admin = pd.DataFrame(
@@ -1882,8 +1893,9 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     SETTLEMENT_CURRENCY_COL: "USD",
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "100.50",
-                    "结算金额": "10.50",
+                    SETTLEMENT_AMOUNT_COL: "10.50",
                     "手续费": "-1.00",
+                    ADYEN_MSI_FEE_COL: "1.00",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-01",
@@ -1892,8 +1904,9 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     SETTLEMENT_CURRENCY_COL: "USD",
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "200.25",
-                    "结算金额": "20.25",
+                    SETTLEMENT_AMOUNT_COL: "20.25",
                     "手续费": "-2.00",
+                    ADYEN_MSI_FEE_COL: "2.00",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-01",
@@ -1902,8 +1915,9 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     SETTLEMENT_CURRENCY_COL: "USD",
                     STATUS_COL: "退款",
                     PLATFORM_AMOUNT_COL: "50.00",
-                    "结算金额": "5.00",
+                    SETTLEMENT_AMOUNT_COL: "5.00",
                     "手续费": "0.50",
+                    ADYEN_MSI_FEE_COL: "9.99",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-01",
@@ -1912,8 +1926,9 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     SETTLEMENT_CURRENCY_COL: "USD",
                     STATUS_COL: "失败",
                     PLATFORM_AMOUNT_COL: "999.00",
-                    "结算金额": "999.00",
+                    SETTLEMENT_AMOUNT_COL: "999.00",
                     "手续费": "-99.00",
+                    ADYEN_MSI_FEE_COL: "99.99",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-01",
@@ -1922,8 +1937,9 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     SETTLEMENT_CURRENCY_COL: "HKD",
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "70.00",
-                    "结算金额": "7.00",
+                    SETTLEMENT_AMOUNT_COL: "7.00",
                     "手续费": "-0.70",
+                    ADYEN_MSI_FEE_COL: "0.70",
                 },
                 {
                     TRANSACTION_DATE_COL: "2026-03-02",
@@ -1932,7 +1948,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     SETTLEMENT_CURRENCY_COL: "HKD",
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "80.00",
-                    "结算金额": "8.00",
+                    SETTLEMENT_AMOUNT_COL: "8.00",
                     "手续费": "-0.80",
                 },
                 {
@@ -1942,7 +1958,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     SETTLEMENT_CURRENCY_COL: "HKD",
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "999.00",
-                    "结算金额": "2.00",
+                    SETTLEMENT_AMOUNT_COL: "2.00",
                     "手续费": "-0.20",
                 },
                 {
@@ -1952,7 +1968,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     SETTLEMENT_CURRENCY_COL: "USD",
                     STATUS_COL: "成功",
                     PLATFORM_AMOUNT_COL: "20.00",
-                    "结算金额": "2.00",
+                    SETTLEMENT_AMOUNT_COL: "2.00",
                     "手续费": "-0.20",
                 },
             ]
@@ -1969,11 +1985,12 @@ class BankIntegrationSampleTests(unittest.TestCase):
             & (summary[SETTLEMENT_CURRENCY_COL] == "USD")
         ].iloc[0]
         self.assertEqual(adyen["成功笔数"], 2)
-        self.assertAlmostEqual(adyen["成功金额"], 30.75, places=2)
+        self.assertAlmostEqual(adyen["成功金额"], 33.75, places=2)
         self.assertEqual(adyen["退款笔数"], 1)
         self.assertAlmostEqual(adyen["退款金额"], 5.00, places=2)
-        self.assertAlmostEqual(adyen["净交易金额"], 25.75, places=2)
+        self.assertAlmostEqual(adyen["净交易金额"], 30.75, places=2)
         self.assertAlmostEqual(adyen["手续费"], 3.50, places=2)
+        self.assertEqual(adyen[SETTLEMENT_AMOUNT_COL], "")
         google_hkd = summary[
             (summary[TRANSACTION_DATE_COL] == "2026-03")
             & (summary[ADMIN_PAYMENT_COL] == "Google支付")
@@ -1982,6 +1999,47 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(google_hkd["成功笔数"], 2)
         self.assertAlmostEqual(google_hkd["成功金额"], 10.00, places=2)
         self.assertAlmostEqual(google_hkd["手续费"], 1.00, places=2)
+        self.assertEqual(google_hkd[SETTLEMENT_AMOUNT_COL], "")
+
+    def test_build_summary_sheet_uses_adyen_settlement_amount_column(self):
+        detail = pd.DataFrame(
+            [
+                {
+                    TRANSACTION_DATE_COL: "2026-03-01",
+                    ADMIN_PAYMENT_COL: "Adyen",
+                    SETTLEMENT_CURRENCY_COL: "USD",
+                    STATUS_COL: "成功",
+                    SETTLEMENT_AMOUNT_COL: "10.00",
+                    FEE_COL: "0",
+                    ADYEN_MSI_FEE_COL: "1.50",
+                }
+            ]
+        )
+        settlement = pd.DataFrame(
+            [
+                {
+                    ADYEN_SETTLE_DATE_COL: "2026-03-31",
+                    ADYEN_SETTLE_CURRENCY_COL: "USD",
+                    ADYEN_SETTLE_JOURNAL_COL: "MerchantPayout",
+                    ADYEN_SETTLE_AMOUNT_COL: "9.00",
+                },
+                {
+                    ADYEN_SETTLE_DATE_COL: "2026-03-31",
+                    ADYEN_SETTLE_CURRENCY_COL: "USD",
+                    ADYEN_SETTLE_JOURNAL_COL: "InvoiceDeduction",
+                    ADYEN_SETTLE_AMOUNT_COL: "0.50",
+                },
+            ]
+        )
+
+        summary = build_summary_sheet(detail, adyen_settle_df=settlement)
+        row = summary.iloc[0]
+
+        self.assertAlmostEqual(row["成功金额"], 11.50, places=2)
+        self.assertAlmostEqual(row["净交易金额"], 10.00, places=2)
+        self.assertAlmostEqual(row[SETTLEMENT_AMOUNT_COL], 9.00, places=2)
+        self.assertAlmostEqual(row["税金"], 0.50, places=2)
+        self.assertAlmostEqual(row["手续费"], 1.00, places=2)
 
     def test_apple_platform_summary_includes_absolute_fee(self):
         apple_raw = pd.DataFrame(

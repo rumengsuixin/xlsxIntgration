@@ -24,13 +24,14 @@ ADYEN_RECORD_TYPE_COL = "Record Type"
 ADYEN_AMOUNT_COL = "Main Amount"
 ADYEN_CURRENCY_COL = "Main Currency"
 ADYEN_SETTLEMENT_CURRENCY_COL = "Settlement Currency"
-# 只处理结算行
-ADYEN_RECORD_TYPE_PRIORITY = ["SentForSettle"]
-# 结算与手续费（均来自 SentForSettle 行，Settlement Currency）
+# 只处理已结算行
+ADYEN_RECORD_TYPE_PRIORITY = ["Settled"]
+# 结算与手续费（均来自 Settled 行，Settlement Currency）
 ADYEN_PAYABLE_COL     = "Payable (SC)"
 ADYEN_MARKUP_COL      = "Markup (SC)"
 ADYEN_SCHEME_FEES_COL = "Scheme Fees (SC)"
 ADYEN_INTERCHANGE_COL = "Interchange (SC)"
+ADYEN_MSI_FEE_COL     = "MSI手续费"
 
 # ── 华为平台 ──────────────────────────────────────────────
 HUAWEI_SHEET = "Sheet0"

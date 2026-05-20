@@ -11,7 +11,7 @@
                            │
                   data/output/订单匹配结果_{YYYYMMDD}.xlsx
 
-输出新增列（追加在 admin 原始列末尾，共 10 列）：
+输出新增列（追加在 admin 原始列末尾，共 11 列）：
     原Charge金额  - Google 原始 Charge / Charge refund 的 Amount (Buyer Currency) 绝对值
     平台订单金额  - 各平台匹配到的订单交易金额；Google 为平台币种含税总额
     平台币种      - 对应货币
@@ -22,9 +22,10 @@
                     Google: Merchant Charge - |Merchant fee|；退款: |Merchant refund| - |Merchant fee_refund|
                     华为: 空（平台报表无手续费数据）
     手续费        - 平台收取的手续费
-                    Adyen: Markup+Scheme Fees+Interchange [USD/HKD]
+                    Adyen: 0
                     Google: |Google fee Amount(Merchant Currency)|
                     华为: 空
+    MSI手续费     - Adyen 专属，Markup+Scheme Fees+Interchange [USD/HKD]
     国家税费      - Google 专属，= abs(Charge Amount (Buyer Currency)) * 0.2 * Currency Conversion Rate
 """
 
@@ -50,6 +51,7 @@ from .config3 import (
     ADYEN_INTERCHANGE_COL,
     ADYEN_JOIN_COL,
     ADYEN_MARKUP_COL,
+    ADYEN_MSI_FEE_COL,
     ADYEN_PAYABLE_COL,
     ADYEN_RECORD_TYPE_COL,
     ADYEN_RECORD_TYPE_PRIORITY,
@@ -519,20 +521,20 @@ def _dedup_lookup(df: pd.DataFrame, key_col: str, label: str) -> pd.DataFrame:
 
 
 def build_adyen_lookup(df: pd.DataFrame) -> pd.DataFrame:
-    """构建以 Psp Reference 为索引的 Adyen 查找表，只保留 SentForSettle 行。"""
+    """构建以 Psp Reference 为索引的 Adyen 查找表，只保留 Settled 行。"""
     df2 = df[df[ADYEN_JOIN_COL].str.strip() != ""].copy()
     record_types = df2[ADYEN_RECORD_TYPE_COL].str.strip()
 
     settle_mask = record_types.isin(ADYEN_RECORD_TYPE_PRIORITY)
     filtered_count = len(df2) - int(settle_mask.sum())
     if filtered_count > 0:
-        logging.info("【Adyen】过滤 %d 条非 SentForSettle 记录，不计入匹配", filtered_count)
+        logging.info("【Adyen】过滤 %d 条非 Settled 记录，不计入匹配", filtered_count)
     df2 = df2[settle_mask].copy()
 
     result = df2.drop_duplicates(subset=[ADYEN_JOIN_COL], keep="first")
     dupes = len(df2) - len(result)
     if dupes > 0:
-        logging.warning("【Adyen】同一 PSP Reference 存在多行 SentForSettle，去重 %d 行", dupes)
+        logging.warning("【Adyen】同一 PSP Reference 存在多行 Settled，去重 %d 行", dupes)
 
     keep_cols = [c for c in [
         ADYEN_JOIN_COL, ADYEN_AMOUNT_COL, ADYEN_CURRENCY_COL,
@@ -675,6 +677,13 @@ def _to_float(val) -> Optional[float]:
         return float(str(val).strip().replace(",", ""))
     except (ValueError, TypeError):
         return None
+
+
+def _adyen_msi_fee_from_row(row, prefix: str = "") -> float:
+    return sum(
+        _to_float(row.get(f"{prefix}{col}", "")) or 0.0
+        for col in (ADYEN_MARKUP_COL, ADYEN_SCHEME_FEES_COL, ADYEN_INTERCHANGE_COL)
+    )
 
 
 def _google_charge_net_amount(merchant_charge, merchant_fee) -> Optional[float]:
@@ -834,6 +843,7 @@ def _build_platform_only_rows(
             row[STATUS_COL]            = "成功"
             row[SETTLEMENT_AMOUNT_COL] = str(adyen_lk.at[key, ADYEN_PAYABLE_COL]).strip()
             row[FEE_COL] = "0"
+            row[ADYEN_MSI_FEE_COL] = str(round(_adyen_msi_fee_from_row(adyen_lk.loc[key]), 4))
             if ADYEN_DATE_COL in adyen_lk.columns:
                 row[TRANSACTION_DATE_COL] = _format_date(adyen_lk.at[key, ADYEN_DATE_COL])
             extra.append(row)
@@ -960,6 +970,7 @@ def enrich_admin(
     status_list           = []
     settlement_list       = []
     fee_list              = []
+    adyen_msi_fee_list    = []
     country_tax_list      = []
     transaction_date_list = []
     google_charge_net_list = []
@@ -971,6 +982,7 @@ def enrich_admin(
         settle_amt       = ""
         settle_ccy       = ""
         fee_amt          = ""
+        adyen_msi_fee    = ""
         country_tax      = ""
         transaction_date = ""
         original_charge_amt = ""
@@ -985,6 +997,7 @@ def enrich_admin(
             # 结算金额：Payable (SC)
             settle_amt = str(row.get(f"_a_{ADYEN_PAYABLE_COL}", "")).strip()
             fee_amt = "0"
+            adyen_msi_fee = str(round(_adyen_msi_fee_from_row(row, "_a_"), 4))
             transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
         elif src == "华为支付" and huawei_avail:
@@ -1085,6 +1098,7 @@ def enrich_admin(
         match_status_list.append(match_tag if match_tag is not None else ("是" if matched else "否"))
         settlement_list.append(settle_amt)
         fee_list.append(fee_amt)
+        adyen_msi_fee_list.append(adyen_msi_fee)
         country_tax_list.append(country_tax)
         transaction_date_list.append(transaction_date)
         google_charge_net_list.append(google_charge_net)
@@ -1115,8 +1129,9 @@ def enrich_admin(
     result.insert(admin_col_count + 5, STATUS_COL,            status_list)
     result.insert(admin_col_count + 6, SETTLEMENT_AMOUNT_COL, settlement_list)
     result.insert(admin_col_count + 7, FEE_COL,               fee_list)
-    result.insert(admin_col_count + 8, COUNTRY_TAX_COL,       country_tax_list)
-    result.insert(admin_col_count + 9, TRANSACTION_DATE_COL,  transaction_date_list)
+    result.insert(admin_col_count + 8, ADYEN_MSI_FEE_COL,     adyen_msi_fee_list)
+    result.insert(admin_col_count + 9, COUNTRY_TAX_COL,       country_tax_list)
+    result.insert(admin_col_count + 10, TRANSACTION_DATE_COL, transaction_date_list)
     result[GOOGLE_CHARGE_NET_INTERNAL_COL] = google_charge_net_list
 
     # ── 追加平台多余行（平台有、admin 无对应记录）────────────
@@ -1304,13 +1319,14 @@ def build_summary_sheet(
     adyen_settle_df: Optional[pd.DataFrame] = None,
     google_raw_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """按交易日期、平台、结算币种汇总结算金额，附手续费和税金列。
+    """按交易日期、平台、结算币种汇总结算金额，附手续费、税金和结算文件金额列。
 
     手续费来源：
         Adyen  — 来自 adyen_settle_df（月度结算文件）：手续费 = 成功金额 - 净交易金额 - 税金
         Google — 优先聚合 Google 源文件现金流行；未传源文件时聚合 result_df 中的 FEE_COL
         华为   — 来自 huawei_settle_df（月度结算文件），追加为单独的 HKD 结算行
-    Adyen 净交易金额 = 结算文件 MerchantPayout 月度合计；税金 = InvoiceDeduction 月度合计。
+    Adyen 成功金额加回 MSI 手续费；净交易金额为成功行结算金额合计。
+    Adyen 结算金额 = 结算文件 MerchantPayout 月度合计；税金 = InvoiceDeduction 月度合计。
     """
     summary_cols = [
         TRANSACTION_DATE_COL,
@@ -1325,6 +1341,7 @@ def build_summary_sheet(
         "净交易金额",
         "手续费",
         TAX_COL,
+        SETTLEMENT_AMOUNT_COL,
     ]
 
     if result_df.empty:
@@ -1361,6 +1378,7 @@ def build_summary_sheet(
         pending_mask = pd.Series(False, index=df.index)
 
     google_mask = df[ADMIN_PAYMENT_COL].astype(str).str.contains("Google", na=False)
+    adyen_mask = df[ADMIN_PAYMENT_COL].astype(str).str.strip().eq("Adyen")
     google_refund_charge_mask = google_mask & (df[STATUS_COL] == "退款")
 
     df["_success_count"]  = ((df[STATUS_COL] == "成功") & ~pending_mask).astype(int)
@@ -1380,6 +1398,15 @@ def build_summary_sheet(
         df["_fee"] = 0.0
     df["_fee_success"] = df["_fee"].where((df[STATUS_COL] == "成功") & ~pending_mask, 0.0)
     df["_fee_refund"]  = df["_fee"].where((df[STATUS_COL] == "退款") & ~pending_mask, 0.0)
+    if ADYEN_MSI_FEE_COL in df.columns:
+        msi_raw = df[ADYEN_MSI_FEE_COL].fillna("").astype(str).str.strip().str.replace(",", "", regex=False)
+        df["_adyen_msi_fee"] = pd.to_numeric(msi_raw, errors="coerce").fillna(0.0)
+    else:
+        df["_adyen_msi_fee"] = 0.0
+    df["_adyen_msi_fee_success"] = df["_adyen_msi_fee"].where(
+        adyen_mask & (df[STATUS_COL] == "成功") & ~pending_mask,
+        0.0,
+    )
 
     summary = (
         df.groupby(group_cols, as_index=False)
@@ -1392,14 +1419,25 @@ def build_summary_sheet(
             退款待确认金额=("_pending_amount", "sum"),
             _fee_success=("_fee_success", "sum"),
             _fee_refund=("_fee_refund", "sum"),
+            _adyen_msi_fee_success=("_adyen_msi_fee_success", "sum"),
         )
         .sort_values(group_cols, kind="stable")
         .reset_index(drop=True)
     )
+    adyen_summary_mask = summary[ADMIN_PAYMENT_COL].astype(str).str.strip().eq("Adyen")
+    summary.loc[adyen_summary_mask, "成功金额"] = (
+        summary.loc[adyen_summary_mask, "成功金额"]
+        + summary.loc[adyen_summary_mask, "_adyen_msi_fee_success"]
+    )
     summary["净交易金额"] = summary["成功金额"] - summary["退款金额"]
+    summary.loc[adyen_summary_mask, "净交易金额"] = (
+        summary.loc[adyen_summary_mask, "成功金额"]
+        - summary.loc[adyen_summary_mask, "_adyen_msi_fee_success"]
+    )
     summary["手续费"] = (summary["_fee_success"] - summary["_fee_refund"]).round(4)
-    summary = summary.drop(columns=["_fee_success", "_fee_refund"])
+    summary = summary.drop(columns=["_fee_success", "_fee_refund", "_adyen_msi_fee_success"])
     summary[TAX_COL] = 0.0
+    summary[SETTLEMENT_AMOUNT_COL] = ""
 
     google_cashflow_summary = build_google_cashflow_summary(google_raw_df)
     if not google_cashflow_summary.empty:
@@ -1438,7 +1476,7 @@ def build_summary_sheet(
                 .reset_index(drop=True)
             )
 
-    # ── ADYEN 结算文件：替换净交易金额、手续费、税金 ────────────
+    # ── ADYEN 结算文件：写入结算金额、手续费、税金 ────────────
     if adyen_settle_df is not None and not adyen_settle_df.empty:
         monthly = build_adyen_settlement_monthly(adyen_settle_df)
         if not monthly.empty:
@@ -1449,8 +1487,9 @@ def build_summary_sheet(
                 )
                 adyen_rows["_adyen_payout"] = adyen_rows["_adyen_payout"].fillna(0.0)
                 adyen_rows["_adyen_tax"]    = adyen_rows["_adyen_tax"].fillna(0.0)
-                # 净交易金额 = MerchantPayout（实际到账）
-                adyen_rows["净交易金额"] = adyen_rows["_adyen_payout"].round(4)
+                # 结算金额 = MerchantPayout（实际到账）
+                adyen_rows[SETTLEMENT_AMOUNT_COL] = adyen_rows["_adyen_payout"].round(4)
+                adyen_rows["净交易金额"] = adyen_rows["净交易金额"].round(4)
                 adyen_rows[TAX_COL]     = adyen_rows["_adyen_tax"].round(4)
                 # 手续费 = 成功金额（订单匹配结果）- 净交易金额 - 税金
                 adyen_rows["手续费"] = (
@@ -1466,6 +1505,7 @@ def build_summary_sheet(
                 logging.info("ADYEN 结算文件已读取，但汇总表中未找到 Adyen 平台行，结算数据未应用")
 
     summary["手续费"] = pd.to_numeric(summary["手续费"], errors="coerce").abs().round(4)
+    summary[SETTLEMENT_AMOUNT_COL] = summary[SETTLEMENT_AMOUNT_COL].fillna("")
     for _col in ("退款待确认笔数", "退款待确认金额"):
         if _col in summary.columns:
             summary[_col] = summary[_col].fillna(0)

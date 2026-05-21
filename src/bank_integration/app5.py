@@ -22,6 +22,7 @@
 """
 
 import logging
+import re
 from datetime import date
 from pathlib import Path
 from typing import List, Optional, Set
@@ -94,6 +95,21 @@ from .config5 import (
     PHONECARD_ORDER_TYPE_COL_5,
     PHONECARD_PRIZE_COL_5,
     PHONECARD_PREFERRED_SHEET_KEY_5,
+    EPIN_PLATFORM_NAME_5,
+    EPIN_SIPARISLER_ORDER_ID_COL_5,
+    EPIN_SIPARISLER_STATUS_COL_5,
+    EPIN_SIPARISLER_ORDER_NO_COL_5,
+    EPIN_SIPARISLER_PRODUCT_COL_5,
+    EPIN_SIPARISLER_UNIT_PRICE_COL_5,
+    EPIN_SIPARISLER_AMOUNT_COL_5,
+    EPIN_SIPARISLER_QTY_COL_5,
+    EPIN_SIPARISLER_CONFIRM_TIME_COL_5,
+    EPIN_PINLER_ORDER_ID_COL_5,
+    EPIN_PINLER_ORDER_NO_COL_5,
+    EPIN_PINLER_PIN_ID_COL_5,
+    EPIN_PINLER_PIN_CODE_COL_5,
+    EPIN_ORG_PATTERN_5,
+    EPIN_ADMIN_JOIN_COL_5,
     MATCH_STATUS_COL_5,
     PLATFORM_ORDER_NO_COL_5,
     PLATFORM_AMOUNT_COL_5,
@@ -137,6 +153,12 @@ PLATFORM_STATUS_MAP_5 = {
         "失败": "失败",
         "处理中": "处理中",
         "关闭": "关闭",
+    },
+    "EPIN": {
+        "Başarılı":  "成功",    # 土耳其语"成功"
+        "Başarısız": "失败",    # 土耳其语"失败"
+        "Beklemede": "处理中",  # 土耳其语"等待中"
+        "İptal":     "关闭",    # 土耳其语"取消"
     },
 }
 
@@ -821,6 +843,106 @@ def build_phonecard_lookup_5(df: pd.DataFrame) -> pd.DataFrame:
     return result.set_index(PHONECARD_JOIN_COL_5)
 
 
+def read_epin_siparisler_5(filepath: Path) -> pd.DataFrame:
+    """读取 epin 订单列表文件（epin_siparisler_*）。"""
+    df = pd.read_excel(filepath, engine="openpyxl", dtype=str)
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.dropna(how="all").fillna("")
+    logging.info("【EPIN siparisler】%s 共 %d 行", filepath.name, len(df))
+    return df
+
+
+def read_epin_pinler_5(filepath: Path) -> pd.DataFrame:
+    """读取 epin pin 码列表文件（epin_pinler_*）。"""
+    df = pd.read_excel(filepath, engine="openpyxl", dtype=str)
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.dropna(how="all").fillna("")
+    logging.info("【EPIN pinler】%s 共 %d 行", filepath.name, len(df))
+    return df
+
+
+def build_epin_lookup_5(
+    siparisler_df: pd.DataFrame,
+    pinler_df: pd.DataFrame,
+) -> Optional[pd.DataFrame]:
+    """构建以 Pin码 为索引的 epin 查找表。
+
+    匹配路径：
+      admin.第三方订单号（pin码）
+        → epin_pinler.Pin码  →  epin_pinler.[Pin ID, 订单ID, 订单号]
+        → epin_siparisler.(订单ID, 订单号)  →  [单价(USD), 产品, 确认时间, 订单状态]
+
+    JOIN 键同时使用「订单ID + 订单号」：单独用订单ID可能因平台数据问题命中多行，
+    双键联合可精确定位唯一行，作为平台层面的兜底容错。
+
+    注：pandas 默认读取时 Pin码 列为明文；
+    用 openpyxl data_only=True 时会显示为 ****，属正常差异。
+    """
+    # ── 1. 清洗 pinler：去掉脱敏行（全星号）和空值，保留明文 Pin码 ──────────
+    p = pinler_df.copy()
+    p[EPIN_PINLER_PIN_CODE_COL_5] = p[EPIN_PINLER_PIN_CODE_COL_5].str.strip()
+    p = p[~p[EPIN_PINLER_PIN_CODE_COL_5].str.match(r"^\*+$", na=False)]
+    p = p[p[EPIN_PINLER_PIN_CODE_COL_5] != ""]
+
+    if p.empty:
+        logging.warning("【EPIN】epin_pinler 无有效明文 Pin码，跳过 epin 匹配")
+        return None
+
+    # ── 2. 去重：同一 Pin码 保留首行 ─────────────────────────────────────────
+    before = len(p)
+    p = p.drop_duplicates(subset=[EPIN_PINLER_PIN_CODE_COL_5])
+    if len(p) < before:
+        logging.warning("【EPIN】epin_pinler 存在 %d 个重复 Pin码，已保留首行", before - len(p))
+
+    # ── 3. 清洗 siparisler，按「订单ID + 订单号」双键去重 ─────────────────────
+    join_keys_sip = [EPIN_SIPARISLER_ORDER_ID_COL_5, EPIN_SIPARISLER_ORDER_NO_COL_5]
+    s = siparisler_df.copy()
+    for col in join_keys_sip:
+        if col in s.columns:
+            s[col] = s[col].str.strip()
+    before_s = len(s)
+    s = s.drop_duplicates(subset=[k for k in join_keys_sip if k in s.columns])
+    if len(s) < before_s:
+        logging.warning("【EPIN】epin_siparisler 存在 %d 行重复(订单ID+订单号)，已保留首行",
+                        before_s - len(s))
+
+    # ── 4. pinler LEFT JOIN siparisler（双键：订单ID + 订单号）──────────────
+    # 两份文件的列名相同（"订单ID"、"订单号"），直接 on= 即可
+    pin_cols = [c for c in [
+        EPIN_PINLER_PIN_CODE_COL_5,
+        EPIN_PINLER_PIN_ID_COL_5,
+        EPIN_PINLER_ORDER_ID_COL_5,
+        EPIN_PINLER_ORDER_NO_COL_5,
+    ] if c in p.columns]
+
+    sip_cols = [c for c in [
+        EPIN_SIPARISLER_ORDER_ID_COL_5,
+        EPIN_SIPARISLER_ORDER_NO_COL_5,
+        EPIN_SIPARISLER_UNIT_PRICE_COL_5,
+        EPIN_SIPARISLER_PRODUCT_COL_5,
+        EPIN_SIPARISLER_CONFIRM_TIME_COL_5,
+        EPIN_SIPARISLER_STATUS_COL_5,
+    ] if c in s.columns]
+
+    # 两侧 JOIN 列名相同，用 on= 避免产生 _x/_y 后缀
+    on_cols = [c for c in [EPIN_PINLER_ORDER_ID_COL_5, EPIN_PINLER_ORDER_NO_COL_5]
+               if c in pin_cols and c in sip_cols]
+
+    merged = p[pin_cols].merge(s[sip_cols], on=on_cols, how="left")
+
+    # ── 5. merge 后若仍有同一 Pin码 多行，打 warning 并保留首行 ───────────────
+    dup_mask = merged.duplicated(subset=[EPIN_PINLER_PIN_CODE_COL_5], keep=False)
+    if dup_mask.any():
+        n_dup = dup_mask.sum()
+        logging.warning("【EPIN】双键 JOIN 后仍有 %d 行重复 Pin码，保留首行", n_dup)
+        merged = merged.drop_duplicates(subset=[EPIN_PINLER_PIN_CODE_COL_5])
+
+    merged = merged.fillna("")
+    lookup = merged.set_index(EPIN_PINLER_PIN_CODE_COL_5)
+    logging.info("【EPIN】查找表共 %d 条（有效 Pin码数）", len(lookup))
+    return lookup
+
+
 # ---------------------------------------------------------------------------
 # 主匹配逻辑
 # ---------------------------------------------------------------------------
@@ -834,6 +956,7 @@ def _build_platform_only_rows_5(
     superpay_lk: Optional[pd.DataFrame],
     wangguypay_lk: Optional[pd.DataFrame],
     phonecard_lk: Optional[pd.DataFrame],
+    epin_lk: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """构建平台有、admin 无的多余行（MATCH_STATUS_COL_5 = "平台多余"）。
 
@@ -942,6 +1065,29 @@ def _build_platform_only_rows_5(
             row[TRANSACTION_DATE_COL_5]  = _format_date_5(pc_time)
             extra.append(row)
 
+    # ── epin 多余行（pin码在 epin 平台有、admin 无）────────────────────────────
+    # 关联键与 IBFYPAY 相同（admin.第三方订单号），复用 admin_ibfpay_keys 作比对集合
+    if epin_lk is not None:
+        for key in epin_lk.index:
+            k = str(key).strip()
+            if not k or k in admin_ibfpay_keys:
+                continue
+            row: dict = {c: "" for c in result_cols}
+            row[ADMIN_TP_ORDER_COL_5]    = k   # 第三方订单号 = pin码
+            row[MATCH_STATUS_COL_5]      = "平台多余"
+            row[ADMIN_ORG_COL_5]         = EPIN_PLATFORM_NAME_5
+            ep_pin_id = str(epin_lk.at[key, EPIN_PINLER_PIN_ID_COL_5]).strip()  if EPIN_PINLER_PIN_ID_COL_5          in epin_lk.columns else ""
+            ep_amt    = str(epin_lk.at[key, EPIN_SIPARISLER_UNIT_PRICE_COL_5]).strip() if EPIN_SIPARISLER_UNIT_PRICE_COL_5  in epin_lk.columns else ""
+            ep_status = str(epin_lk.at[key, EPIN_SIPARISLER_STATUS_COL_5]).strip()     if EPIN_SIPARISLER_STATUS_COL_5      in epin_lk.columns else ""
+            ep_time   = str(epin_lk.at[key, EPIN_SIPARISLER_CONFIRM_TIME_COL_5]).strip() if EPIN_SIPARISLER_CONFIRM_TIME_COL_5 in epin_lk.columns else ""
+            row[PLATFORM_ORDER_NO_COL_5] = ep_pin_id
+            row[PLATFORM_AMOUNT_COL_5]   = ep_amt
+            row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5(EPIN_PLATFORM_NAME_5, ep_status)
+            row[FEE_COL_5]               = ""
+            row[ARRIVE_AMOUNT_COL_5]     = ep_amt
+            row[TRANSACTION_DATE_COL_5]  = _format_date_5(ep_time)
+            extra.append(row)
+
     if not extra:
         return pd.DataFrame(columns=result_cols)
     return pd.DataFrame(extra, columns=result_cols)
@@ -953,30 +1099,19 @@ def enrich_admin_5(
     superpay_lk: Optional[pd.DataFrame],
     wangguypay_lk: Optional[pd.DataFrame],
     phonecard_lk: Optional[pd.DataFrame] = None,
+    epin_lk: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """以 admin 为主表，通过订单号与三平台查找表 left-join，追加新增列。
+    """以 admin 为主表，通过订单号与各平台查找表 left-join，追加新增列。
 
-    匹配逻辑（优先级：IBFYPAY > SUPERPAY > WANGGUYPAY）：
-      - IBFYPAY：以 admin.IBFYPAY_ADMIN_JOIN_COL_5（第三方订单号）↔ ibfpay_lk.index（系统流水号）关联
-      - SUPERPAY：以 admin.ADMIN_JOIN_COL_5（订单号）↔ 平台 lookup.index（商户订单号）关联
-      - WANGGUYPAY：以 admin.ADMIN_TP_ORDER_COL_5（第三方订单号）↔ 平台 lookup.index（平台订单号）关联
-      - 话费卡：以 admin.ADMIN_JOIN_COL_5（订单号）↔ phonecard_lk.index（订单号）关联
-      - 任一平台命中 → 是否匹配=是，填充该平台的流水号/代付金额/手续费/到账金额/交易日期
-      - 均未命中 → 是否匹配=否
+    匹配逻辑（优先级：IBFYPAY > SUPERPAY > WANGGUYPAY > 话费卡 > EPIN）：
+      - IBFYPAY：以 admin.第三方订单号 ↔ ibfpay_lk.index（系统流水号）关联
+      - SUPERPAY：以 admin.订单号 ↔ superpay_lk.index（商户订单号）关联
+      - WANGGUYPAY：以 admin.第三方订单号 ↔ wangguypay_lk.index（平台订单号）关联
+      - 话费卡：以 admin.订单号 ↔ phonecard_lk.index（订单号）关联
+      - EPIN（TODO）：仅对机构为纯数字的行，以 admin.第三方订单号（pin码）
+        ↔ epin_lk.index 关联；build_epin_lookup_5 实现后生效
+      - 任一平台命中 → 是否匹配=是，均未命中 → 是否匹配=否
       - 追加平台多余行（_build_platform_only_rows_5）
-
-    注意：
-      - 理论上一笔订单只在一个平台出现，命中多平台时打 warning
-      - IBFYPAY 到账金额 = 代付金额 - 手续费（由此函数计算填入 ARRIVE_AMOUNT_COL_5）
-
-    Args:
-        admin_df: read_admin_5 返回的 admin 主表。
-        ibfpay_lk: build_ibfpay_lookup_5 返回值，可为 None（文件不存在时）。
-        superpay_lk: build_superpay_lookup_5 返回值，可为 None。
-        wangguypay_lk: build_wangguypay_lookup_5 返回值，可为 None。
-
-    Returns:
-        admin 原始列 + OUTPUT_NEW_COLS_5 的完整 DataFrame。
     """
     result = admin_df.copy()
     expected_rows = len(admin_df)
@@ -1002,6 +1137,7 @@ def enrich_admin_5(
     superpay_avail   = superpay_lk is not None  and not superpay_lk.empty
     wangguypay_avail = wangguypay_lk is not None and not wangguypay_lk.empty
     phonecard_avail  = phonecard_lk is not None and not phonecard_lk.empty
+    epin_avail       = epin_lk is not None       and not epin_lk.empty
 
     if ibfpay_avail:
         result = _safe_merge(result, ibfpay_lk, IBFYPAY_ADMIN_JOIN_COL_5, "_i_", "IBFYPAY")
@@ -1011,6 +1147,8 @@ def enrich_admin_5(
         result = _safe_merge(result, wangguypay_lk, ADMIN_TP_ORDER_COL_5, "_w_", "WANGGUYPAY")
     if phonecard_avail:
         result = _safe_merge(result, phonecard_lk, ADMIN_JOIN_COL_5, "_p_", "PHONECARD")
+    if epin_avail:
+        result = _safe_merge(result, epin_lk, EPIN_ADMIN_JOIN_COL_5, "_e_", "EPIN")
 
     match_status_list      = []
     platform_order_no_list = []
@@ -1060,6 +1198,13 @@ def enrich_admin_5(
         pc_time   = str(row.get(f"_p_{PHONECARD_DATE_COL_5}",        "")).strip() if phonecard_avail else ""
         pc_hit    = pc_amt != ""
 
+        # epin 命中判断（仅对机构为纯数字的行；join 键待 build_epin_lookup_5 实现后生效）
+        org_val  = str(row.get(ADMIN_ORG_COL_5, "")).strip()
+        is_epin_candidate = bool(re.match(EPIN_ORG_PATTERN_5, org_val)) if org_val else False
+        # TODO: epin_lk 目前恒为 None，ep_hit 恒为 False；build_epin_lookup_5 实现后此处自动生效
+        ep_amt   = str(row.get(f"_e_{EPIN_SIPARISLER_UNIT_PRICE_COL_5}", "")).strip() if (epin_avail and is_epin_candidate) else ""
+        ep_hit   = ep_amt != ""
+
         if ibf_hit and (sp_hit or wg_hit or pc_hit):
             logging.warning(
                 "订单 %s 同时命中多个平台，取 IBFYPAY",
@@ -1108,6 +1253,18 @@ def enrich_admin_5(
             arrive_amount_list.append(pc_amt)
             transaction_date_list.append(_format_date_5(pc_time))
             org_output_list.append(PHONECARD_PLATFORM_NAME_5)
+        elif ep_hit:
+            ep_pin_id  = str(row.get(f"_e_{EPIN_PINLER_PIN_ID_COL_5}",          "")).strip() if epin_avail else ""
+            ep_status  = str(row.get(f"_e_{EPIN_SIPARISLER_STATUS_COL_5}",       "")).strip() if epin_avail else ""
+            ep_time    = str(row.get(f"_e_{EPIN_SIPARISLER_CONFIRM_TIME_COL_5}", "")).strip() if epin_avail else ""
+            match_status_list.append("是")
+            platform_order_no_list.append(ep_pin_id)
+            platform_amount_list.append(ep_amt)
+            platform_status_list.append(_normalize_platform_status_5(EPIN_PLATFORM_NAME_5, ep_status))
+            fee_list.append("")
+            arrive_amount_list.append(ep_amt)
+            transaction_date_list.append(_format_date_5(ep_time))
+            org_output_list.append(EPIN_PLATFORM_NAME_5)
         else:
             match_status_list.append("否")
             platform_order_no_list.append("")
@@ -1156,6 +1313,7 @@ def enrich_admin_5(
         superpay_lk if superpay_avail else None,
         wangguypay_lk if wangguypay_avail else None,
         phonecard_lk if phonecard_avail else None,
+        epin_lk if epin_avail else None,
     )
 
     if not extra_df.empty:
@@ -1480,10 +1638,25 @@ def main() -> int:
         phonecard_lk = build_phonecard_lookup_5(raw)
         logging.info("话费卡 查找表共 %d 条", len(phonecard_lk))
 
+    # ── epin ──────────────────────────────────────────────────
+    epin_siparisler_df: Optional[pd.DataFrame] = None
+    epin_pinler_df: Optional[pd.DataFrame] = None
+    epin_lk: Optional[pd.DataFrame] = None
+    if files.get("epin_siparisler"):
+        frames = [read_epin_siparisler_5(fp) for fp in files["epin_siparisler"]]
+        epin_siparisler_df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        logging.info("EPIN 订单列表共 %d 行", len(epin_siparisler_df))
+    if files.get("epin_pinler"):
+        frames = [read_epin_pinler_5(fp) for fp in files["epin_pinler"]]
+        epin_pinler_df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        logging.info("EPIN pin 码列表共 %d 行", len(epin_pinler_df))
+    if epin_siparisler_df is not None and epin_pinler_df is not None:
+        epin_lk = build_epin_lookup_5(epin_siparisler_df, epin_pinler_df)
+
     platform_balance_summary = build_platform_balance_summary_5(ibfpay_balance_raw, wangguypay_raw)
 
     # ── 匹配 ──────────────────────────────────────────────────
-    result_df = enrich_admin_5(admin_df, ibfpay_lk, superpay_lk, wangguypay_lk, phonecard_lk)
+    result_df = enrich_admin_5(admin_df, ibfpay_lk, superpay_lk, wangguypay_lk, phonecard_lk, epin_lk)
     log_match_stats_5(result_df)
 
     # ── 输出 ──────────────────────────────────────────────────

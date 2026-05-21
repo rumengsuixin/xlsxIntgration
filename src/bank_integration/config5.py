@@ -104,11 +104,13 @@ PHONECARD_PREFERRED_SHEET_KEY_5 = "汇总"
 # ── 文件识别前缀映射（stem.lower() startswith 任意一个前缀即命中）─────────────
 # wangupay-（实际文件名少一个"g"）和 wangguypay- 均支持
 PLATFORM_PREFIXES_5: dict = {
-    "admin":      ["admin-"],
-    "ibfpay":     ["ibfpay-", "ibf平台"],    # ibf平台 识别资金流水账格式文件
-    "superpay":   ["superpay-"],
-    "wangguypay": ["wangupay-", "wangguypay-", "wangupay资金记录", "wangguypay资金记录"],
-    "phonecard":  ["okey话费卡结算"],
+    "admin":           ["admin-"],
+    "ibfpay":          ["ibfpay-", "ibf平台"],    # ibf平台 识别资金流水账格式文件
+    "superpay":        ["superpay-"],
+    "wangguypay":      ["wangupay-", "wangguypay-", "wangupay资金记录", "wangguypay资金记录"],
+    "phonecard":       ["okey话费卡结算"],
+    "epin_siparisler": ["epin_siparisler_"],
+    "epin_pinler":     ["epin_pinler_"],
 }
 
 # ── 输出新增列（追加在 admin 原始列末尾，共 7 列）──────────────────────────
@@ -147,3 +149,27 @@ SUMMARY_BALANCE_COLS_5 = [
 BALANCE_RECHARGE_KEYWORDS_5 = ("充值", "入金", "加款", "手动增加")
 BALANCE_RECHARGE_EXCLUDE_KEYWORDS_5 = ("退", "驳回", "退款", "退还", "返还", "冲正")
 BALANCE_WITHDRAWAL_KEYWORDS_5 = ("提现", "出金", "提款")
+
+# ── epin 平台（订单列表 epin_siparisler + pin码列表 epin_pinler）──────────────
+EPIN_PLATFORM_NAME_5 = "EPIN"
+
+# epin 订单列表（siparisler）列名
+EPIN_SIPARISLER_ORDER_ID_COL_5     = "订单ID"
+EPIN_SIPARISLER_STATUS_COL_5       = "订单状态"
+EPIN_SIPARISLER_ORDER_NO_COL_5     = "订单号"
+EPIN_SIPARISLER_PRODUCT_COL_5      = "产品"
+EPIN_SIPARISLER_UNIT_PRICE_COL_5   = "单价(USD)"
+EPIN_SIPARISLER_AMOUNT_COL_5       = "金额(USD)"
+EPIN_SIPARISLER_QTY_COL_5          = "数量"
+EPIN_SIPARISLER_CONFIRM_TIME_COL_5 = "确认时间"
+
+# epin pin码列表（pinler）列名
+EPIN_PINLER_ORDER_ID_COL_5  = "订单ID"
+EPIN_PINLER_ORDER_NO_COL_5  = "订单号"
+EPIN_PINLER_PIN_ID_COL_5    = "Pin ID"
+EPIN_PINLER_PIN_CODE_COL_5  = "Pin码"
+
+# admin 中 epin 订单识别规则：机构字段为纯数字
+EPIN_ORG_PATTERN_5    = r"^\d+$"
+# admin 侧关联键（第三方订单号存 pin 码值）
+EPIN_ADMIN_JOIN_COL_5 = "第三方订单号"

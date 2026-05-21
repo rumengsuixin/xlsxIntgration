@@ -229,6 +229,53 @@ def _is_show_more_visible(op: ChromeOperator) -> bool:
     ))
 
 
+def _search_and_extract_by_pin(
+    op: ChromeOperator,
+    pin_code: str,
+    click_interval_seconds: int = EPIN_ORDER_LOAD_INTERVAL_SECONDS,
+) -> list:
+    """通过搜索框输入 PIN 码，提取该 PIN 对应的（隐藏）订单列表。"""
+    import json as _json
+
+    try:
+        op.wait_for_condition(
+            "!!document.querySelector('input#pin')",
+            timeout=10.0,
+        )
+    except TimeoutError:
+        logger.warning("找不到搜索框（input#pin），跳过 PIN 搜索：%s", pin_code)
+        return []
+
+    js_fill_and_submit = (
+        "(function(){"
+        "var el=document.querySelector('input#pin');"
+        "if(!el)return false;"
+        f"el.value={_json.dumps(pin_code)};"
+        "el.dispatchEvent(new Event('input',{bubbles:true}));"
+        "var form=el.closest('form');"
+        "if(form){form.submit();}else{"
+        "el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true}));}"
+        "return true;"
+        "})()"
+    )
+    if not op.evaluate(js_fill_and_submit):
+        logger.warning("填入搜索框失败，跳过 PIN 搜索：%s", pin_code)
+        return []
+
+    logger.info("已提交 PIN 搜索：%s，等待页面更新...", pin_code)
+    time.sleep(1.5)
+    try:
+        op.wait_for_condition("!!document.querySelector('#myTable')", timeout=15.0)
+    except TimeoutError:
+        logger.warning("搜索后等待 #myTable 超时，PIN：%s", pin_code)
+        return []
+
+    _load_all_orders(op, click_interval_seconds=click_interval_seconds)
+    orders = _extract_orders(op)
+    logger.info("PIN '%s' 搜索提取 %d 条订单", pin_code, len(orders))
+    return orders
+
+
 def _load_all_orders(
     op: ChromeOperator,
     max_clicks: int = 200,
@@ -291,6 +338,7 @@ def _save_orders_excel(rows: list, output_dir: Path) -> Path:
             )
     df = df.rename(columns=_COLUMN_MAP)
     df = df[[v for v in _COLUMN_MAP.values() if v in df.columns]]
+    df = df.drop_duplicates(subset=['订单ID'], keep='first')
 
     filename = output_dir / f"epin_siparisler_{date.today():%Y%m%d}.xlsx"
     df.to_excel(filename, index=False, engine='openpyxl')
@@ -549,7 +597,18 @@ def main() -> int:
         default='all',
         help='all=订单+PIN（默认），orders=仅抓订单列表，pins=仅提取PIN码，retry-locked=仅补抓锁定数量=1的漏抓订单',
     )
+    parser.add_argument(
+        '--search-pin',
+        action='append',
+        dest='search_pins',
+        default=[],
+        metavar='PIN_CODE',
+        help='通过搜索框输入 PIN 码提取隐藏订单，可多次指定',
+    )
     args = parser.parse_args()
+    # 提供了 --search-pin 时只做订单列表抓取，不自动触发 pinler 提取
+    if args.search_pins and args.mode == 'all':
+        args.mode = 'orders'
     only_orders   = (args.mode == 'orders')
     only_pins     = (args.mode == 'pins')
     retry_locked  = (args.mode == 'retry-locked')
@@ -674,19 +733,94 @@ def main() -> int:
                 logger.info("等待订单表格加载...")
                 op.wait_for_condition("!!document.querySelector('#myTable')", timeout=15.0)
 
-                # 9. 反复点击"加载更多"直到数据全部展示
+                # 9. 若传入 PIN 码，先逐一搜索并收集隐藏订单
+                hidden_orders: list = []
+                seen_hidden_ids: set = set()
+                for pin_code in args.search_pins:
+                    logger.info("正在通过搜索提取隐藏订单，PIN：%s", pin_code)
+                    for o in _search_and_extract_by_pin(
+                        op, pin_code, EPIN_ORDER_LOAD_INTERVAL_SECONDS
+                    ):
+                        sid = o.get('siparis_id', '')
+                        if sid and sid not in seen_hidden_ids:
+                            seen_hidden_ids.add(sid)
+                            hidden_orders.append(o)
+                    logger.info("返回完整订单列表：%s", TARGET_URL_EPIN)
+                    op.navigate(TARGET_URL_EPIN)
+                    op.wait_for_condition("!!document.querySelector('#myTable')", timeout=15.0)
+                if hidden_orders:
+                    logger.info("PIN 搜索共收集 %d 条隐藏订单（去重后）", len(hidden_orders))
+
+                # 10. 反复点击"加载更多"直到数据全部展示
                 _load_all_orders(op, click_interval_seconds=EPIN_ORDER_LOAD_INTERVAL_SECONDS)
 
-                # 10. 结构化提取全部订单
+                # 11. 结构化提取全部订单
                 rows = _extract_orders(op)
+
+                # 12. 合并隐藏订单（只追加完整列表中不存在的）
+                if hidden_orders:
+                    regular_ids = {o.get('siparis_id', '') for o in rows}
+                    new_hidden = [
+                        o for o in hidden_orders
+                        if o.get('siparis_id', '') not in regular_ids
+                    ]
+                    if new_hidden:
+                        logger.info("合并 %d 条仅通过搜索可见的隐藏订单", len(new_hidden))
+                        rows = rows + new_hidden
+
                 if not rows:
                     logger.warning("未提取到任何订单数据，请确认页面已正确加载")
                     return 1
 
-                # 11. 写入 Excel
+                # 13. 写入 Excel
                 logger.info("共提取 %d 条订单记录，正在写入 Excel...", len(rows))
                 output_file = _save_orders_excel(rows, OUTPUT_DIR_EPIN)
                 logger.info("已输出：%s", output_file)
+            elif args.search_pins:
+                # 已有订单文件，仅执行 PIN 搜索补充隐藏订单
+                logger.info("已有订单文件（%d 条），仅执行 PIN 搜索补充隐藏订单...", len(rows))
+                op.navigate(TARGET_URL_EPIN)
+                op.wait_for_condition("!!document.querySelector('#myTable')", timeout=15.0)
+
+                # rows 只有 siparis_id/siparis_no 两列，仅用于去重判断
+                existing_ids = {o.get('siparis_id', '') for o in rows}
+                hidden_orders: list = []
+                seen_hidden_ids: set = set()
+                for pin_code in args.search_pins:
+                    logger.info("正在通过搜索提取隐藏订单，PIN：%s", pin_code)
+                    for o in _search_and_extract_by_pin(op, pin_code, EPIN_ORDER_LOAD_INTERVAL_SECONDS):
+                        sid = o.get('siparis_id', '')
+                        if sid and sid not in seen_hidden_ids:
+                            seen_hidden_ids.add(sid)
+                            hidden_orders.append(o)
+                    logger.info("返回完整订单列表：%s", TARGET_URL_EPIN)
+                    op.navigate(TARGET_URL_EPIN)
+                    op.wait_for_condition("!!document.querySelector('#myTable')", timeout=15.0)
+
+                new_hidden = [o for o in hidden_orders if o.get('siparis_id', '') not in existing_ids]
+                if new_hidden:
+                    import pandas as _pd
+                    logger.info("合并 %d 条仅通过搜索可见的隐藏订单", len(new_hidden))
+                    # 全列读取已有文件，避免覆盖原始数据
+                    df_existing = _pd.read_excel(orders_file, engine='openpyxl', dtype=str).fillna('')
+                    # 对新行做与 _save_orders_excel 相同的清洗和列名转换
+                    df_new = _pd.DataFrame(new_hidden)
+                    for col in _DATE_COLS:
+                        if col in df_new.columns:
+                            df_new[col] = df_new[col].apply(_parse_tr_date)
+                    for col in _AMOUNT_COLS:
+                        if col in df_new.columns:
+                            df_new[col] = df_new[col].apply(
+                                lambda v: v.split()[0] if isinstance(v, str) and v.strip() else v
+                            )
+                    df_new = df_new.rename(columns=_COLUMN_MAP)
+                    df_new = df_new[[v for v in _COLUMN_MAP.values() if v in df_new.columns]]
+                    df_merged = _pd.concat([df_existing, df_new], ignore_index=True)
+                    df_merged = df_merged.drop_duplicates(subset=['订单ID'], keep='first')
+                    df_merged.to_excel(orders_file, index=False, engine='openpyxl')
+                    logger.info("已更新：%s", orders_file)
+                else:
+                    logger.info("PIN 搜索未发现新的隐藏订单")
             else:
                 logger.info("使用已有订单文件，共 %d 条记录", len(rows))
 

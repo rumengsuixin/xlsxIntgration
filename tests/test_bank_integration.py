@@ -84,6 +84,10 @@ from src.bank_integration.config5 import (
     ADMIN_TP_ORDER_COL_5,
     ARRIVE_AMOUNT_COL_5,
     FEE_COL_5,
+    EPIN_PINLER_PIN_ID_COL_5,
+    EPIN_SIPARISLER_CONFIRM_TIME_COL_5,
+    EPIN_SIPARISLER_STATUS_COL_5,
+    EPIN_SIPARISLER_UNIT_PRICE_COL_5,
     IBFYPAY_AMOUNT_COL_5,
     IBFYPAY_ADMIN_JOIN_COL_5,
     IBFYPAY_BEGIN_AMOUNT_COL_5,
@@ -105,11 +109,13 @@ from src.bank_integration.config5 import (
     PHONECARD_PRIZE_COL_5,
     PHONECARD_STATUS_COL_5,
     PLATFORM_AMOUNT_COL_5,
+    PLATFORM_CURRENCY_COL_5,
     PLATFORM_ORDER_NO_COL_5,
     PLATFORM_STATUS_COL_5,
     SUPERPAY_ACTUAL_COL_5,
     SUPERPAY_AMOUNT_COL_5,
     SUPERPAY_CREATE_TIME_COL_5,
+    SUPERPAY_CURRENCY_COL_5,
     SUPERPAY_FINISH_TIME_COL_5,
     SUPERPAY_JOIN_COL_5,
     SUPERPAY_PLATFORM_NO_COL_5,
@@ -206,6 +212,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
     payout_summary_cols = [
         "交易月份",
         "机构",
+        PLATFORM_CURRENCY_COL_5,
         "笔数",
         SUMMARY_BEGIN_BALANCE_COL_5,
         "代付金额合计",
@@ -344,7 +351,72 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         self.assertEqual(keyed["ADMIN-ORDER-1"][MATCH_STATUS_COL_5], "是")
         self.assertEqual(keyed["ADMIN-ORDER-1"][PLATFORM_ORDER_NO_COL_5], "P100")
+        self.assertEqual(keyed["ADMIN-ORDER-1"][PLATFORM_CURRENCY_COL_5], "TRY")
         self.assertEqual(keyed["P100"][MATCH_STATUS_COL_5], "否")
+
+    def test_payout_enrich_populates_platform_currency(self):
+        admin = pd.DataFrame(
+            [
+                {ADMIN_JOIN_COL_5: "IBF-ADMIN", ADMIN_TP_ORDER_COL_5: "IBF-1", ADMIN_ORG_COL_5: "IBFYPAY"},
+                {ADMIN_JOIN_COL_5: "SP-ADMIN", ADMIN_TP_ORDER_COL_5: "", ADMIN_ORG_COL_5: "SUPERPAY"},
+                {ADMIN_JOIN_COL_5: "WG-ADMIN", ADMIN_TP_ORDER_COL_5: "WG-1", ADMIN_ORG_COL_5: "WANGGUYPAY"},
+                {ADMIN_JOIN_COL_5: "PC-ADMIN", ADMIN_TP_ORDER_COL_5: "", ADMIN_ORG_COL_5: ""},
+                {ADMIN_JOIN_COL_5: "EP-ADMIN", ADMIN_TP_ORDER_COL_5: "PIN-CODE", ADMIN_ORG_COL_5: "12345"},
+            ]
+        )
+        ibfpay = pd.DataFrame(
+            [{"代付金额": "100", "手续费": "1", IBFYPAY_TIME_COL_5: "2026-04-01"}],
+            index=pd.Index(["IBF-1"], name=IBFYPAY_JOIN_COL_5),
+        )
+        superpay = pd.DataFrame(
+            [{
+                SUPERPAY_PLATFORM_NO_COL_5: "SP-NO",
+                SUPERPAY_AMOUNT_COL_5: "200",
+                SUPERPAY_CURRENCY_COL_5: " tl ",
+                SUPERPAY_ACTUAL_COL_5: "198",
+                SUPERPAY_STATUS_COL_5: "代付成功",
+                SUPERPAY_FINISH_TIME_COL_5: "2026-04-02",
+            }],
+            index=pd.Index(["SP-ADMIN"], name=SUPERPAY_JOIN_COL_5),
+        )
+        wangguypay = pd.DataFrame(
+            [{
+                WANGGUYPAY_PLATFORM_NO_COL_5: "WG-1",
+                WANGGUYPAY_AMOUNT_COL_5: "300",
+                WANGGUYPAY_FEE_COL_5: "3",
+                WANGGUYPAY_ARRIVE_COL_5: "297",
+                WANGGUYPAY_STATUS_COL_5: "成功",
+                WANGGUYPAY_FINISH_TIME_COL_5: "2026-04-03",
+            }],
+            index=pd.Index(["WG-1"], name=WANGGUYPAY_PLATFORM_NO_COL_5),
+        )
+        phonecard = pd.DataFrame(
+            [{
+                PHONECARD_PLATFORM_NO_COL_5: "PC-NO",
+                PHONECARD_AMOUNT_COL_5: "400",
+                PHONECARD_STATUS_COL_5: "已完成",
+                PHONECARD_DATE_COL_5: "2026-04-04",
+            }],
+            index=pd.Index(["PC-ADMIN"], name=PHONECARD_JOIN_COL_5),
+        )
+        epin = pd.DataFrame(
+            [{
+                EPIN_PINLER_PIN_ID_COL_5: "PIN-ID",
+                EPIN_SIPARISLER_UNIT_PRICE_COL_5: "5",
+                EPIN_SIPARISLER_STATUS_COL_5: "Başarılı",
+                EPIN_SIPARISLER_CONFIRM_TIME_COL_5: "2026-04-05",
+            }],
+            index=pd.Index(["PIN-CODE"], name="Pin码"),
+        )
+
+        result = enrich_admin_5(admin, ibfpay, superpay, wangguypay, phonecard, epin)
+        keyed = {row[ADMIN_JOIN_COL_5]: row for _, row in result.iterrows() if row[ADMIN_JOIN_COL_5]}
+
+        self.assertEqual(keyed["IBF-ADMIN"][PLATFORM_CURRENCY_COL_5], "TRY")
+        self.assertEqual(keyed["SP-ADMIN"][PLATFORM_CURRENCY_COL_5], "TL")
+        self.assertEqual(keyed["WG-ADMIN"][PLATFORM_CURRENCY_COL_5], "TRY")
+        self.assertEqual(keyed["PC-ADMIN"][PLATFORM_CURRENCY_COL_5], "")
+        self.assertEqual(keyed["EP-ADMIN"][PLATFORM_CURRENCY_COL_5], "USD")
 
     def test_wangguypay_fund_file_takes_priority_over_old_order_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -462,6 +534,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(keyed["PC-ORDER-1"][ADMIN_ORG_COL_5], PHONECARD_PLATFORM_NAME_5)
         self.assertEqual(keyed["PC-ORDER-1"][PLATFORM_ORDER_NO_COL_5], "10007838")
         self.assertEqual(keyed["PC-ORDER-1"][PLATFORM_AMOUNT_COL_5], "250")
+        self.assertEqual(keyed["PC-ORDER-1"][PLATFORM_CURRENCY_COL_5], "")
         self.assertEqual(keyed["PC-ORDER-1"][PLATFORM_STATUS_COL_5], "成功")
         self.assertEqual(keyed["PC-ORDER-1"][FEE_COL_5], "")
         self.assertEqual(keyed["PC-ORDER-1"][ARRIVE_AMOUNT_COL_5], "250")
@@ -496,6 +569,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
         result = enrich_admin_5(admin, None, None, None, phonecard)
         extra = result[result[MATCH_STATUS_COL_5] == "平台多余"].iloc[0]
         self.assertEqual(extra[ADMIN_ORG_COL_5], PHONECARD_PLATFORM_NAME_5)
+        self.assertEqual(extra[PLATFORM_CURRENCY_COL_5], "")
         self.assertEqual(extra[ADMIN_JOIN_COL_5], "PC-EXTRA")
         self.assertEqual(extra[PLATFORM_STATUS_COL_5], "成功")
 
@@ -503,6 +577,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
         row = summary.iloc[0]
         self.assertEqual(row["交易月份"], "2026-04")
         self.assertEqual(row["机构"], PHONECARD_PLATFORM_NAME_5)
+        self.assertEqual(row[PLATFORM_CURRENCY_COL_5], "")
         self.assertEqual(row["笔数"], 2)
         self.assertAlmostEqual(row["代付金额合计"], 750.0)
         self.assertAlmostEqual(row["手续费合计"], 0.0)
@@ -517,6 +592,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     TRANSACTION_DATE_COL_5: "2026-04-15",
                     ADMIN_ORG_COL_5: "IBFYPAY",
                     PLATFORM_AMOUNT_COL_5: "100.00",
+                    PLATFORM_CURRENCY_COL_5: "TRY",
                     FEE_COL_5: "1.00",
                     ARRIVE_AMOUNT_COL_5: "99.00",
                 },
@@ -526,6 +602,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     TRANSACTION_DATE_COL_5: "2026-04-20",
                     ADMIN_ORG_COL_5: "IBFYPAY",
                     PLATFORM_AMOUNT_COL_5: "50.00",
+                    PLATFORM_CURRENCY_COL_5: "TRY",
                     FEE_COL_5: "0.50",
                     ARRIVE_AMOUNT_COL_5: "49.50",
                 },
@@ -535,6 +612,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     TRANSACTION_DATE_COL_5: "2026-05-01",
                     ADMIN_ORG_COL_5: "IBFYPAY",
                     PLATFORM_AMOUNT_COL_5: "30.00",
+                    PLATFORM_CURRENCY_COL_5: "TRY",
                     FEE_COL_5: "0.30",
                     ARRIVE_AMOUNT_COL_5: "29.70",
                 },
@@ -544,6 +622,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     TRANSACTION_DATE_COL_5: "2026-04-18",
                     ADMIN_ORG_COL_5: "SUPERPAY",
                     PLATFORM_AMOUNT_COL_5: "20.00",
+                    PLATFORM_CURRENCY_COL_5: "TL",
                     FEE_COL_5: "0.20",
                     ARRIVE_AMOUNT_COL_5: "19.80",
                 },
@@ -553,6 +632,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     TRANSACTION_DATE_COL_5: "2026-04-19",
                     ADMIN_ORG_COL_5: "IBFYPAY",
                     PLATFORM_AMOUNT_COL_5: "999.00",
+                    PLATFORM_CURRENCY_COL_5: "TRY",
                     FEE_COL_5: "9.99",
                     ARRIVE_AMOUNT_COL_5: "989.01",
                 },
@@ -562,6 +642,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     TRANSACTION_DATE_COL_5: "",
                     ADMIN_ORG_COL_5: "WANGGUYPAY",
                     PLATFORM_AMOUNT_COL_5: "10.00",
+                    PLATFORM_CURRENCY_COL_5: "TRY",
                     FEE_COL_5: "0.10",
                     ARRIVE_AMOUNT_COL_5: "9.90",
                 },
@@ -574,23 +655,23 @@ class BankIntegrationSampleTests(unittest.TestCase):
             list(summary.columns),
             self.payout_summary_cols,
         )
-        keyed = {(row["交易月份"], row["机构"]): row for _, row in summary.iterrows()}
+        keyed = {(row["交易月份"], row["机构"], row[PLATFORM_CURRENCY_COL_5]): row for _, row in summary.iterrows()}
         self.assertEqual(set(keyed), {
-            ("2026-04", "IBFYPAY"),
-            ("2026-04", "SUPERPAY"),
-            ("", "WANGGUYPAY"),
+            ("2026-04", "IBFYPAY", "TRY"),
+            ("2026-04", "SUPERPAY", "TL"),
+            ("", "WANGGUYPAY", "TRY"),
         })
-        self.assertEqual(keyed[("2026-04", "IBFYPAY")]["笔数"], 2)
-        self.assertAlmostEqual(keyed[("2026-04", "IBFYPAY")]["代付金额合计"], 150.0)
-        self.assertAlmostEqual(keyed[("2026-04", "IBFYPAY")]["手续费合计"], 1.5)
-        self.assertAlmostEqual(keyed[("2026-04", "IBFYPAY")]["到账金额合计"], 148.5)
-        self.assertNotIn(("2026-05", "IBFYPAY"), keyed)
-        self.assertEqual(keyed[("", "WANGGUYPAY")]["笔数"], 1)
-        self.assertEqual(keyed[("2026-04", "SUPERPAY")][SUMMARY_BEGIN_BALANCE_COL_5], "")
-        self.assertEqual(keyed[("2026-04", "SUPERPAY")][SUMMARY_RECHARGE_COL_5], "")
-        self.assertEqual(keyed[("2026-04", "SUPERPAY")][SUMMARY_WITHDRAWAL_COL_5], "")
-        self.assertEqual(keyed[("2026-04", "SUPERPAY")][SUMMARY_CALC_END_BALANCE_COL_5], "")
-        self.assertEqual(keyed[("2026-04", "SUPERPAY")][SUMMARY_PLATFORM_END_BALANCE_COL_5], "")
+        self.assertEqual(keyed[("2026-04", "IBFYPAY", "TRY")]["笔数"], 2)
+        self.assertAlmostEqual(keyed[("2026-04", "IBFYPAY", "TRY")]["代付金额合计"], 150.0)
+        self.assertAlmostEqual(keyed[("2026-04", "IBFYPAY", "TRY")]["手续费合计"], 1.5)
+        self.assertAlmostEqual(keyed[("2026-04", "IBFYPAY", "TRY")]["到账金额合计"], 148.5)
+        self.assertNotIn(("2026-05", "IBFYPAY", "TRY"), keyed)
+        self.assertEqual(keyed[("", "WANGGUYPAY", "TRY")]["笔数"], 1)
+        self.assertEqual(keyed[("2026-04", "SUPERPAY", "TL")][SUMMARY_BEGIN_BALANCE_COL_5], "")
+        self.assertEqual(keyed[("2026-04", "SUPERPAY", "TL")][SUMMARY_RECHARGE_COL_5], "")
+        self.assertEqual(keyed[("2026-04", "SUPERPAY", "TL")][SUMMARY_WITHDRAWAL_COL_5], "")
+        self.assertEqual(keyed[("2026-04", "SUPERPAY", "TL")][SUMMARY_CALC_END_BALANCE_COL_5], "")
+        self.assertEqual(keyed[("2026-04", "SUPERPAY", "TL")][SUMMARY_PLATFORM_END_BALANCE_COL_5], "")
 
     def test_payout_summary_merges_ibfpay_balance_columns(self):
         result = pd.DataFrame(
@@ -601,6 +682,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     TRANSACTION_DATE_COL_5: "2026-04-15",
                     ADMIN_ORG_COL_5: "IBFYPAY",
                     PLATFORM_AMOUNT_COL_5: "100.00",
+                    PLATFORM_CURRENCY_COL_5: "TRY",
                     FEE_COL_5: "1.00",
                     ARRIVE_AMOUNT_COL_5: "99.00",
                 }
@@ -656,6 +738,39 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertAlmostEqual(row[SUMMARY_CALC_END_BALANCE_COL_5], 1549.0)
         self.assertAlmostEqual(row[SUMMARY_PLATFORM_END_BALANCE_COL_5], 1650.0)
 
+    def test_payout_summary_groups_same_org_by_currency(self):
+        result = pd.DataFrame(
+            [
+                {
+                    MATCH_STATUS_COL_5: "是",
+                    PLATFORM_STATUS_COL_5: "成功",
+                    TRANSACTION_DATE_COL_5: "2026-04-15",
+                    ADMIN_ORG_COL_5: "SUPERPAY",
+                    PLATFORM_AMOUNT_COL_5: "100.00",
+                    PLATFORM_CURRENCY_COL_5: "TL",
+                    FEE_COL_5: "1.00",
+                    ARRIVE_AMOUNT_COL_5: "99.00",
+                },
+                {
+                    MATCH_STATUS_COL_5: "是",
+                    PLATFORM_STATUS_COL_5: "成功",
+                    TRANSACTION_DATE_COL_5: "2026-04-16",
+                    ADMIN_ORG_COL_5: "SUPERPAY",
+                    PLATFORM_AMOUNT_COL_5: "25.00",
+                    PLATFORM_CURRENCY_COL_5: "USD",
+                    FEE_COL_5: "0.25",
+                    ARRIVE_AMOUNT_COL_5: "24.75",
+                },
+            ]
+        )
+
+        summary = build_summary_sheet_5(result)
+        keyed = {(row["机构"], row[PLATFORM_CURRENCY_COL_5]): row for _, row in summary.iterrows()}
+
+        self.assertEqual(set(keyed), {("SUPERPAY", "TL"), ("SUPERPAY", "USD")})
+        self.assertAlmostEqual(keyed[("SUPERPAY", "TL")]["代付金额合计"], 100.0)
+        self.assertAlmostEqual(keyed[("SUPERPAY", "USD")]["代付金额合计"], 25.0)
+
     def test_payout_summary_merges_wangguypay_balance_columns(self):
         result = pd.DataFrame(
             [
@@ -665,6 +780,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     TRANSACTION_DATE_COL_5: "2026-05-18",
                     ADMIN_ORG_COL_5: "WANGGUYPAY",
                     PLATFORM_AMOUNT_COL_5: "2000.00",
+                    PLATFORM_CURRENCY_COL_5: "TRY",
                     FEE_COL_5: "40.00",
                     ARRIVE_AMOUNT_COL_5: "1960.00",
                 }

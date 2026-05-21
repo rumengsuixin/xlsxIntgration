@@ -11,10 +11,11 @@
                                │
           data/output/代付对账结果_{YYYYMMDD}.xlsx
 
-输出新增列（追加在 admin 原始列末尾，共 7 列）：
+输出新增列（追加在 admin 原始列末尾）：
     是否匹配      - 是 / 否 / 平台多余
     平台流水号    - 各平台主键
     平台代付金额  - 平台记录的代付金额
+    币种          - 平台金额币种
     平台状态      - 平台记录的交易状态
     手续费        - 平台收取的手续费
     到账金额      - 扣除手续费后实际到账
@@ -65,6 +66,7 @@ from .config5 import (
     SUPERPAY_AMOUNT_COL_5,
     SUPERPAY_FEE_TOTAL_COL_5,
     SUPERPAY_ACTUAL_COL_5,
+    SUPERPAY_CURRENCY_COL_5,
     SUPERPAY_STATUS_COL_5,
     SUPERPAY_CREATE_TIME_COL_5,
     SUPERPAY_FINISH_TIME_COL_5,
@@ -113,6 +115,7 @@ from .config5 import (
     MATCH_STATUS_COL_5,
     PLATFORM_ORDER_NO_COL_5,
     PLATFORM_AMOUNT_COL_5,
+    PLATFORM_CURRENCY_COL_5,
     PLATFORM_STATUS_COL_5,
     FEE_COL_5,
     ARRIVE_AMOUNT_COL_5,
@@ -125,6 +128,9 @@ from .config5 import (
     SUMMARY_CALC_END_BALANCE_COL_5,
     SUMMARY_PLATFORM_END_BALANCE_COL_5,
     SUMMARY_BALANCE_COLS_5,
+    IBFYPAY_DEFAULT_CURRENCY_5,
+    WANGGUYPAY_DEFAULT_CURRENCY_5,
+    EPIN_DEFAULT_CURRENCY_5,
     BALANCE_RECHARGE_KEYWORDS_5,
     BALANCE_RECHARGE_EXCLUDE_KEYWORDS_5,
     BALANCE_WITHDRAWAL_KEYWORDS_5,
@@ -289,6 +295,11 @@ def _normalize_platform_status_5(platform: str, raw_status: str = "", *, rejecte
 
     logging.warning("【%s】发现未识别平台状态 '%s'，保留原值", platform_key or platform, status)
     return status
+
+
+def _normalize_currency_5(value: object) -> str:
+    """清洗平台币种显示值。"""
+    return str(value or "").strip().upper()
 
 
 def _dedup_lookup_5(df: pd.DataFrame, key_col: str, label: str) -> pd.DataFrame:
@@ -731,6 +742,7 @@ def build_superpay_lookup_5(df: pd.DataFrame) -> pd.DataFrame:
         SUPERPAY_JOIN_COL_5,
         SUPERPAY_PLATFORM_NO_COL_5,
         SUPERPAY_AMOUNT_COL_5,
+        SUPERPAY_CURRENCY_COL_5,
         SUPERPAY_FEE_TOTAL_COL_5,
         SUPERPAY_ACTUAL_COL_5,
         SUPERPAY_STATUS_COL_5,
@@ -985,6 +997,7 @@ def _build_platform_only_rows_5(
                 if "_ibfpay_rejected" in ibfpay_lk.columns else False
             )
             row[PLATFORM_AMOUNT_COL_5] = amt
+            row[PLATFORM_CURRENCY_COL_5] = IBFYPAY_DEFAULT_CURRENCY_5
             row[PLATFORM_STATUS_COL_5] = _normalize_platform_status_5("IBFYPAY", rejected=is_rejected)
             row[FEE_COL_5]             = fee
             row[ARRIVE_AMOUNT_COL_5]   = str(round(amt_f - fee_f, 2))
@@ -1006,6 +1019,7 @@ def _build_platform_only_rows_5(
             sp_amt    = str(superpay_lk.at[key, SUPERPAY_AMOUNT_COL_5]).strip()       if SUPERPAY_AMOUNT_COL_5       in superpay_lk.columns else ""
             sp_fee    = str(superpay_lk.at[key, SUPERPAY_FEE_TOTAL_COL_5]).strip()    if SUPERPAY_FEE_TOTAL_COL_5    in superpay_lk.columns else ""
             sp_actual = str(superpay_lk.at[key, SUPERPAY_ACTUAL_COL_5]).strip()       if SUPERPAY_ACTUAL_COL_5       in superpay_lk.columns else ""
+            sp_currency = _normalize_currency_5(superpay_lk.at[key, SUPERPAY_CURRENCY_COL_5]) if SUPERPAY_CURRENCY_COL_5 in superpay_lk.columns else ""
             sp_status = str(superpay_lk.at[key, SUPERPAY_STATUS_COL_5]).strip()       if SUPERPAY_STATUS_COL_5       in superpay_lk.columns else ""
             sp_time   = str(superpay_lk.at[key, SUPERPAY_FINISH_TIME_COL_5]).strip()  if SUPERPAY_FINISH_TIME_COL_5  in superpay_lk.columns else ""
             sp_amt_f    = _to_float_5(sp_amt) or 0.0
@@ -1013,6 +1027,7 @@ def _build_platform_only_rows_5(
             sp_calc_fee = str(round(abs(sp_amt_f - sp_actual_f), 2)) if (sp_amt or sp_actual) else ""
             row[PLATFORM_ORDER_NO_COL_5] = sp_no
             row[PLATFORM_AMOUNT_COL_5]   = sp_amt
+            row[PLATFORM_CURRENCY_COL_5] = sp_currency
             row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5("SUPERPAY", sp_status)
             row[FEE_COL_5]               = sp_calc_fee
             row[ARRIVE_AMOUNT_COL_5]     = sp_actual
@@ -1037,6 +1052,7 @@ def _build_platform_only_rows_5(
             wg_time   = str(wangguypay_lk.at[key, WANGGUYPAY_FINISH_TIME_COL_5]).strip() if WANGGUYPAY_FINISH_TIME_COL_5  in wangguypay_lk.columns else ""
             row[PLATFORM_ORDER_NO_COL_5] = wg_no
             row[PLATFORM_AMOUNT_COL_5]   = wg_amt
+            row[PLATFORM_CURRENCY_COL_5] = WANGGUYPAY_DEFAULT_CURRENCY_5
             row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5("WANGGUYPAY", wg_status)
             row[FEE_COL_5]               = wg_fee
             row[ARRIVE_AMOUNT_COL_5]     = wg_arrive
@@ -1059,6 +1075,7 @@ def _build_platform_only_rows_5(
             pc_time   = str(phonecard_lk.at[key, PHONECARD_DATE_COL_5]).strip()        if PHONECARD_DATE_COL_5        in phonecard_lk.columns else ""
             row[PLATFORM_ORDER_NO_COL_5] = pc_no
             row[PLATFORM_AMOUNT_COL_5]   = pc_amt
+            row[PLATFORM_CURRENCY_COL_5] = ""
             row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5("PHONECARD", pc_status)
             row[FEE_COL_5]               = ""
             row[ARRIVE_AMOUNT_COL_5]     = pc_amt
@@ -1082,6 +1099,7 @@ def _build_platform_only_rows_5(
             ep_time   = str(epin_lk.at[key, EPIN_SIPARISLER_CONFIRM_TIME_COL_5]).strip() if EPIN_SIPARISLER_CONFIRM_TIME_COL_5 in epin_lk.columns else ""
             row[PLATFORM_ORDER_NO_COL_5] = ep_pin_id
             row[PLATFORM_AMOUNT_COL_5]   = ep_amt
+            row[PLATFORM_CURRENCY_COL_5] = EPIN_DEFAULT_CURRENCY_5
             row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5(EPIN_PLATFORM_NAME_5, ep_status)
             row[FEE_COL_5]               = ""
             row[ARRIVE_AMOUNT_COL_5]     = ep_amt
@@ -1153,6 +1171,7 @@ def enrich_admin_5(
     match_status_list      = []
     platform_order_no_list = []
     platform_amount_list   = []
+    platform_currency_list = []
     platform_status_list   = []
     fee_list               = []
     arrive_amount_list     = []
@@ -1176,6 +1195,7 @@ def enrich_admin_5(
         sp_no     = str(row.get(f"_s_{SUPERPAY_PLATFORM_NO_COL_5}","")).strip() if superpay_avail else ""
         sp_fee    = str(row.get(f"_s_{SUPERPAY_FEE_TOTAL_COL_5}",  "")).strip() if superpay_avail else ""
         sp_actual = str(row.get(f"_s_{SUPERPAY_ACTUAL_COL_5}",     "")).strip() if superpay_avail else ""
+        sp_currency = _normalize_currency_5(row.get(f"_s_{SUPERPAY_CURRENCY_COL_5}", "")) if superpay_avail else ""
         sp_status = str(row.get(f"_s_{SUPERPAY_STATUS_COL_5}",     "")).strip() if superpay_avail else ""
         sp_time   = str(row.get(f"_s_{SUPERPAY_FINISH_TIME_COL_5}","")).strip() if superpay_avail else ""
         sp_ctime  = str(row.get(f"_s_{SUPERPAY_CREATE_TIME_COL_5}","")).strip() if superpay_avail else ""
@@ -1218,6 +1238,7 @@ def enrich_admin_5(
             match_status_list.append("是")
             platform_order_no_list.append(ibf_tp)
             platform_amount_list.append(ibf_amt)
+            platform_currency_list.append(IBFYPAY_DEFAULT_CURRENCY_5)
             platform_status_list.append(_normalize_platform_status_5("IBFYPAY", rejected=ibf_rejected))
             fee_list.append(ibf_fee)
             arrive_amount_list.append(str(arrive))
@@ -1230,6 +1251,7 @@ def enrich_admin_5(
             match_status_list.append("是")
             platform_order_no_list.append(sp_no)
             platform_amount_list.append(sp_amt)
+            platform_currency_list.append(sp_currency)
             platform_status_list.append(_normalize_platform_status_5("SUPERPAY", sp_status))
             fee_list.append(sp_calc_fee)
             arrive_amount_list.append(sp_actual)
@@ -1239,6 +1261,7 @@ def enrich_admin_5(
             match_status_list.append("是")
             platform_order_no_list.append(wg_no)
             platform_amount_list.append(wg_amt)
+            platform_currency_list.append(WANGGUYPAY_DEFAULT_CURRENCY_5)
             platform_status_list.append(_normalize_platform_status_5("WANGGUYPAY", wg_status))
             fee_list.append(wg_fee)
             arrive_amount_list.append(wg_arrive)
@@ -1248,6 +1271,7 @@ def enrich_admin_5(
             match_status_list.append("是")
             platform_order_no_list.append(pc_no)
             platform_amount_list.append(pc_amt)
+            platform_currency_list.append("")
             platform_status_list.append(_normalize_platform_status_5("PHONECARD", pc_status))
             fee_list.append("")
             arrive_amount_list.append(pc_amt)
@@ -1260,6 +1284,7 @@ def enrich_admin_5(
             match_status_list.append("是")
             platform_order_no_list.append(ep_pin_id)
             platform_amount_list.append(ep_amt)
+            platform_currency_list.append(EPIN_DEFAULT_CURRENCY_5)
             platform_status_list.append(_normalize_platform_status_5(EPIN_PLATFORM_NAME_5, ep_status))
             fee_list.append("")
             arrive_amount_list.append(ep_amt)
@@ -1269,13 +1294,14 @@ def enrich_admin_5(
             match_status_list.append("否")
             platform_order_no_list.append("")
             platform_amount_list.append("")
+            platform_currency_list.append("")
             platform_status_list.append("")
             fee_list.append("")
             arrive_amount_list.append("")
             transaction_date_list.append("")
             org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
 
-    # 还原为仅 admin 原始列，再追加 7 个新增列
+    # 还原为仅 admin 原始列，再追加新增列
     admin_cols = list(admin_df.columns)
     result = result[admin_cols].copy()
     if ADMIN_ORG_COL_5 in result.columns:
@@ -1284,6 +1310,7 @@ def enrich_admin_5(
     result[MATCH_STATUS_COL_5]      = match_status_list
     result[PLATFORM_ORDER_NO_COL_5] = platform_order_no_list
     result[PLATFORM_AMOUNT_COL_5]   = platform_amount_list
+    result[PLATFORM_CURRENCY_COL_5] = platform_currency_list
     result[PLATFORM_STATUS_COL_5]   = platform_status_list
     result[FEE_COL_5]               = fee_list
     result[ARRIVE_AMOUNT_COL_5]     = arrive_amount_list
@@ -1337,6 +1364,7 @@ def _build_one_platform_balance_summary_5(
     df: Optional[pd.DataFrame],
     *,
     platform: str,
+    currency: str,
     type_col: str,
     begin_col: str,
     change_col: str,
@@ -1344,7 +1372,7 @@ def _build_one_platform_balance_summary_5(
     time_cols: List[str],
 ) -> pd.DataFrame:
     """按月提取单个平台资金流水的期初、充值和平台期末余额。"""
-    output_cols = ["交易月份", "机构"] + SUMMARY_BALANCE_COLS_5
+    output_cols = ["交易月份", "机构", PLATFORM_CURRENCY_COL_5] + SUMMARY_BALANCE_COLS_5
     if df is None or df.empty:
         return pd.DataFrame(columns=output_cols)
 
@@ -1396,6 +1424,7 @@ def _build_one_platform_balance_summary_5(
         rows.append({
             "交易月份": month,
             "机构": platform,
+            PLATFORM_CURRENCY_COL_5: currency,
             SUMMARY_BEGIN_BALANCE_COL_5: round(begin, 2) if begin is not None else "",
             SUMMARY_RECHARGE_COL_5: round(float(recharge), 2),
             SUMMARY_WITHDRAWAL_COL_5: round(float(withdrawal), 2),
@@ -1414,6 +1443,7 @@ def build_platform_balance_summary_5(
         _build_one_platform_balance_summary_5(
             ibfpay_raw,
             platform="IBFYPAY",
+            currency=IBFYPAY_DEFAULT_CURRENCY_5,
             type_col=IBFYPAY_TYPE_COL_5,
             begin_col=IBFYPAY_BEGIN_AMOUNT_COL_5,
             change_col=IBFYPAY_AMOUNT_COL_5,
@@ -1423,6 +1453,7 @@ def build_platform_balance_summary_5(
         _build_one_platform_balance_summary_5(
             wangguypay_raw,
             platform="WANGGUYPAY",
+            currency=WANGGUYPAY_DEFAULT_CURRENCY_5,
             type_col=WANGGUYPAY_FUND_TYPE_COL_5,
             begin_col=WANGGUYPAY_BEGIN_AMOUNT_COL_5,
             change_col=WANGGUYPAY_FUND_AMOUNT_COL_5,
@@ -1431,7 +1462,7 @@ def build_platform_balance_summary_5(
         ),
     ]
     frames = [f for f in frames if f is not None and not f.empty]
-    cols = ["交易月份", "机构"] + SUMMARY_BALANCE_COLS_5
+    cols = ["交易月份", "机构", PLATFORM_CURRENCY_COL_5] + SUMMARY_BALANCE_COLS_5
     if not frames:
         return pd.DataFrame(columns=cols)
     return pd.concat(frames, ignore_index=True)[cols]
@@ -1441,9 +1472,9 @@ def build_summary_sheet_5(
     result_df: pd.DataFrame,
     platform_balance_summary: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """按交易月份和平台汇总代付金额、手续费、到账金额。
+    """按交易月份、平台和币种汇总代付金额、手续费、到账金额。
 
-    分组键：交易日期归属月份（YYYY-MM） + 机构列（ADMIN_ORG_COL_5）。
+    分组键：交易日期归属月份（YYYY-MM） + 机构列（ADMIN_ORG_COL_5）+ 币种。
     汇总列：成功笔数、代付金额合计、手续费合计、到账金额合计。
     仅统计平台状态为 "成功" 的行；交易日期为空或无法解析时，交易月份保留为空字符串。
 
@@ -1457,6 +1488,7 @@ def build_summary_sheet_5(
     summary_cols = [
         month_col,
         "机构",
+        PLATFORM_CURRENCY_COL_5,
         "笔数",
         SUMMARY_BEGIN_BALANCE_COL_5,
         "代付金额合计",
@@ -1483,8 +1515,12 @@ def build_summary_sheet_5(
     matched["_amt"]    = matched[PLATFORM_AMOUNT_COL_5].apply(lambda v: _to_float_5(v) or 0.0)
     matched["_fee"]    = matched[FEE_COL_5].apply(lambda v: _to_float_5(v) or 0.0)
     matched["_arrive"] = matched[ARRIVE_AMOUNT_COL_5].apply(lambda v: _to_float_5(v) or 0.0)
+    if PLATFORM_CURRENCY_COL_5 in matched.columns:
+        matched[PLATFORM_CURRENCY_COL_5] = matched[PLATFORM_CURRENCY_COL_5].apply(_normalize_currency_5)
+    else:
+        matched[PLATFORM_CURRENCY_COL_5] = ""
 
-    grp = matched.groupby([month_col, ADMIN_ORG_COL_5], as_index=False).agg(
+    grp = matched.groupby([month_col, ADMIN_ORG_COL_5, PLATFORM_CURRENCY_COL_5], as_index=False).agg(
         笔数=("_amt", "count"),
         代付金额合计=("_amt", "sum"),
         手续费合计=("_fee", "sum"),
@@ -1497,12 +1533,16 @@ def build_summary_sheet_5(
     for col in SUMMARY_BALANCE_COLS_5:
         grp[col] = ""
     if platform_balance_summary is not None and not platform_balance_summary.empty:
-        balance_cols = [month_col, "机构"] + SUMMARY_BALANCE_COLS_5
+        balance_cols = [month_col, "机构", PLATFORM_CURRENCY_COL_5] + SUMMARY_BALANCE_COLS_5
         balance_df = platform_balance_summary.copy()
+        if PLATFORM_CURRENCY_COL_5 in balance_df.columns:
+            balance_df[PLATFORM_CURRENCY_COL_5] = balance_df[PLATFORM_CURRENCY_COL_5].apply(_normalize_currency_5)
+        else:
+            balance_df[PLATFORM_CURRENCY_COL_5] = ""
         balance_df = balance_df[[c for c in balance_cols if c in balance_df.columns]]
         grp = grp.drop(columns=SUMMARY_BALANCE_COLS_5).merge(
             balance_df,
-            on=[month_col, "机构"],
+            on=[month_col, "机构", PLATFORM_CURRENCY_COL_5],
             how="left",
         )
         for col in SUMMARY_BALANCE_COLS_5:

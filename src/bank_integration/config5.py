@@ -113,19 +113,25 @@ PLATFORM_PREFIXES_5: dict = {
     "epin_pinler":     ["epin_pinler_"],
 }
 
-# ── 输出新增列（追加在 admin 原始列末尾，共 7 列）──────────────────────────
+# ── 输出新增列（追加在 admin 原始列末尾）────────────────────────────────────
 MATCH_STATUS_COL_5       = "是否匹配"       # 是 / 否 / 平台多余
 PLATFORM_ORDER_NO_COL_5  = "平台流水号"     # 系统流水号 / 代付订单Id / 平台订单号
 PLATFORM_AMOUNT_COL_5    = "平台代付金额"   # 平台记录的代付金额
+PLATFORM_CURRENCY_COL_5  = "币种"           # 平台金额币种
 PLATFORM_STATUS_COL_5    = "平台状态"       # 统一为：成功 / 失败 / 处理中 / 关闭
 FEE_COL_5                = "手续费"         # 平台收取的手续费（IBFYPAY 无此字段，留空串）
 ARRIVE_AMOUNT_COL_5      = "到账金额"       # 扣除手续费后实际到账（IBFYPAY 留空串）
 TRANSACTION_DATE_COL_5   = "交易日期"       # 格式化为 YYYY-MM-DD 的交易时间
 
+IBFYPAY_DEFAULT_CURRENCY_5 = "TRY"
+WANGGUYPAY_DEFAULT_CURRENCY_5 = "TRY"
+EPIN_DEFAULT_CURRENCY_5 = "USD"
+
 OUTPUT_NEW_COLS_5 = [
     MATCH_STATUS_COL_5,
     PLATFORM_ORDER_NO_COL_5,
     PLATFORM_AMOUNT_COL_5,
+    PLATFORM_CURRENCY_COL_5,
     PLATFORM_STATUS_COL_5,
     FEE_COL_5,
     ARRIVE_AMOUNT_COL_5,

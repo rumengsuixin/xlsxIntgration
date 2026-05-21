@@ -1,6 +1,7 @@
 """代号4 子功能 main() - 1epin.com 浏览器自动化数据提取。"""
 import json
 import logging
+import random
 import subprocess
 import time
 from pathlib import Path
@@ -27,6 +28,7 @@ from .config4_epin import (
 logger = logging.getLogger(__name__)
 
 _EPIN_ORIGIN = "https://www.1epin.com/"
+_EPIN_DETAIL_BASE = "https://www.1epin.com/siparis/"
 
 _EXTRACT_JS = """
 (function() {
@@ -121,6 +123,36 @@ _EXTRACT_JS = """
 })()
 """
 
+_EXTRACT_PINS_JS = """
+(function() {
+  var table = null;
+  var tables = document.querySelectorAll('#pin_form table');
+  for (var i = 0; i < tables.length; i++) {
+    var ths = tables[i].querySelectorAll('thead th');
+    for (var j = 0; j < ths.length; j++) {
+      if (ths[j].textContent.trim() === 'Pin') {
+        table = tables[i];
+        break;
+      }
+    }
+    if (table) break;
+  }
+  if (!table) return JSON.stringify([]);
+  var rows = table.querySelectorAll('tbody tr');
+  var result = [];
+  rows.forEach(function(tr) {
+    var tds = tr.querySelectorAll('td');
+    var seq       = tds[0] ? tds[0].textContent.trim().replace(/\\.$/, '') : '';
+    var cb        = tds[1] ? tds[1].querySelector('input[name="sec"]') : null;
+    var pin_id    = cb ? cb.value : '';
+    var pin       = tds[2] ? tds[2].textContent.trim() : '';
+    var view_date = tds[3] ? tds[3].textContent.trim() : '';
+    result.push({seq: seq, pin_id: pin_id, pin: pin, view_date: view_date});
+  });
+  return JSON.stringify(result);
+})()
+"""
+
 _TR_MONTHS = {
     'Ocak': 1, 'Şubat': 2, 'Mart': 3, 'Nisan': 4,
     'Mayıs': 5, 'Haziran': 6, 'Temmuz': 7, 'Ağustos': 8,
@@ -165,6 +197,15 @@ _COLUMN_MAP = {
     'sonra':          '交易后余额(USD)',
     'acik_adet':      '已解锁数量',
     'kilitli_adet':   '已锁定数量',
+}
+
+_PIN_COLUMN_MAP = {
+    'siparis_id': '订单ID',
+    'siparis_no': '订单号',
+    'seq':        '序号',
+    'pin_id':     'Pin ID',
+    'pin':        'Pin码',
+    'view_date':  '查看时间',
 }
 
 
@@ -228,12 +269,225 @@ def _save_orders_excel(rows: list, output_dir: Path) -> Path:
     return filename
 
 
+class _TabOperator:
+    """轻量 CDP 封装，管理单个 Chrome 标签页，供并行 Pin 码提取使用。"""
+
+    def __init__(self, ws_url: str) -> None:
+        import websocket as _ws_lib
+        self._ws = _ws_lib.create_connection(ws_url.replace("://localhost:", "://127.0.0.1:"))
+        self._msg_id = 0
+
+    def close(self) -> None:
+        try:
+            self._ws.close()
+        except Exception:
+            pass
+
+    def _send(self, method: str, params=None) -> dict:
+        self._msg_id += 1
+        msg = {"id": self._msg_id, "method": method, "params": params or {}}
+        self._ws.send(json.dumps(msg))
+        while True:
+            resp = json.loads(self._ws.recv())
+            if resp.get("id") == self._msg_id:
+                if "error" in resp:
+                    raise RuntimeError(f"CDP 错误 [{method}]: {resp['error']}")
+                return resp
+
+    def navigate(self, url: str) -> None:
+        self._send("Page.navigate", {"url": url})
+
+    def evaluate(self, expression: str):
+        result = self._send("Runtime.evaluate", {"expression": expression, "returnByValue": True})
+        return result.get("result", {}).get("result", {}).get("value")
+
+    def wait_for_condition(self, js_condition: str, timeout: float = 10.0, poll: float = 0.5) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.evaluate(js_condition):
+                return
+            time.sleep(poll)
+        raise TimeoutError(f"等待超时（{timeout}s）：{js_condition}")
+
+
+def _create_chrome_tab(debug_port: int) -> tuple:
+    """在已运行的 Chrome 中创建新空白标签页，返回 (tab_id, ws_url)。"""
+    import urllib.request as _req
+    req = _req.Request(f"http://127.0.0.1:{debug_port}/json/new", method="PUT")
+    data = _req.urlopen(req, timeout=5).read()
+    info = json.loads(data)
+    return info["id"], info["webSocketDebuggerUrl"]
+
+
+def _close_chrome_tab(debug_port: int, tab_id: str) -> None:
+    """关闭指定 Chrome 标签页。"""
+    import urllib.request as _req
+    try:
+        _req.urlopen(f"http://127.0.0.1:{debug_port}/json/close/{tab_id}", timeout=3)
+    except Exception:
+        pass
+
+
+def _extract_pins_in_tab(debug_port: int, siparis_id: str, siparis_no: str) -> tuple:
+    """在新建标签页中提取指定订单的 Pin 码，返回 (tab_id, pins)，标签页由调用方负责关闭。"""
+    try:
+        tab_id, ws_url = _create_chrome_tab(debug_port)
+    except Exception:
+        logger.warning("订单 %s 无法创建标签页，跳过", siparis_id, exc_info=True)
+        return '', []
+
+    op = None
+    try:
+        op = _TabOperator(ws_url)
+        op.navigate(f"{_EPIN_DETAIL_BASE}{siparis_id}")
+        op.wait_for_condition("!!document.querySelector('#pin_form')", timeout=15.0)
+
+        # 等待含"Pin"表头的 PIN 数据表格出现（页面加载时即存在，无需点击任何按钮）
+        _PIN_TABLE_JS = (
+            "(function(){"
+            "var tables=document.querySelectorAll('#pin_form table');"
+            "for(var i=0;i<tables.length;i++){"
+            "var ths=tables[i].querySelectorAll('thead th');"
+            "for(var j=0;j<ths.length;j++){if(ths[j].textContent.trim()==='Pin')return true;}"
+            "}return false;})()"
+        )
+        try:
+            op.wait_for_condition(_PIN_TABLE_JS, timeout=15.0, poll=0.5)
+        except TimeoutError:
+            logger.warning("订单 %s 等待 PIN 表格超时，尝试直接提取", siparis_id)
+
+        raw = op.evaluate(_EXTRACT_PINS_JS)
+        if not raw:
+            return tab_id, []
+
+        pin_rows = json.loads(raw)
+        for row in pin_rows:
+            row['siparis_id'] = siparis_id
+            row['siparis_no'] = siparis_no
+            if row.get('view_date'):
+                row['view_date'] = _parse_tr_date(row['view_date'])
+        return tab_id, pin_rows
+    except Exception:
+        logger.warning("订单 %s Pin 码提取失败，跳过", siparis_id, exc_info=True)
+        return tab_id, []
+    finally:
+        if op:
+            op.close()
+
+
+def _fetch_all_pins_parallel(debug_port: int, orders: list, batch_size: int = 3) -> list:
+    """分批并行提取所有订单的 Pin 码。
+    批次大小默认3；批次内随机间隔0.2-1.0s逐个开启标签页；批次间固定等待20s。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    all_pins = []
+    total = len(orders)
+    prev_tab_ids: list = []
+
+    for batch_start in range(0, total, batch_size):
+        if batch_start > 0:
+            logger.info("批次间隔等待 20 秒，可查看上一批标签页...")
+            time.sleep(20)
+            # 等待结束后再关闭上一批的标签页
+            for tid in prev_tab_ids:
+                _close_chrome_tab(debug_port, tid)
+            prev_tab_ids = []
+
+        batch = [o for o in orders[batch_start: batch_start + batch_size] if o.get('siparis_id')]
+        if not batch:
+            continue
+        logger.info(
+            "正在并行提取 Pin 码 第%d-%d单（共%d单）...",
+            batch_start + 1, min(batch_start + batch_size, total), total,
+        )
+
+        with ThreadPoolExecutor(max_workers=len(batch)) as executor:
+            futures = {}
+            for order in batch:
+                futures[executor.submit(
+                    _extract_pins_in_tab,
+                    debug_port,
+                    order['siparis_id'],
+                    order.get('siparis_no', ''),
+                )] = order['siparis_id']
+                # 批次内随机间隔（较短），最后一个不等待
+                if order is not batch[-1]:
+                    time.sleep(random.uniform(0.2, 1.0))
+
+            batch_pins = []
+            for future in as_completed(futures):
+                siparis_id = futures[future]
+                try:
+                    tab_id, pins = future.result()
+                    if tab_id:
+                        prev_tab_ids.append(tab_id)
+                    batch_pins.extend(pins)
+                    all_pins.extend(pins)
+                except Exception:
+                    logger.warning("订单 %s Pin 码提取出现未处理异常", siparis_id, exc_info=True)
+
+        logger.info("本批完成，本批提取 %d 个 Pin 码，累计 %d 个", len(batch_pins), len(all_pins))
+        visible_pins = [p for p in batch_pins if not set(p.get('pin', '')).issubset({'*', ' ', ''})]
+        if visible_pins:
+            logger.info("本批可见 Pin 码明细（共 %d 个）：", len(visible_pins))
+            for p in visible_pins:
+                logger.info(
+                    "  订单ID=%-8s  订单号=%-12s  序号=%-3s  Pin码=%s  查看时间=%s",
+                    p.get('siparis_id', ''),
+                    p.get('siparis_no', ''),
+                    p.get('seq', ''),
+                    p.get('pin', ''),
+                    p.get('view_date', ''),
+                )
+        else:
+            ids = [str(o['siparis_id']) for o in batch if o.get('siparis_id')]
+            logger.info("本批无可见 Pin 码（全部已遮蔽），本批订单ID：%s", ', '.join(ids))
+
+    # 关闭最后一批的标签页
+    for tid in prev_tab_ids:
+        _close_chrome_tab(debug_port, tid)
+
+    logger.info("共提取 %d 个 Pin 码记录", len(all_pins))
+    return all_pins
+
+
+def _save_pins_excel(rows: list, output_dir: Path) -> Path:
+    """将 Pin 码列表写入 Excel，返回输出文件路径。"""
+    import pandas as pd
+    from datetime import date
+
+    df = pd.DataFrame(rows)
+    df = df.rename(columns=_PIN_COLUMN_MAP)
+    df = df[[v for v in _PIN_COLUMN_MAP.values() if v in df.columns]]
+    filename = output_dir / f"epin_pinler_{date.today():%Y%m%d}.xlsx"
+    df.to_excel(filename, index=False, engine='openpyxl')
+    return filename
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # 0. 检测今日订单文件是否已存在（存在则跳过订单列表抓取）
+    from datetime import date as _date
+    orders_file = OUTPUT_DIR_EPIN / f"epin_siparisler_{_date.today():%Y%m%d}.xlsx"
+    has_existing_orders = orders_file.exists()
+    rows = []
+
+    if has_existing_orders:
+        logger.info("检测到已有订单文件，将跳过订单列表抓取：%s", orders_file)
+        import pandas as _pd
+        _df = _pd.read_excel(orders_file, engine='openpyxl')
+        rows = (
+            _df[['订单ID', '订单号']]
+            .rename(columns={'订单ID': 'siparis_id', '订单号': 'siparis_no'})
+            .dropna(subset=['siparis_id'])
+            .to_dict('records')
+        )
 
     # 1. 查找 Chrome
     chrome_path = find_chrome_executable()
@@ -303,26 +557,38 @@ def main() -> int:
         return 1
 
     try:
-        logger.info("导航到目标页面: %s", TARGET_URL_EPIN)
-        op.navigate(TARGET_URL_EPIN)
+        if not has_existing_orders:
+            logger.info("导航到目标页面: %s", TARGET_URL_EPIN)
+            op.navigate(TARGET_URL_EPIN)
 
-        # 8. 等待订单表格渲染完成
-        logger.info("等待订单表格加载...")
-        op.wait_for_condition("!!document.querySelector('#myTable')", timeout=15.0)
+            # 8. 等待订单表格渲染完成
+            logger.info("等待订单表格加载...")
+            op.wait_for_condition("!!document.querySelector('#myTable')", timeout=15.0)
 
-        # 9. 反复点击"加载更多"直到数据全部展示
-        _load_all_orders(op)
+            # 9. 反复点击"加载更多"直到数据全部展示
+            _load_all_orders(op)
 
-        # 10. 结构化提取全部订单
-        rows = _extract_orders(op)
-        if not rows:
-            logger.warning("未提取到任何订单数据，请确认页面已正确加载")
-            return 1
+            # 10. 结构化提取全部订单
+            rows = _extract_orders(op)
+            if not rows:
+                logger.warning("未提取到任何订单数据，请确认页面已正确加载")
+                return 1
 
-        # 11. 写入 Excel
-        logger.info("共提取 %d 条订单记录，正在写入 Excel...", len(rows))
-        output_file = _save_orders_excel(rows, OUTPUT_DIR_EPIN)
-        logger.info("已输出：%s", output_file)
+            # 11. 写入 Excel
+            logger.info("共提取 %d 条订单记录，正在写入 Excel...", len(rows))
+            output_file = _save_orders_excel(rows, OUTPUT_DIR_EPIN)
+            logger.info("已输出：%s", output_file)
+        else:
+            logger.info("使用已有订单文件，共 %d 条记录，直接进入 Pin 码提取", len(rows))
+
+        # 12. 并行提取各订单 Pin 码并写入 Excel
+        logger.info("正在并行提取 Pin 码（共 %d 单，每批3个）...", len(rows))
+        pin_rows = _fetch_all_pins_parallel(CHROME_DEBUG_PORT_EPIN, rows)
+        if pin_rows:
+            pin_file = _save_pins_excel(pin_rows, OUTPUT_DIR_EPIN)
+            logger.info("Pin 码已输出：%s", pin_file)
+        else:
+            logger.warning("未提取到任何 Pin 码数据")
 
     finally:
         op.disconnect()

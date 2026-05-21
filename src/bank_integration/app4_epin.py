@@ -126,6 +126,7 @@ _EXTRACT_JS = """
 
 _EXTRACT_PINS_JS = """
 (function() {
+  // 方式一：#pin_form table（多 pin 码标准结构）
   var table = null;
   var tables = document.querySelectorAll('#pin_form table');
   for (var i = 0; i < tables.length; i++) {
@@ -138,19 +139,29 @@ _EXTRACT_PINS_JS = """
     }
     if (table) break;
   }
-  if (!table) return JSON.stringify([]);
-  var rows = table.querySelectorAll('tbody tr');
-  var result = [];
-  rows.forEach(function(tr) {
-    var tds = tr.querySelectorAll('td');
-    var seq       = tds[0] ? tds[0].textContent.trim().replace(/\\.$/, '') : '';
-    var cb        = tds[1] ? tds[1].querySelector('input[name="sec"]') : null;
-    var pin_id    = cb ? cb.value : '';
-    var pin       = tds[2] ? tds[2].textContent.trim() : '';
-    var view_date = tds[3] ? tds[3].textContent.trim() : '';
-    result.push({seq: seq, pin_id: pin_id, pin: pin, view_date: view_date});
-  });
-  return JSON.stringify(result);
+  if (table) {
+    var rows = table.querySelectorAll('tbody tr');
+    var result = [];
+    rows.forEach(function(tr) {
+      var tds = tr.querySelectorAll('td');
+      var seq       = tds[0] ? tds[0].textContent.trim().replace(/\\.$/, '') : '';
+      var cb        = tds[1] ? tds[1].querySelector('input[name="sec"]') : null;
+      var pin_id    = cb ? cb.value : '';
+      var pin       = tds[2] ? tds[2].textContent.trim() : '';
+      var view_date = tds[3] ? tds[3].textContent.trim() : '';
+      result.push({seq: seq, pin_id: pin_id, pin: pin, view_date: view_date});
+    });
+    return JSON.stringify(result);
+  }
+  // 方式二：#review_form textarea（锁定数量=1 独立结构）
+  var textarea = document.querySelector('#review_form textarea');
+  if (textarea) {
+    var pinVal = (textarea.value || textarea.textContent || '').trim();
+    if (pinVal) {
+      return JSON.stringify([{seq: '1', pin_id: '', pin: pinVal, view_date: ''}]);
+    }
+  }
+  return JSON.stringify([]);
 })()
 """
 
@@ -357,16 +368,22 @@ def _extract_pins_in_tab(debug_port: int, siparis_id: str, siparis_no: str) -> t
     try:
         op = _TabOperator(ws_url)
         op.navigate(f"{_EPIN_DETAIL_BASE}{siparis_id}")
-        op.wait_for_condition("!!document.querySelector('#pin_form')", timeout=15.0)
+        op.wait_for_condition(
+            "!!document.querySelector('#pin_form') || !!document.querySelector('#review_form')",
+            timeout=15.0,
+        )
 
-        # 等待含"Pin"表头的 PIN 数据表格出现（页面加载时即存在，无需点击任何按钮）
+        # 等待含"Pin"表头的 PIN 数据表格出现，或 #review_form textarea 有内容
         _PIN_TABLE_JS = (
             "(function(){"
             "var tables=document.querySelectorAll('#pin_form table');"
             "for(var i=0;i<tables.length;i++){"
             "var ths=tables[i].querySelectorAll('thead th');"
             "for(var j=0;j<ths.length;j++){if(ths[j].textContent.trim()==='Pin')return true;}"
-            "}return false;})()"
+            "};"
+            "var ta=document.querySelector('#review_form textarea');"
+            "return !!(ta&&(ta.value||ta.textContent||'').trim());"
+            "})()"
         )
         try:
             op.wait_for_condition(_PIN_TABLE_JS, timeout=15.0, poll=0.5)
@@ -482,6 +499,41 @@ def _save_pins_excel(rows: list, output_dir: Path) -> Path:
     return filename
 
 
+def _get_retry_locked_orders(siparisler_file: Path, pinler_file: Path) -> list:
+    """返回需要补抓的订单列表，同时满足以下两个条件：
+    条件一（来自 siparisler）：已锁定数量 == 1
+    条件二（来自 pinler）  ：该订单 ID 在 pinler 中完全不存在，或存在但 Pin码 为空
+    """
+    import pandas as pd
+    df_s = pd.read_excel(siparisler_file, engine='openpyxl', dtype=str).fillna('')
+    locked = df_s[df_s['已锁定数量'].str.strip() == '1'][['订单ID', '订单号']].copy()
+    if locked.empty:
+        return []
+    if pinler_file.exists():
+        df_p = pd.read_excel(pinler_file, engine='openpyxl', dtype=str).fillna('')
+        valid_ids = set(df_p[df_p['Pin码'].str.strip() != '']['订单ID'].str.strip())
+        locked = locked[~locked['订单ID'].str.strip().isin(valid_ids)]
+    return locked.rename(columns={'订单ID': 'siparis_id', '订单号': 'siparis_no'}).to_dict('records')
+
+
+def _merge_pins_to_file(new_rows: list, pinler_file: Path) -> None:
+    """将补抓的 pin 行合并到已有 epin_pinler 文件中（追加或替换空 pin 行）。"""
+    import pandas as pd
+    df_new = pd.DataFrame(new_rows).rename(columns=_PIN_COLUMN_MAP)
+    df_new = df_new[[v for v in _PIN_COLUMN_MAP.values() if v in df_new.columns]]
+    if pinler_file.exists():
+        df_old = pd.read_excel(pinler_file, engine='openpyxl', dtype=str).fillna('')
+        retry_ids = set(df_new['订单ID'].str.strip())
+        df_old = df_old[~(
+            df_old['订单ID'].str.strip().isin(retry_ids) &
+            (df_old['Pin码'].str.strip() == '')
+        )]
+        df_merged = pd.concat([df_old, df_new], ignore_index=True)
+    else:
+        df_merged = df_new
+    df_merged.to_excel(pinler_file, index=False, engine='openpyxl')
+
+
 def main() -> int:
     import argparse
     logging.basicConfig(
@@ -493,17 +545,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="1epin.com 数据提取")
     parser.add_argument(
         '--mode',
-        choices=['all', 'orders', 'pins'],
+        choices=['all', 'orders', 'pins', 'retry-locked'],
         default='all',
-        help='all=订单+PIN（默认），orders=仅抓订单列表，pins=仅提取PIN码',
+        help='all=订单+PIN（默认），orders=仅抓订单列表，pins=仅提取PIN码，retry-locked=仅补抓锁定数量=1的漏抓订单',
     )
     args = parser.parse_args()
-    only_orders = (args.mode == 'orders')
-    only_pins   = (args.mode == 'pins')
+    only_orders   = (args.mode == 'orders')
+    only_pins     = (args.mode == 'pins')
+    retry_locked  = (args.mode == 'retry-locked')
 
     # 0. 准备订单数据
     from datetime import date as _date
     orders_file = OUTPUT_DIR_EPIN / f"epin_siparisler_{_date.today():%Y%m%d}.xlsx"
+    pinler_file = OUTPUT_DIR_EPIN / f"epin_pinler_{_date.today():%Y%m%d}.xlsx"
     rows = []
 
     if only_pins:
@@ -520,6 +574,15 @@ def main() -> int:
             .to_dict('records')
         )
         logger.info("仅提取 PIN 模式，已加载今日订单文件，共 %d 条记录", len(rows))
+    elif retry_locked:
+        if not orders_file.exists():
+            logger.error("--mode retry-locked 需要今日订单文件，未找到：%s", orders_file)
+            return 1
+        rows = _get_retry_locked_orders(orders_file, pinler_file)
+        if not rows:
+            logger.info("没有需要补抓的订单（锁定数量=1 且无有效 pin 的订单为零）")
+            return 0
+        logger.info("retry-locked 模式：共 %d 个订单需要补抓", len(rows))
     else:
         has_existing_orders = orders_file.exists()
         if has_existing_orders:
@@ -592,10 +655,10 @@ def main() -> int:
         input("登录完成后按回车继续：")
         log_cookie_store_status(CHROME_PROFILE_DIR_EPIN)
 
-    # 7. pins 模式不需要连接订单列表标签页，直接进入 PIN 提取
+    # 7. pins/retry-locked 模式不需要连接订单列表标签页，直接进入 PIN 提取
     op = None
     try:
-        if not only_pins:
+        if not only_pins and not retry_locked:
             logger.info("正在通过 CDP 连接到 Chrome（端口 %d）...", CHROME_DEBUG_PORT_EPIN)
             try:
                 op = ChromeOperator(CHROME_DEBUG_PORT_EPIN).connect(tab_url=_EPIN_ORIGIN)
@@ -632,8 +695,12 @@ def main() -> int:
             logger.info("正在并行提取 Pin 码（共 %d 单，每批3个）...", len(rows))
             pin_rows = _fetch_all_pins_parallel(CHROME_DEBUG_PORT_EPIN, rows)
             if pin_rows:
-                pin_file = _save_pins_excel(pin_rows, OUTPUT_DIR_EPIN)
-                logger.info("Pin 码已输出：%s", pin_file)
+                if retry_locked:
+                    _merge_pins_to_file(pin_rows, pinler_file)
+                    logger.info("已合并补抓 Pin 码到：%s", pinler_file)
+                else:
+                    pin_file = _save_pins_excel(pin_rows, OUTPUT_DIR_EPIN)
+                    logger.info("Pin 码已输出：%s", pin_file)
             else:
                 logger.warning("未提取到任何 Pin 码数据")
         else:

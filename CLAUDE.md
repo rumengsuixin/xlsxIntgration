@@ -85,7 +85,7 @@ data/
     input/2/                # 代号2：{公司代号}-{银行全称}-{币种}.{扩展名} 源文件
     input/3/                # 代号3：admin + ADYEN- + 华为平台- + Googol- 源文件
     input/raw/              # 原始未命名样例（不被扫描）
-    input/raw/5/            # 代号5：admin- / ibf平台 / superpay- / wangupay- 源文件
+    input/5/                # 代号5：admin- / ibf平台 / superpay- / wangupay- 源文件
     browser_profile/4/      # 代号4：独立 Chrome 登录态目录（运行时生成）
     output/
         国内银行汇总.xlsx           # 代号1运行时从模板复制的工作副本（最终输出）
@@ -129,7 +129,7 @@ tests/
 
 ## 代号5数据流
 
-1. `scan_source_files_5`：在 `data/input/raw/5/` 扫描 `.xls`/`.xlsx`，按 stem 小写前缀分类（跳过 `~$` 临时文件）
+1. `scan_source_files_5`：在 `data/input/5/` 扫描 `.xls`/`.xlsx`，按 stem 小写前缀分类（跳过 `~$` 临时文件）
 2. `read_admin_5`：engine=xlrd，sheet="Simple"，找不到时回退查找含 `订单号` 列的 sheet；`dropna+fillna`
 3. `read_ibfpay_5`：自动检测资金流水账格式（有 `类型` 列，两行合并）或订单明细格式（无 `类型` 列，手续费置0）
 4. `read_superpay_5` / `read_wangguypay_5`：`_select_sheet_by_columns_5` 自动定位含必要列的 sheet
@@ -238,7 +238,7 @@ tests/
 - **Cookie 判定**：只把 `data/browser_profile/4/Default/Cookies` 作为可复用登录态判断依据，`Default/Network/Cookies` 仅打印诊断日志
 
 ### 代号5
-- **源文件目录**：`data/input/raw/5/`，所有文件平铺放置
+- **源文件目录**：`data/input/5/`，所有文件平铺放置
 - **文件识别规则**（stem 小写前缀匹配，来自 `PLATFORM_PREFIXES_5`）：
   - `admin-` → admin 后台主表（XLS）
   - `ibfpay-` → IBFYPAY 订单明细格式（无 `类型` 列，手续费置0）

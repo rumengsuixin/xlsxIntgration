@@ -3,7 +3,7 @@
 from .config import DATA_DIR, OUTPUT_DIR  # noqa: F401
 
 # ── 路径常量 ──────────────────────────────────────────────────────────────────
-INPUT_DIR_5 = DATA_DIR / "input" / "raw" / "5"
+INPUT_DIR_5 = DATA_DIR / "input" / "5"
 OUTPUT_FILE_TEMPLATE_5 = "代付对账结果_{date}.xlsx"
 
 # ── 输出工作表名称 ────────────────────────────────────────────────────────────

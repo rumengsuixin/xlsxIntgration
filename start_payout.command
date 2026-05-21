@@ -6,7 +6,7 @@ echo "========================================"
 echo "代付订单对账（代号5）"
 echo "========================================"
 echo ""
-echo "请将 admin / IBFYPAY / SUPERPAY / WANGGUYPAY 源文件放入 data/input/raw/5/ 后运行。"
+echo "请将 admin / IBFYPAY / SUPERPAY / WANGGUYPAY 源文件放入 data/input/5/ 后运行。"
 echo ""
 
 EXIT_CODE=1

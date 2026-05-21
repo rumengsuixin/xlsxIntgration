@@ -1,7 +1,7 @@
 """代号5（代付订单对账）应用逻辑。
 
 数据流：
-    data/input/raw/5/  →  scan_source_files_5()
+    data/input/5/      →  scan_source_files_5()
                                │
         read_admin_5 / read_ibfpay_5 / read_superpay_5 / read_wangguypay_5 / read_phonecard_5
                                │

@@ -39,6 +39,7 @@ venv/Scripts/python.exe 整合4.py --date-range 2026-04-01 2026-04-30 --wait-sec
 # 每批下载不完整时自动重试次数：MODE4_RETRY_LIMIT=3
 # 检查缺失文件机会次数：MODE4_MISSING_CHECK_CHANCES=10
 # 检查缺失文件间隔秒数：MODE4_CHECK_INTERVAL_SECONDS=2
+# EPIN订单列表加载更多点击间隔秒数：MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS=3
 
 # 运行全部回归测试
 venv/Scripts/python.exe -m unittest discover -s tests
@@ -124,6 +125,7 @@ tests/
 8. 按批次等待下载完成；`--wait-seconds` / `MODE4_BATCH_WAIT_SECONDS` 保留兼容，实际重试由检查机会和检查间隔控制，机会用完才重试
 9. 全部日期齐备后，按日期选择最新完成文件并合并为 `data/output/4/后台充值订单导出合并_{start}_{end}.xlsx`
 10. 合并读取 `.xls` 时若 `xlrd` 无法直接读取，会尝试用 LibreOffice 或 Windows Excel 临时转换为 `.xlsx` 后再读取
+11. `整合4_epin.py` 抓取 1epin 订单列表时，`MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS` 控制每次点击“加载更多”后的下一次点击间隔，默认 3 秒
 
 ## 代号5数据流
 

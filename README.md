@@ -83,9 +83,12 @@ MODE4_BATCH_SIZE=5
 MODE4_RETRY_LIMIT=3
 MODE4_MISSING_CHECK_CHANCES=10
 MODE4_CHECK_INTERVAL_SECONDS=2
+MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS=3
 ```
 
 `MODE4_BATCH_WAIT_SECONDS` 保留为兼容旧参数；实际是否重试由 `MODE4_MISSING_CHECK_CHANCES` 和 `MODE4_CHECK_INTERVAL_SECONDS` 控制，机会用完才会重试，默认每 2 秒检查 1 次，最多 10 次。`MODE4_BATCH_SIZE` 控制每批打开多少个导出链接，默认 `5`；`MODE4_RETRY_LIMIT` 控制每批缺失文件最多自动重试多少次，默认 `3`。等待秒数优先级为：命令行 `--wait-seconds` > 系统环境变量 > `.env` > 默认值 `10`；其他配置优先级为：系统环境变量 > `.env` > 默认值。
+
+`整合4_epin.py` 抓取 1epin 订单列表时，`MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS` 控制每次点击“加载更多”后继续下一次点击前的额外等待，默认 `3` 秒。
 
 日期格式必须为 `YYYY-MM-DD`。程序会按日期区间逐日打开导出 URL，使用独立 Chrome 登录环境 `data/browser_profile/4`，并把浏览器下载目录设置为 `data/output/4`。如果该独立环境还没有 `Default/Cookies`，程序会先打开固定登录页 `https://aim1.567okey.com/Public/login.html` 让用户登录；登录完成后回到终端按回车继续打开导出链接。每批打开导出 URL 前会先检查对应日期文件是否已经存在，已存在的日期会直接跳过，不再打开下载链接。
 

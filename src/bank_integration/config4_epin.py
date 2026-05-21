@@ -7,7 +7,9 @@ CHROME_PROFILE_DIR_EPIN = DATA_DIR / "browser_profile" / "4_epin"
 OUTPUT_DIR_EPIN = OUTPUT_DIR / "4_epin"
 
 MODE4_EPIN_DEBUG_PORT_ENV = "MODE4_EPIN_DEBUG_PORT"
+MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS_ENV = "MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS"
 DEFAULT_CHROME_DEBUG_PORT_EPIN = 9225
+DEFAULT_EPIN_ORDER_LOAD_INTERVAL_SECONDS = 3
 
 
 def get_epin_debug_port(
@@ -19,4 +21,19 @@ def get_epin_debug_port(
     return _get_positive_int_config(MODE4_EPIN_DEBUG_PORT_ENV, default, env, env_path)
 
 
+def get_epin_order_load_interval_seconds(
+    env=None,
+    env_path=None,
+    default: int = DEFAULT_EPIN_ORDER_LOAD_INTERVAL_SECONDS,
+) -> int:
+    """Return 1epin.com order list load interval seconds from environment or .env."""
+    return _get_positive_int_config(
+        MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS_ENV,
+        default,
+        env,
+        env_path,
+    )
+
+
 CHROME_DEBUG_PORT_EPIN = get_epin_debug_port()
+EPIN_ORDER_LOAD_INTERVAL_SECONDS = get_epin_order_load_interval_seconds()

@@ -11,6 +11,7 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 
 import src.bank_integration.app4 as app4_module
+import src.bank_integration.app4_epin as app4_epin_module
 from src.bank_integration.balances import (
     get_last_balance,
     get_monthly_balances,
@@ -76,6 +77,7 @@ from src.bank_integration.config4 import (
     get_mode4_missing_check_chances,
     get_mode4_retry_limit,
 )
+from src.bank_integration.config4_epin import get_epin_order_load_interval_seconds
 from src.bank_integration.config5 import (
     ADMIN_JOIN_COL_5,
     ADMIN_ORG_COL_5,
@@ -2789,6 +2791,61 @@ class BankIntegrationSampleTests(unittest.TestCase):
                     ),
                     2,
                 )
+
+    def test_mode4_epin_order_load_interval_reads_env_file_and_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS=5\n", encoding="utf-8")
+
+            self.assertEqual(get_epin_order_load_interval_seconds(env={}, env_path=env_path), 5)
+            self.assertEqual(
+                get_epin_order_load_interval_seconds(
+                    env={"MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS": "8"},
+                    env_path=env_path,
+                ),
+                8,
+            )
+            self.assertEqual(
+                get_epin_order_load_interval_seconds(env={}, env_path=Path(tmp) / "missing.env"),
+                3,
+            )
+            for invalid_value in ("abc", "0", "-3"):
+                self.assertEqual(
+                    get_epin_order_load_interval_seconds(
+                        env={"MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS": invalid_value},
+                        env_path=env_path,
+                    ),
+                    3,
+                )
+
+    def test_mode4_epin_load_all_orders_waits_between_successful_loads_only(self):
+        class FakeOperator:
+            def __init__(self):
+                self.rows = 0
+                self.increments = [10, 10]
+                self.clicks = 0
+
+            def evaluate(self, expression):
+                if "offsetParent" in expression:
+                    return self.clicks < len(self.increments)
+                if "#myTable tbody tr" in expression:
+                    return self.rows
+                return None
+
+            def click(self, selector):
+                if selector != "#showMore":
+                    raise AssertionError(selector)
+
+            def wait_for_condition(self, *_args, **_kwargs):
+                self.rows += self.increments[self.clicks]
+                self.clicks += 1
+
+        fake = FakeOperator()
+        with patch.object(app4_epin_module.time, "sleep") as sleep_mock:
+            app4_epin_module._load_all_orders(fake, max_clicks=3, click_interval_seconds=3)
+
+        self.assertEqual(fake.clicks, 2)
+        sleep_mock.assert_called_once_with(3)
 
     def test_mode4_expected_export_file_matches_strict_date_filename(self):
         with tempfile.TemporaryDirectory() as tmp:

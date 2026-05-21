@@ -23,6 +23,7 @@ from .config4_epin import (
     CHROME_PROFILE_DIR_EPIN,
     OUTPUT_DIR_EPIN,
     CHROME_DEBUG_PORT_EPIN,
+    EPIN_ORDER_LOAD_INTERVAL_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -210,14 +211,21 @@ _PIN_COLUMN_MAP = {
 }
 
 
-def _load_all_orders(op: ChromeOperator, max_clicks: int = 200) -> None:
+def _is_show_more_visible(op: ChromeOperator) -> bool:
+    return bool(op.evaluate(
+        "!!(document.querySelector('#showMore') && "
+        "document.querySelector('#showMore').offsetParent !== null)"
+    ))
+
+
+def _load_all_orders(
+    op: ChromeOperator,
+    max_clicks: int = 200,
+    click_interval_seconds: int = EPIN_ORDER_LOAD_INTERVAL_SECONDS,
+) -> None:
     """反复点击"加载更多"按钮，直到按钮消失或行数不再增加。"""
     for i in range(max_clicks):
-        visible = op.evaluate(
-            "!!(document.querySelector('#showMore') && "
-            "document.querySelector('#showMore').offsetParent !== null)"
-        )
-        if not visible:
+        if not _is_show_more_visible(op):
             logger.info("'加载更多'按钮不可见，数据已全部加载")
             break
 
@@ -238,6 +246,9 @@ def _load_all_orders(op: ChromeOperator, max_clicks: int = 200) -> None:
         if after <= before:
             logger.info("行数未增加（%d → %d），数据已全部加载", before, after)
             break
+        if i < max_clicks - 1 and _is_show_more_visible(op):
+            logger.info("订单列表加载间隔等待 %d 秒", click_interval_seconds)
+            time.sleep(click_interval_seconds)
     else:
         logger.warning("已达最大点击次数 %d，可能仍有未加载数据", max_clicks)
 
@@ -601,7 +612,7 @@ def main() -> int:
                 op.wait_for_condition("!!document.querySelector('#myTable')", timeout=15.0)
 
                 # 9. 反复点击"加载更多"直到数据全部展示
-                _load_all_orders(op)
+                _load_all_orders(op, click_interval_seconds=EPIN_ORDER_LOAD_INTERVAL_SECONDS)
 
                 # 10. 结构化提取全部订单
                 rows = _extract_orders(op)

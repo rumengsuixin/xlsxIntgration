@@ -159,7 +159,8 @@ _TR_MONTHS = {
     'Eylül': 9, 'Ekim': 10, 'Kasım': 11, 'Aralık': 12,
 }
 
-_DATE_COLS = ('siparis_tarihi', 'onay_tarihi')
+_DATE_COLS   = ('siparis_tarihi', 'onay_tarihi')
+_AMOUNT_COLS = ('birim_fiyat', 'tutar', 'once', 'sonra')
 
 
 def _parse_tr_date(s: str) -> str:
@@ -261,6 +262,11 @@ def _save_orders_excel(rows: list, output_dir: Path) -> Path:
     for col in _DATE_COLS:
         if col in df.columns:
             df[col] = df[col].apply(_parse_tr_date)
+    for col in _AMOUNT_COLS:
+        if col in df.columns:
+            df[col] = df[col].apply(
+                lambda v: v.split()[0] if isinstance(v, str) and v.strip() else v
+            )
     df = df.rename(columns=_COLUMN_MAP)
     df = df[[v for v in _COLUMN_MAP.values() if v in df.columns]]
 
@@ -466,20 +472,34 @@ def _save_pins_excel(rows: list, output_dir: Path) -> Path:
 
 
 def main() -> int:
+    import argparse
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
 
-    # 0. 检测今日订单文件是否已存在（存在则跳过订单列表抓取）
+    parser = argparse.ArgumentParser(description="1epin.com 数据提取")
+    parser.add_argument(
+        '--mode',
+        choices=['all', 'orders', 'pins'],
+        default='all',
+        help='all=订单+PIN（默认），orders=仅抓订单列表，pins=仅提取PIN码',
+    )
+    args = parser.parse_args()
+    only_orders = (args.mode == 'orders')
+    only_pins   = (args.mode == 'pins')
+
+    # 0. 准备订单数据
     from datetime import date as _date
     orders_file = OUTPUT_DIR_EPIN / f"epin_siparisler_{_date.today():%Y%m%d}.xlsx"
-    has_existing_orders = orders_file.exists()
     rows = []
 
-    if has_existing_orders:
-        logger.info("检测到已有订单文件，将跳过订单列表抓取：%s", orders_file)
+    if only_pins:
+        # pins 模式：必须有今日订单文件
+        if not orders_file.exists():
+            logger.error("--mode pins 需要今日订单文件，未找到：%s", orders_file)
+            return 1
         import pandas as _pd
         _df = _pd.read_excel(orders_file, engine='openpyxl')
         rows = (
@@ -488,6 +508,19 @@ def main() -> int:
             .dropna(subset=['siparis_id'])
             .to_dict('records')
         )
+        logger.info("仅提取 PIN 模式，已加载今日订单文件，共 %d 条记录", len(rows))
+    else:
+        has_existing_orders = orders_file.exists()
+        if has_existing_orders:
+            logger.info("检测到已有订单文件，将跳过订单列表抓取：%s", orders_file)
+            import pandas as _pd
+            _df = _pd.read_excel(orders_file, engine='openpyxl')
+            rows = (
+                _df[['订单ID', '订单号']]
+                .rename(columns={'订单ID': 'siparis_id', '订单号': 'siparis_no'})
+                .dropna(subset=['siparis_id'])
+                .to_dict('records')
+            )
 
     # 1. 查找 Chrome
     chrome_path = find_chrome_executable()
@@ -499,7 +532,7 @@ def main() -> int:
     CHROME_PROFILE_DIR_EPIN.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR_EPIN.mkdir(parents=True, exist_ok=True)
 
-    # 3. 提前检查 Cookie（后续无论哪条路径都需要判断是否要等待登录）
+    # 3. 提前检查 Cookie
     has_cookie = has_chrome_cookie_store(CHROME_PROFILE_DIR_EPIN)
 
     # 4. 检测 Chrome 是否已运行，并定位或打开目标标签页
@@ -523,7 +556,7 @@ def main() -> int:
             logger.info("未找到目标网站标签页，正在通过 CDP 打开新标签页...")
             try:
                 open_new_tab(CHROME_DEBUG_PORT_EPIN, TARGET_URL_EPIN)
-                time.sleep(1.5)  # 等待新标签页加载
+                time.sleep(1.5)
                 chrome_ready = True
             except Exception:
                 logger.warning("CDP 打开新标签页失败，将重新启动 Chrome", exc_info=True)
@@ -541,56 +574,62 @@ def main() -> int:
             logger.error("启动 Chrome 失败", exc_info=True)
             return 1
 
-    # 6. 无论哪条路径，Cookie 不存在时都需要等待用户登录
+    # 6. Cookie 不存在时等待用户登录
     if not has_cookie:
         logger.info("当前独立 Chrome profile 还没有 Cookie 数据。")
         logger.info("请在打开的 Chrome 窗口中完成登录，登录后回到此终端按回车继续。")
         input("登录完成后按回车继续：")
         log_cookie_store_status(CHROME_PROFILE_DIR_EPIN)
 
-    # 7. CDP 连接到目标标签页
-    logger.info("正在通过 CDP 连接到 Chrome（端口 %d）...", CHROME_DEBUG_PORT_EPIN)
+    # 7. pins 模式不需要连接订单列表标签页，直接进入 PIN 提取
+    op = None
     try:
-        op = ChromeOperator(CHROME_DEBUG_PORT_EPIN).connect(tab_url=_EPIN_ORIGIN)
-    except Exception:
-        logger.error("CDP 连接失败，请确认 Chrome 已启动并端口正确", exc_info=True)
-        return 1
-
-    try:
-        if not has_existing_orders:
-            logger.info("导航到目标页面: %s", TARGET_URL_EPIN)
-            op.navigate(TARGET_URL_EPIN)
-
-            # 8. 等待订单表格渲染完成
-            logger.info("等待订单表格加载...")
-            op.wait_for_condition("!!document.querySelector('#myTable')", timeout=15.0)
-
-            # 9. 反复点击"加载更多"直到数据全部展示
-            _load_all_orders(op)
-
-            # 10. 结构化提取全部订单
-            rows = _extract_orders(op)
-            if not rows:
-                logger.warning("未提取到任何订单数据，请确认页面已正确加载")
+        if not only_pins:
+            logger.info("正在通过 CDP 连接到 Chrome（端口 %d）...", CHROME_DEBUG_PORT_EPIN)
+            try:
+                op = ChromeOperator(CHROME_DEBUG_PORT_EPIN).connect(tab_url=_EPIN_ORIGIN)
+            except Exception:
+                logger.error("CDP 连接失败，请确认 Chrome 已启动并端口正确", exc_info=True)
                 return 1
 
-            # 11. 写入 Excel
-            logger.info("共提取 %d 条订单记录，正在写入 Excel...", len(rows))
-            output_file = _save_orders_excel(rows, OUTPUT_DIR_EPIN)
-            logger.info("已输出：%s", output_file)
-        else:
-            logger.info("使用已有订单文件，共 %d 条记录，直接进入 Pin 码提取", len(rows))
+            if not rows:
+                logger.info("导航到目标页面: %s", TARGET_URL_EPIN)
+                op.navigate(TARGET_URL_EPIN)
+
+                # 8. 等待订单表格渲染完成
+                logger.info("等待订单表格加载...")
+                op.wait_for_condition("!!document.querySelector('#myTable')", timeout=15.0)
+
+                # 9. 反复点击"加载更多"直到数据全部展示
+                _load_all_orders(op)
+
+                # 10. 结构化提取全部订单
+                rows = _extract_orders(op)
+                if not rows:
+                    logger.warning("未提取到任何订单数据，请确认页面已正确加载")
+                    return 1
+
+                # 11. 写入 Excel
+                logger.info("共提取 %d 条订单记录，正在写入 Excel...", len(rows))
+                output_file = _save_orders_excel(rows, OUTPUT_DIR_EPIN)
+                logger.info("已输出：%s", output_file)
+            else:
+                logger.info("使用已有订单文件，共 %d 条记录", len(rows))
 
         # 12. 并行提取各订单 Pin 码并写入 Excel
-        logger.info("正在并行提取 Pin 码（共 %d 单，每批3个）...", len(rows))
-        pin_rows = _fetch_all_pins_parallel(CHROME_DEBUG_PORT_EPIN, rows)
-        if pin_rows:
-            pin_file = _save_pins_excel(pin_rows, OUTPUT_DIR_EPIN)
-            logger.info("Pin 码已输出：%s", pin_file)
+        if not only_orders:
+            logger.info("正在并行提取 Pin 码（共 %d 单，每批3个）...", len(rows))
+            pin_rows = _fetch_all_pins_parallel(CHROME_DEBUG_PORT_EPIN, rows)
+            if pin_rows:
+                pin_file = _save_pins_excel(pin_rows, OUTPUT_DIR_EPIN)
+                logger.info("Pin 码已输出：%s", pin_file)
+            else:
+                logger.warning("未提取到任何 Pin 码数据")
         else:
-            logger.warning("未提取到任何 Pin 码数据")
+            logger.info("--mode orders：跳过 PIN 提取")
 
     finally:
-        op.disconnect()
+        if op:
+            op.disconnect()
 
     return 0

@@ -721,10 +721,10 @@ def _merge_pins_to_file(new_rows: list, pinler_file: Path) -> None:
     df_new = df_new[[v for v in _PIN_COLUMN_MAP.values() if v in df_new.columns]]
     if pinler_file.exists():
         df_old = pd.read_excel(pinler_file, engine='openpyxl', dtype=str).fillna('')
-        retry_ids = set(df_new['订单ID'].str.strip())
+        retry_ids = set(df_new['订单ID'].astype(str).str.strip())
         df_old = df_old[~(
-            df_old['订单ID'].str.strip().isin(retry_ids) &
-            (df_old['Pin码'].str.strip() == '')
+            df_old['订单ID'].astype(str).str.strip().isin(retry_ids) &
+            (df_old['Pin码'].astype(str).str.strip() == '')
         )]
         df_merged = pd.concat([df_old, df_new], ignore_index=True)
     else:
@@ -754,6 +754,12 @@ def main() -> int:
         default=[],
         metavar='PIN_CODE',
         help='通过搜索框输入 PIN 码提取隐藏订单，可多次指定',
+    )
+    parser.add_argument(
+        '--skip-fetched',
+        action='store_true',
+        default=False,
+        help='pins 模式下跳过 pinler 文件中已有有效 PIN 的订单，仅补抓缺失的',
     )
     args = parser.parse_args()
     # 提供了 --search-pin 时只做订单列表抓取，不自动触发 pinler 提取
@@ -785,6 +791,19 @@ def main() -> int:
             .to_dict('records')
         )
         logger.info("仅提取 PIN 模式，已加载今日订单文件，共 %d 条记录", len(rows))
+        if args.skip_fetched and pinler_file.exists():
+            import pandas as _pd2
+            df_p = _pd2.read_excel(pinler_file, engine='openpyxl', dtype=str).fillna('')
+            valid_ids = set(df_p[df_p['Pin码'].astype(str).str.strip() != '']['订单ID'].astype(str).str.strip())
+            before = len(rows)
+            rows = [r for r in rows if str(r.get('siparis_id', '')).strip() not in valid_ids]
+            logger.info(
+                "--skip-fetched：已跳过 %d 个有效 PIN 的订单，剩余 %d 个待提取",
+                before - len(rows), len(rows),
+            )
+            if not rows:
+                logger.info("所有订单均已有有效 PIN，无需提取")
+                return 0
     elif retry_locked:
         if not orders_file.exists():
             logger.error("--mode retry-locked 需要今日订单文件，未找到：%s", orders_file)
@@ -999,9 +1018,9 @@ def main() -> int:
             logger.info("正在并行提取 Pin 码（共 %d 单，每批3个）...", len(rows))
             pin_rows = _fetch_all_pins_parallel(CHROME_DEBUG_PORT_EPIN, rows)
             if pin_rows:
-                if retry_locked:
+                if retry_locked or (only_pins and args.skip_fetched):
                     _merge_pins_to_file(pin_rows, pinler_file)
-                    logger.info("已合并补抓 Pin 码到：%s", pinler_file)
+                    logger.info("已合并 Pin 码到：%s", pinler_file)
                 else:
                     pin_file = _save_pins_excel(pin_rows, OUTPUT_DIR_EPIN)
                     logger.info("Pin 码已输出：%s", pin_file)

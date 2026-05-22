@@ -160,12 +160,22 @@ class ChromeOperator:
         logger.debug("导航到: %s", url)
 
     def evaluate(self, expression: str) -> Any:
-        """执行 JavaScript 表达式，返回结果值。"""
-        result = self._send("Runtime.evaluate", {
+        """执行 JavaScript 表达式，返回结果值。JS 异常时打印 warning 并返回 None。"""
+        resp = self._send("Runtime.evaluate", {
             "expression": expression,
             "returnByValue": True,
         })
-        return result.get("result", {}).get("result", {}).get("value")
+        cdp_eval = resp.get("result", {})
+        if "exceptionDetails" in cdp_eval:
+            exc_desc = (
+                cdp_eval["exceptionDetails"]
+                .get("exception", {})
+                .get("description")
+                or cdp_eval["exceptionDetails"].get("text", "未知 JS 异常")
+            )
+            logger.warning("JS 执行异常: %s", exc_desc)
+            return None
+        return cdp_eval.get("result", {}).get("value")
 
     def click(self, css_selector: str) -> None:
         """通过 JavaScript 点击 CSS 选择器匹配的第一个元素。"""

@@ -113,7 +113,7 @@ EXPORT_URL_TEMPLATE = (
 EXPORT_LOGIN_URL_4 = "https://aim1.567okey.com/Public/login.html"
 
 EXPORT_DOWNLOAD_DIR_4 = OUTPUT_DIR / "4"
-CHROME_PROFILE_DIR_4 = DATA_DIR / "browser_profile" / "4"
+CHROME_PROFILE_DIR_4 = DATA_DIR / "browser_profile" / "4_epin"
 EXPORT_BATCH_SIZE_4 = get_mode4_batch_size()
 EXPORT_BATCH_WAIT_SECONDS_4 = get_mode4_batch_wait_seconds()
 EXPORT_RETRY_LIMIT_4 = get_mode4_retry_limit()
@@ -122,7 +122,7 @@ EXPORT_CHECK_INTERVAL_SECONDS_4 = get_mode4_check_interval_seconds()
 EXPORT_COMPLETED_SUFFIXES_4 = (".xls", ".xlsx", ".csv")
 
 MODE4_DEBUG_PORT_ENV = "MODE4_DEBUG_PORT"
-DEFAULT_CHROME_DEBUG_PORT_4 = 9224
+DEFAULT_CHROME_DEBUG_PORT_4 = 9225
 
 
 def get_mode4_debug_port(

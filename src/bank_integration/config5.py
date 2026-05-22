@@ -111,6 +111,7 @@ PLATFORM_PREFIXES_5: dict = {
     "phonecard":       ["okey话费卡结算"],
     "epin_siparisler": ["epin_siparisler_"],
     "epin_pinler":     ["epin_pinler_"],
+    "epin_odemeler":   ["epin_odemeler_"],
 }
 
 # ── 输出新增列（追加在 admin 原始列末尾）────────────────────────────────────
@@ -179,3 +180,14 @@ EPIN_PINLER_PIN_CODE_COL_5  = "Pin码"
 EPIN_ORG_PATTERN_5    = r"^\d+$"
 # admin 侧关联键（第三方订单号存 pin 码值）
 EPIN_ADMIN_JOIN_COL_5 = "第三方订单号"
+
+# epin 付款列表（odemeler）列名
+EPIN_ODEMELER_PAYMENT_ID_COL_5    = "付款ID"
+EPIN_ODEMELER_STATUS_COL_5        = "付款状态"
+EPIN_ODEMELER_CREATE_TIME_COL_5   = "创建时间"
+EPIN_ODEMELER_CONFIRM_TIME_COL_5  = "确认时间"
+EPIN_ODEMELER_TYPE_COL_5          = "付款类型"
+EPIN_ODEMELER_AMOUNT_COL_5        = "付款金额(USD)"
+EPIN_ODEMELER_USER_COL_5          = "用户"
+EPIN_ODEMELER_BEGIN_BALANCE_COL_5 = "付款前余额(USD)"
+EPIN_ODEMELER_END_BALANCE_COL_5   = "付款后余额(USD)"

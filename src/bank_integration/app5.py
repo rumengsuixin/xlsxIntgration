@@ -112,6 +112,15 @@ from .config5 import (
     EPIN_PINLER_PIN_CODE_COL_5,
     EPIN_ORG_PATTERN_5,
     EPIN_ADMIN_JOIN_COL_5,
+    EPIN_ODEMELER_PAYMENT_ID_COL_5,
+    EPIN_ODEMELER_STATUS_COL_5,
+    EPIN_ODEMELER_CREATE_TIME_COL_5,
+    EPIN_ODEMELER_CONFIRM_TIME_COL_5,
+    EPIN_ODEMELER_TYPE_COL_5,
+    EPIN_ODEMELER_AMOUNT_COL_5,
+    EPIN_ODEMELER_USER_COL_5,
+    EPIN_ODEMELER_BEGIN_BALANCE_COL_5,
+    EPIN_ODEMELER_END_BALANCE_COL_5,
     MATCH_STATUS_COL_5,
     PLATFORM_ORDER_NO_COL_5,
     PLATFORM_AMOUNT_COL_5,
@@ -873,6 +882,55 @@ def read_epin_pinler_5(filepath: Path) -> pd.DataFrame:
     return df
 
 
+def read_epin_odemeler_5(filepath: Path) -> pd.DataFrame:
+    """读取 epin 付款列表文件（epin_odemeler_*），全列字符串。"""
+    df = pd.read_excel(filepath, engine="openpyxl", dtype=str)
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.dropna(how="all").fillna("")
+    logging.info("【EPIN odemeler】%s 共 %d 行", filepath.name, len(df))
+    return df
+
+
+def build_epin_odemeler_balance_5(df: pd.DataFrame) -> pd.DataFrame:
+    """从 epin_odemeler 构建 EPIN 平台按月余额汇总行。
+
+    金额列为土耳其语小数格式（逗号为小数点），需预处理后再交通用函数处理。
+    所有行均视为充值，由 _build_one_platform_balance_summary_5 内的 EPIN 分支保证。
+    """
+    output_cols = ["交易月份", "机构", PLATFORM_CURRENCY_COL_5] + SUMMARY_BALANCE_COLS_5
+    if df is None or df.empty:
+        return pd.DataFrame(columns=output_cols)
+
+    work = df.copy()
+    # 只保留成功状态的付款行（土耳其语原文或 Chrome 翻译后的中文均支持）
+    if EPIN_ODEMELER_STATUS_COL_5 in work.columns:
+        success_statuses = {"Başarılı", "成功"}
+        work = work[work[EPIN_ODEMELER_STATUS_COL_5].str.strip().isin(success_statuses)]
+    if work.empty:
+        return pd.DataFrame(columns=output_cols)
+
+    for col in (EPIN_ODEMELER_AMOUNT_COL_5, EPIN_ODEMELER_BEGIN_BALANCE_COL_5, EPIN_ODEMELER_END_BALANCE_COL_5):
+        if col in work.columns:
+            work[col] = work[col].apply(
+                lambda v: str(v).strip().replace(".", "").replace(",", ".") if str(v).strip() else v
+            )
+
+    result = _build_one_platform_balance_summary_5(
+        work,
+        platform=EPIN_PLATFORM_NAME_5,
+        currency=EPIN_DEFAULT_CURRENCY_5,
+        type_col=EPIN_ODEMELER_TYPE_COL_5,
+        begin_col=EPIN_ODEMELER_BEGIN_BALANCE_COL_5,
+        change_col=EPIN_ODEMELER_AMOUNT_COL_5,
+        end_col=EPIN_ODEMELER_END_BALANCE_COL_5,
+        time_cols=[EPIN_ODEMELER_CONFIRM_TIME_COL_5, EPIN_ODEMELER_CREATE_TIME_COL_5],
+    )
+    # 付款后余额仅为每笔付款的即时快照，非月末真实平台余额（中间可能有支出）
+    if SUMMARY_PLATFORM_END_BALANCE_COL_5 in result.columns:
+        result[SUMMARY_PLATFORM_END_BALANCE_COL_5] = ""
+    return result
+
+
 def build_epin_lookup_5(
     siparisler_df: pd.DataFrame,
     pinler_df: pd.DataFrame,
@@ -1407,6 +1465,10 @@ def _build_one_platform_balance_summary_5(
         work["_is_withdrawal"] = work["_is_withdrawal"] | (
             ibfpay_system & (work["_change"].fillna(0.0) < 0)
         )
+    elif platform == "EPIN":
+        # odemeler 全为用户付款（充值），付款类型不含充值关键字，直接全部标记
+        work["_is_recharge"] = True
+        work["_is_withdrawal"] = False
     work = work.sort_values("_balance_time", kind="mergesort")
 
     rows = []
@@ -1437,6 +1499,7 @@ def _build_one_platform_balance_summary_5(
 def build_platform_balance_summary_5(
     ibfpay_raw: Optional[pd.DataFrame] = None,
     wangguypay_raw: Optional[pd.DataFrame] = None,
+    epin_odemeler_raw: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """构建平台汇总可合并的余额数据。SUPERPAY 当前无余额源列，故不产生余额行。"""
     frames = [
@@ -1460,6 +1523,7 @@ def build_platform_balance_summary_5(
             end_col=WANGGUYPAY_END_AMOUNT_COL_5,
             time_cols=[WANGGUYPAY_FINISH_TIME_COL_5, WANGGUYPAY_CREATE_TIME_COL_5],
         ),
+        build_epin_odemeler_balance_5(epin_odemeler_raw),
     ]
     frames = [f for f in frames if f is not None and not f.empty]
     cols = ["交易月份", "机构", PLATFORM_CURRENCY_COL_5] + SUMMARY_BALANCE_COLS_5
@@ -1693,7 +1757,13 @@ def main() -> int:
     if epin_siparisler_df is not None and epin_pinler_df is not None:
         epin_lk = build_epin_lookup_5(epin_siparisler_df, epin_pinler_df)
 
-    platform_balance_summary = build_platform_balance_summary_5(ibfpay_balance_raw, wangguypay_raw)
+    epin_odemeler_df: Optional[pd.DataFrame] = None
+    if files.get("epin_odemeler"):
+        frames = [read_epin_odemeler_5(fp) for fp in files["epin_odemeler"]]
+        epin_odemeler_df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        logging.info("EPIN 付款列表共 %d 行", len(epin_odemeler_df))
+
+    platform_balance_summary = build_platform_balance_summary_5(ibfpay_balance_raw, wangguypay_raw, epin_odemeler_df)
 
     # ── 匹配 ──────────────────────────────────────────────────
     result_df = enrich_admin_5(admin_df, ibfpay_lk, superpay_lk, wangguypay_lk, phonecard_lk, epin_lk)

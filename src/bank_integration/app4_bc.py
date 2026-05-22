@@ -119,9 +119,14 @@ def _configure_bc_profile(profile_dir: Path, output_dir: Path) -> None:
 # 登录保障
 # ---------------------------------------------------------------------------
 
-def ensure_bc_login(chrome_path: Path, start: date, end: date) -> None:
+def ensure_bc_login(
+    chrome_path: Path,
+    start: date,
+    end: date,
+    url_template: str = BC_REPORT_URL_TEMPLATE,
+) -> None:
     """打开第1页报表 URL（站内未登录时自动跳转登录页），等待用户登录后按回车继续。"""
-    first_url = build_bc_report_url(start, end, page=1)
+    first_url = build_bc_report_url(start, end, page=1, url_template=url_template)
     has_cookie = has_chrome_cookie_store(BC_CHROME_PROFILE_DIR)
 
     chrome_ready = False
@@ -428,7 +433,7 @@ def main(argv=None) -> int:
 
     # 5. 登录保障（无 Cookie 时等待用户手动登录）
     try:
-        ensure_bc_login(chrome_path, start, end)
+        ensure_bc_login(chrome_path, start, end, url_template=url_template)
     except Exception:
         logger.error("Chrome 启动或登录流程失败", exc_info=True)
         return 1

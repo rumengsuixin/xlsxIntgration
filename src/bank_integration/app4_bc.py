@@ -364,18 +364,19 @@ def _build_output_path(start: date, end: date, order_type: str = "代收") -> Pa
 # 入口
 # ---------------------------------------------------------------------------
 
-def _parse_mode(argv) -> str:
-    """从 argv 中提取 --mode 值（deposit/payout），默认 deposit。"""
+def _parse_mode(argv):
+    """从 argv 中提取 --mode 值，返回 (mode, 剩余argv)。mode 默认 deposit。"""
     args = list(argv) if argv is not None else []
     if "--mode" in args:
         idx = args.index("--mode")
-        if idx + 1 < len(args):
-            mode = args[idx + 1].lower()
-            if mode not in ("deposit", "payout"):
-                raise ValueError(f"--mode 只接受 deposit 或 payout，收到: {args[idx + 1]}")
-            return mode
-        raise ValueError("--mode 后必须跟 deposit 或 payout")
-    return "deposit"
+        if idx + 1 >= len(args):
+            raise ValueError("--mode 后必须跟 deposit 或 payout")
+        mode = args[idx + 1].lower()
+        if mode not in ("deposit", "payout"):
+            raise ValueError(f"--mode 只接受 deposit 或 payout，收到: {args[idx + 1]}")
+        remaining = args[:idx] + args[idx + 2:]
+        return mode, remaining
+    return "deposit", args
 
 
 def main(argv=None) -> int:
@@ -385,9 +386,9 @@ def main(argv=None) -> int:
         datefmt="%H:%M:%S",
     )
 
-    # 1. 解析模式（deposit=代收 / payout=代付）
+    # 1. 解析模式（deposit=代收 / payout=代付），同时剔除 --mode 参数
     try:
-        mode = _parse_mode(argv)
+        mode, remaining_argv = _parse_mode(argv)
     except ValueError as exc:
         logger.error("%s", exc)
         return 1
@@ -407,7 +408,7 @@ def main(argv=None) -> int:
 
     # 2. 解析日期参数（默认上月全月）
     try:
-        start, end, _ = parse_date_args(argv)
+        start, end, _ = parse_date_args(remaining_argv)
     except SystemExit:
         return 1
 

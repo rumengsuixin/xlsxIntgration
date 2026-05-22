@@ -10,15 +10,23 @@ BC_REPORT_URL_TEMPLATE = (
     "&pageIndex={page}&pageSize=10&isPaging=1"
 )
 
+BC_PAYOUT_URL_TEMPLATE = (
+    "https://ajv23m50.m.betcatpay.com/report/daily-payout"
+    "?start_time={start_time}&end_time={end_time}"
+    "&pageIndex={page}&pageSize=10&isPaging=1"
+)
+
 # BC 平台使用独立 Chrome profile，与 aim1/epin 完全隔离
 BC_CHROME_PROFILE_DIR = DATA_DIR / "browser_profile" / "4_bc"
 CHROME_DEBUG_PORT_BC = CHROME_DEBUG_PORT_4
 
 BC_OUTPUT_DIR = OUTPUT_DIR / "4_bc"
 BC_EXTRACT_DIR = OUTPUT_DIR / "4_bc" / "extracted"
+BC_PAYOUT_EXTRACT_DIR = OUTPUT_DIR / "4_bc" / "extracted_payout"
 
-# 下载文件名前缀：payment_YYYYMMDD_*.zip
-BC_ZIP_FILENAME_PREFIX = "payment_"
+# 下载文件名前缀
+BC_ZIP_FILENAME_PREFIX = "payment_"          # 代收：payment_YYYYMMDD_*.zip
+BC_PAYOUT_ZIP_FILENAME_PREFIX = "payout_"    # 代付：payout_YYYYMMDD_*.zip（依 URL 路径推断）
 
 # 行点击之间的随机等待范围（秒），可通过 .env 覆盖
 BC_CLICK_INTERVAL_MIN_SECONDS: float = float(os.getenv("BC_CLICK_INTERVAL_MIN_SECONDS", "1.0"))

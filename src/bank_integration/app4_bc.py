@@ -27,10 +27,13 @@ from .browser_operator import (
 )
 from .config4_bc import (
     BC_REPORT_URL_TEMPLATE,
+    BC_PAYOUT_URL_TEMPLATE,
     BC_CHROME_PROFILE_DIR,
     BC_OUTPUT_DIR,
     BC_EXTRACT_DIR,
+    BC_PAYOUT_EXTRACT_DIR,
     BC_ZIP_FILENAME_PREFIX,
+    BC_PAYOUT_ZIP_FILENAME_PREFIX,
     BC_CLICK_INTERVAL_MIN_SECONDS,
     BC_CLICK_INTERVAL_MAX_SECONDS,
     CHROME_DEBUG_PORT_BC,
@@ -46,14 +49,19 @@ _CST = timezone(timedelta(hours=8))
 # URL 构建
 # ---------------------------------------------------------------------------
 
-def build_bc_report_url(start: date, end: date, page: int = 1) -> str:
+def build_bc_report_url(
+    start: date,
+    end: date,
+    page: int = 1,
+    url_template: str = BC_REPORT_URL_TEMPLATE,
+) -> str:
     """日期范围 + 页码 → BC 平台 URL（start/end 均转 CST 零点毫秒时间戳）。"""
     start_dt = datetime(start.year, start.month, start.day, tzinfo=_CST)
     # end_time 取 end 当天结束（次日零点），区间左闭右开
     end_dt = datetime(end.year, end.month, end.day, tzinfo=_CST) + timedelta(days=1)
     start_ms = int(start_dt.timestamp() * 1000)
     end_ms = int(end_dt.timestamp() * 1000)
-    return BC_REPORT_URL_TEMPLATE.format(
+    return url_template.format(
         start_time=start_ms,
         end_time=end_ms,
         page=page,
@@ -220,6 +228,7 @@ def _iter_completed_zips(
     download_dir: Path,
     expected_dates: List[date],
     timeout: float = 120.0,
+    zip_prefix: str = BC_ZIP_FILENAME_PREFIX,
 ):
     """逐一 yield 已完成下载的 ZIP 路径，直到所有日期就绪或超时。"""
     pending = list(expected_dates)
@@ -227,8 +236,8 @@ def _iter_completed_zips(
     while pending and time.monotonic() < deadline:
         still_pending = []
         for d in pending:
-            zips = list(download_dir.glob(f"{BC_ZIP_FILENAME_PREFIX}{d:%Y%m%d}_*.zip"))
-            in_progress = list(download_dir.glob(f"{BC_ZIP_FILENAME_PREFIX}{d:%Y%m%d}_*.crdownload"))
+            zips = list(download_dir.glob(f"{zip_prefix}{d:%Y%m%d}_*.zip"))
+            in_progress = list(download_dir.glob(f"{zip_prefix}{d:%Y%m%d}_*.crdownload"))
             if zips and not in_progress:
                 for z in zips:
                     logger.info("ZIP 下载完成: %s", z.name)
@@ -262,6 +271,8 @@ def collect_all_pages(
     end: date,
     download_dir: Path,
     extract_dir: Path,
+    url_template: str = BC_REPORT_URL_TEMPLATE,
+    zip_prefix: str = BC_ZIP_FILENAME_PREFIX,
 ) -> List[Path]:
     """分页遍历：逐行串行执行 点击→等待ZIP→解压，返回所有解压文件路径。"""
     logger.info("正在连接 Chrome CDP（路径: %s，端口 %d）...", chrome_path, CHROME_DEBUG_PORT_BC)
@@ -272,7 +283,7 @@ def collect_all_pages(
 
     try:
         while True:
-            url = build_bc_report_url(start, end, page)
+            url = build_bc_report_url(start, end, page, url_template)
             logger.info("第 %d 页: %s", page, url)
 
             dates = _load_page_dates(operator, url)
@@ -284,7 +295,7 @@ def collect_all_pages(
             for i, d in enumerate(dates):
                 logger.info("点击第 %d 行（%s）导出按钮", i, d)
                 _click_row_button(operator, i)
-                for zip_path in _iter_completed_zips(download_dir, [d]):
+                for zip_path in _iter_completed_zips(download_dir, [d], zip_prefix=zip_prefix):
                     all_extracted.extend(extract_page_zips([zip_path], extract_dir))
                 if i < len(dates) - 1:
                     wait = random.uniform(BC_CLICK_INTERVAL_MIN_SECONDS, BC_CLICK_INTERVAL_MAX_SECONDS)
@@ -312,8 +323,12 @@ def _read_bc_csv(path: Path) -> pd.DataFrame:
     raise UnicodeError(f"无法解码 BC CSV 文件: {path.name}（已尝试 utf-8-sig/utf-8/gbk）")
 
 
-def merge_extracted_files(extracted_files: List[Path], output_path: Path) -> None:
-    """合并解压出的所有 CSV 文件为单个 xlsx（sheet：BC代收订单）。"""
+def merge_extracted_files(
+    extracted_files: List[Path],
+    output_path: Path,
+    sheet_name: str = "BC代收订单",
+) -> None:
+    """合并解压出的所有 CSV 文件为单个 xlsx。"""
     frames = []
     base_columns = None
     for path in extracted_files:
@@ -330,8 +345,8 @@ def merge_extracted_files(extracted_files: List[Path], output_path: Path) -> Non
     merged = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        merged.to_excel(writer, sheet_name="BC代收订单", index=False)
-        ws = writer.sheets["BC代收订单"]
+        merged.to_excel(writer, sheet_name=sheet_name, index=False)
+        ws = writer.sheets[sheet_name]
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
     logger.info("合并完成：%d 个文件，%d 行 → %s", len(frames), len(merged), output_path)
@@ -341,13 +356,27 @@ def merge_extracted_files(extracted_files: List[Path], output_path: Path) -> Non
 # 输出路径
 # ---------------------------------------------------------------------------
 
-def _build_output_path(start: date, end: date) -> Path:
-    return BC_OUTPUT_DIR / f"bc_代收订单_{start:%Y%m%d}_{end:%Y%m%d}.xlsx"
+def _build_output_path(start: date, end: date, order_type: str = "代收") -> Path:
+    return BC_OUTPUT_DIR / f"bc_{order_type}订单_{start:%Y%m%d}_{end:%Y%m%d}.xlsx"
 
 
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
+
+def _parse_mode(argv) -> str:
+    """从 argv 中提取 --mode 值（deposit/payout），默认 deposit。"""
+    args = list(argv) if argv is not None else []
+    if "--mode" in args:
+        idx = args.index("--mode")
+        if idx + 1 < len(args):
+            mode = args[idx + 1].lower()
+            if mode not in ("deposit", "payout"):
+                raise ValueError(f"--mode 只接受 deposit 或 payout，收到: {args[idx + 1]}")
+            return mode
+        raise ValueError("--mode 后必须跟 deposit 或 payout")
+    return "deposit"
+
 
 def main(argv=None) -> int:
     logging.basicConfig(
@@ -356,50 +385,71 @@ def main(argv=None) -> int:
         datefmt="%H:%M:%S",
     )
 
-    # 1. 解析日期参数（默认上月全月）
+    # 1. 解析模式（deposit=代收 / payout=代付）
+    try:
+        mode = _parse_mode(argv)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
+
+    if mode == "payout":
+        url_template = BC_PAYOUT_URL_TEMPLATE
+        zip_prefix = BC_PAYOUT_ZIP_FILENAME_PREFIX
+        extract_dir = BC_PAYOUT_EXTRACT_DIR
+        sheet_name = "BC代付订单"
+        order_type = "代付"
+    else:
+        url_template = BC_REPORT_URL_TEMPLATE
+        zip_prefix = BC_ZIP_FILENAME_PREFIX
+        extract_dir = BC_EXTRACT_DIR
+        sheet_name = "BC代收订单"
+        order_type = "代收"
+
+    # 2. 解析日期参数（默认上月全月）
     try:
         start, end, _ = parse_date_args(argv)
     except SystemExit:
         return 1
 
-    logger.info("BC 平台代收订单抓取，日期范围：%s ~ %s", start, end)
+    logger.info("BC 平台%s订单抓取，日期范围：%s ~ %s", order_type, start, end)
 
-    # 2. 准备目录并配置 Chrome profile（须在启动 Chrome 前完成）
+    # 3. 准备目录并配置 Chrome profile（须在启动 Chrome 前完成）
     BC_CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     BC_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    BC_EXTRACT_DIR.mkdir(parents=True, exist_ok=True)
+    extract_dir.mkdir(parents=True, exist_ok=True)
     _configure_bc_profile(BC_CHROME_PROFILE_DIR, BC_OUTPUT_DIR)
 
-    # 3. 查找 Chrome
+    # 4. 查找 Chrome
     chrome_path = find_chrome_executable()
     if not chrome_path:
         logger.error("找不到 Google Chrome，请确认已安装。")
         return 1
 
-    # 4. 登录保障（无 Cookie 时等待用户手动登录）
+    # 5. 登录保障（无 Cookie 时等待用户手动登录）
     try:
         ensure_bc_login(chrome_path, start, end)
     except Exception:
         logger.error("Chrome 启动或登录流程失败", exc_info=True)
         return 1
 
-    # 5. 分页采集：逐页点击 button → 等待 ZIP → 解压
+    # 6. 分页采集：逐页点击 button → 等待 ZIP → 解压
     try:
         extracted_files = collect_all_pages(
-            chrome_path, start, end, BC_OUTPUT_DIR, BC_EXTRACT_DIR
+            chrome_path, start, end, BC_OUTPUT_DIR, extract_dir,
+            url_template=url_template, zip_prefix=zip_prefix,
         )
     except Exception:
         logger.error("采集过程中发生错误", exc_info=True)
         return 1
 
-    # 6. 合并解压文件为单个 xlsx
+    # 7. 合并解压文件为单个 xlsx
     if not extracted_files:
         logger.warning("无解压文件，跳过合并输出")
         return 0
 
-    output_path = _build_output_path(start, end)
+    output_path = _build_output_path(start, end, order_type)
     try:
-        merge_extracted_files(extracted_files, output_path)
+        merge_extracted_files(extracted_files, output_path, sheet_name=sheet_name)
         logger.info("输出文件：%s", output_path)
     except Exception:
         logger.error("合并过程中发生错误", exc_info=True)

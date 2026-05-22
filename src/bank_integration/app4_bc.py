@@ -385,15 +385,20 @@ def _parse_mode(argv):
 
 
 def main(argv=None) -> int:
+    import sys as _sys
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
 
+    # argv=None 时读取 sys.argv，确保 _parse_mode 剥离 --mode 后
+    # 剩余列表传给 parse_date_args 时仍能正确解析命令行参数
+    actual_argv = list(_sys.argv[1:]) if argv is None else list(argv)
+
     # 1. 解析模式（deposit=代收 / payout=代付），同时剔除 --mode 参数
     try:
-        mode, remaining_argv = _parse_mode(argv)
+        mode, remaining_argv = _parse_mode(actual_argv)
     except ValueError as exc:
         logger.error("%s", exc)
         return 1

@@ -1,9 +1,12 @@
 """代号4 子功能 main() - BC 平台（betcatpay）代收订单抓取。"""
 import json
 import logging
+import random
 import subprocess
 import time
 import zipfile
+
+import pandas as pd
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
@@ -28,6 +31,8 @@ from .config4_bc import (
     BC_OUTPUT_DIR,
     BC_EXTRACT_DIR,
     BC_ZIP_FILENAME_PREFIX,
+    BC_CLICK_INTERVAL_MIN_SECONDS,
+    BC_CLICK_INTERVAL_MAX_SECONDS,
     CHROME_DEBUG_PORT_BC,
 )
 
@@ -281,6 +286,10 @@ def collect_all_pages(
                 _click_row_button(operator, i)
                 for zip_path in _iter_completed_zips(download_dir, [d]):
                     all_extracted.extend(extract_page_zips([zip_path], extract_dir))
+                if i < len(dates) - 1:
+                    wait = random.uniform(BC_CLICK_INTERVAL_MIN_SECONDS, BC_CLICK_INTERVAL_MAX_SECONDS)
+                    logger.info("行间随机等待 %.1f 秒", wait)
+                    time.sleep(wait)
 
             page += 1
     finally:
@@ -290,19 +299,42 @@ def collect_all_pages(
 
 
 # ---------------------------------------------------------------------------
-# 结果合并（骨架，细节 TODO）
+# 结果合并
 # ---------------------------------------------------------------------------
 
-def merge_extracted_files(extracted_files: List[Path], output_path: Path) -> None:
-    """合并解压后的所有文件为单个 xlsx。
+def _read_bc_csv(path: Path) -> pd.DataFrame:
+    """读取 BC 平台解压 CSV，依次尝试 utf-8-sig / utf-8 / gbk。"""
+    for encoding in ("utf-8-sig", "utf-8", "gbk"):
+        try:
+            return pd.read_csv(path, dtype=str, encoding=encoding).fillna("")
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    raise UnicodeError(f"无法解码 BC CSV 文件: {path.name}（已尝试 utf-8-sig/utf-8/gbk）")
 
-    TODO:
-      1. 确认解压出的文件格式（CSV / XLSX）和列结构
-      2. pd.read_csv / pd.read_excel 逐文件读取
-      3. pd.concat 后写入 output_path
-    """
-    logger.info("待合并 %d 个文件 → %s", len(extracted_files), output_path)
-    raise NotImplementedError("merge_extracted_files 尚未实现，需确认解压文件的列结构")
+
+def merge_extracted_files(extracted_files: List[Path], output_path: Path) -> None:
+    """合并解压出的所有 CSV 文件为单个 xlsx（sheet：BC代收订单）。"""
+    frames = []
+    base_columns = None
+    for path in extracted_files:
+        df = _read_bc_csv(path)
+        if base_columns is None:
+            base_columns = list(df.columns)
+        else:
+            extra = [c for c in df.columns if c not in base_columns]
+            if extra:
+                logger.warning("文件 %s 存在多余列，合并时忽略: %s", path.name, extra)
+            df = df.reindex(columns=base_columns, fill_value="")
+        frames.append(df)
+
+    merged = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        merged.to_excel(writer, sheet_name="BC代收订单", index=False)
+        ws = writer.sheets["BC代收订单"]
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+    logger.info("合并完成：%d 个文件，%d 行 → %s", len(frames), len(merged), output_path)
 
 
 # ---------------------------------------------------------------------------
@@ -356,9 +388,6 @@ def main(argv=None) -> int:
         extracted_files = collect_all_pages(
             chrome_path, start, end, BC_OUTPUT_DIR, BC_EXTRACT_DIR
         )
-    except NotImplementedError as e:
-        logger.warning("采集流程中遇到未实现步骤: %s", e)
-        return 1
     except Exception:
         logger.error("采集过程中发生错误", exc_info=True)
         return 1
@@ -372,8 +401,8 @@ def main(argv=None) -> int:
     try:
         merge_extracted_files(extracted_files, output_path)
         logger.info("输出文件：%s", output_path)
-    except NotImplementedError as e:
-        logger.warning("合并步骤尚未实现: %s", e)
+    except Exception:
+        logger.error("合并过程中发生错误", exc_info=True)
         return 1
 
     return 0

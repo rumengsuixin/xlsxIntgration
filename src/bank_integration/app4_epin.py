@@ -2,6 +2,7 @@
 import json
 import logging
 import random
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from .browser_operator import (
 )
 from .config4_epin import (
     TARGET_URL_EPIN,
+    TARGET_URL_EPIN_PAYMENTS,
     CHROME_PROFILE_DIR_EPIN,
     OUTPUT_DIR_EPIN,
     CHROME_DEBUG_PORT_EPIN,
@@ -175,10 +177,27 @@ _DATE_COLS   = ('siparis_tarihi', 'onay_tarihi')
 _AMOUNT_COLS = ('birim_fiyat', 'tutar', 'once', 'sonra')
 
 
+_CN_DATE_RE = re.compile(r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*([\d:]+)?')
+
+
 def _parse_tr_date(s: str) -> str:
-    """将 '18 Mayıs 2026 19:15' 转换为 '2026-05-18 19:15'，失败时原样返回。"""
+    """将土耳其语或中文（翻译后）日期转换为 'YYYY-MM-DD HH:MM'，失败时原样返回。
+
+    支持格式：
+    - '18 Mayıs 2026 19:15'（土耳其语，原始页面）
+    - '2026年5月15日 11:39'（中文，Chrome 翻译后）
+    - '2026 年 2 月 15 日 10:16'（中文带空格，Chrome 翻译后）
+    """
     if not s:
         return s
+    # 中文日期格式（Chrome 翻译后）
+    m = _CN_DATE_RE.search(s)
+    if m:
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        time_part = m.group(4) or ''
+        base = f"{year:04d}-{month:02d}-{day:02d}"
+        return f"{base} {time_part}" if time_part else base
+    # 土耳其语日期格式（原始页面）
     try:
         parts = s.split()
         day = int(parts[0])
@@ -341,6 +360,137 @@ def _save_orders_excel(rows: list, output_dir: Path) -> Path:
     df = df.drop_duplicates(subset=['订单ID'], keep='first')
 
     filename = output_dir / f"epin_siparisler_{date.today():%Y%m%d}.xlsx"
+    df.to_excel(filename, index=False, engine='openpyxl')
+    return filename
+
+
+_EXTRACT_PAYMENTS_JS = """
+(function() {
+  var rows = document.querySelectorAll('#myTable tbody tr');
+  var result = [];
+  rows.forEach(function(tr) {
+    var tds = tr.querySelectorAll('td');
+    var td0 = tds[0] || null, td1 = tds[1] || null,
+        td2 = tds[2] || null, td3 = tds[3] || null;
+
+    var odeme_id = tr.getAttribute('data-id') || '';
+    var statusEl = td0 ? td0.querySelector('strong') : null;
+    var odeme_durumu = statusEl ? statusEl.textContent.trim() : '';
+    var olusturma_tarihi = '', onay_tarihi = '';
+    if (td0) {
+      var br0 = td0.querySelector('br');
+      var dateText = (br0 && br0.nextSibling) ? br0.nextSibling.textContent.trim() : '';
+      var slashIdx = dateText.indexOf('/');
+      if (slashIdx >= 0) {
+        olusturma_tarihi = dateText.substring(0, slashIdx).trim();
+        onay_tarihi = dateText.substring(slashIdx + 1).trim();
+      } else { olusturma_tarihi = dateText; }
+    }
+
+    var odeme_turu = td1 ? td1.textContent.trim() : '';
+
+    var tutar = '', bildiren_kullanici = '', kripto_tutar = '';
+    if (td2) {
+      var span2 = td2.querySelector('span.woocommerce-Price-amount');
+      if (span2) {
+        // 取 <strong> 或 <br> 之前的所有文本作为金额（兼容有无用户名两种结构）
+        var amountParts = [];
+        var cn = span2.firstChild;
+        while (cn) {
+          if (cn.nodeType === 1 && (cn.tagName === 'STRONG' || cn.tagName === 'BR')) break;
+          amountParts.push(cn.textContent || '');
+          cn = cn.nextSibling;
+        }
+        tutar = amountParts.join('').trim().replace(/\s*\/\s*$/, '').trim();
+        var userStrong = span2.querySelector('strong');
+        if (userStrong) {
+          var icon = userStrong.querySelector('i');
+          bildiren_kullanici = userStrong.textContent
+            .replace(icon ? icon.textContent : '', '').trim();
+        }
+        var br2 = span2.querySelector('br');
+        if (br2 && br2.nextSibling) {
+          var ct = br2.nextSibling.textContent.trim();
+          var pm = ct.match(/[（(]([^)）]+)[)）]/);
+          kripto_tutar = pm ? pm[1].trim() : ct;
+        }
+      }
+    }
+
+    var onceki_bakiye = '', sonraki_bakiye = '';
+    if (td3) {
+      var span3 = td3.querySelector('span.woocommerce-Price-amount');
+      if (span3) {
+        var lines = span3.innerHTML.split('<br>');
+        function extractBal(line) {
+          var clean = line.replace(/<[^>]*>/g, '').trim();
+          var idx = clean.search(/[:：]/);
+          return idx >= 0 ? clean.substring(idx + 1).trim() : clean;
+        }
+        onceki_bakiye = extractBal(lines[0] || '');
+        sonraki_bakiye = extractBal(lines[1] || '');
+      }
+    }
+
+    result.push({
+      odeme_id: odeme_id,
+      odeme_durumu: odeme_durumu,
+      olusturma_tarihi: olusturma_tarihi,
+      onay_tarihi: onay_tarihi,
+      odeme_turu: odeme_turu,
+      tutar: tutar,
+      bildiren_kullanici: bildiren_kullanici,
+      kripto_tutar: kripto_tutar,
+      onceki_bakiye: onceki_bakiye,
+      sonraki_bakiye: sonraki_bakiye,
+    });
+  });
+  return JSON.stringify(result);
+})()
+"""
+
+_PAYMENT_COLUMN_MAP = {
+    'odeme_id':           '付款ID',
+    'odeme_durumu':       '付款状态',
+    'olusturma_tarihi':   '创建时间',
+    'onay_tarihi':        '确认时间',
+    'odeme_turu':         '付款类型',
+    'tutar':              '付款金额(USD)',
+    'bildiren_kullanici': '用户',
+    'kripto_tutar':       '加密货币金额',
+    'onceki_bakiye':      '付款前余额(USD)',
+    'sonraki_bakiye':     '付款后余额(USD)',
+}
+_PAYMENT_DATE_COLS   = ('olusturma_tarihi', 'onay_tarihi')
+_PAYMENT_AMOUNT_COLS = ('tutar', 'onceki_bakiye', 'sonraki_bakiye')
+
+
+def _extract_payments(op: ChromeOperator) -> list:
+    """通过 CDP JS 一次性提取 odemelerim #myTable 中所有付款行，返回字典列表。"""
+    raw = op.evaluate(_EXTRACT_PAYMENTS_JS)
+    if not raw:
+        return []
+    return json.loads(raw)
+
+
+def _save_payments_excel(rows: list, output_dir: Path) -> Path:
+    """将付款列表写入 Excel，返回输出文件路径。"""
+    import pandas as pd
+    from datetime import date
+
+    df = pd.DataFrame(rows)
+    for col in _PAYMENT_DATE_COLS:
+        if col in df.columns:
+            df[col] = df[col].apply(_parse_tr_date)
+    for col in _PAYMENT_AMOUNT_COLS:
+        if col in df.columns:
+            df[col] = df[col].apply(
+                lambda v: v.split()[0] if isinstance(v, str) and v.strip() else v
+            )
+    df = df.rename(columns=_PAYMENT_COLUMN_MAP)
+    df = df[[v for v in _PAYMENT_COLUMN_MAP.values() if v in df.columns]]
+    df = df.drop_duplicates(subset=['付款ID'], keep='first')
+    filename = output_dir / f"epin_odemeler_{date.today():%Y%m%d}.xlsx"
     df.to_excel(filename, index=False, engine='openpyxl')
     return filename
 
@@ -593,9 +743,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="1epin.com 数据提取")
     parser.add_argument(
         '--mode',
-        choices=['all', 'orders', 'pins', 'retry-locked'],
+        choices=['all', 'orders', 'pins', 'retry-locked', 'payments'],
         default='all',
-        help='all=订单+PIN（默认），orders=仅抓订单列表，pins=仅提取PIN码，retry-locked=仅补抓锁定数量=1的漏抓订单',
+        help='all=订单+PIN（默认），orders=仅抓订单列表，pins=仅提取PIN码，retry-locked=仅补抓锁定数量=1的漏抓订单，payments=提取付款订单列表',
     )
     parser.add_argument(
         '--search-pin',
@@ -612,12 +762,14 @@ def main() -> int:
     only_orders   = (args.mode == 'orders')
     only_pins     = (args.mode == 'pins')
     retry_locked  = (args.mode == 'retry-locked')
+    only_payments = (args.mode == 'payments')
 
     # 0. 准备订单数据
     from datetime import date as _date
     orders_file = OUTPUT_DIR_EPIN / f"epin_siparisler_{_date.today():%Y%m%d}.xlsx"
     pinler_file = OUTPUT_DIR_EPIN / f"epin_pinler_{_date.today():%Y%m%d}.xlsx"
     rows = []
+    initial_url = TARGET_URL_EPIN_PAYMENTS if only_payments else TARGET_URL_EPIN
 
     if only_pins:
         # pins 模式：必须有今日订单文件
@@ -642,7 +794,7 @@ def main() -> int:
             logger.info("没有需要补抓的订单（锁定数量=1 且无有效 pin 的订单为零）")
             return 0
         logger.info("retry-locked 模式：共 %d 个订单需要补抓", len(rows))
-    else:
+    elif not only_payments:
         has_existing_orders = orders_file.exists()
         if has_existing_orders:
             logger.info("检测到已有订单文件，将跳过订单列表抓取：%s", orders_file)
@@ -688,7 +840,7 @@ def main() -> int:
         else:
             logger.info("未找到目标网站标签页，正在通过 CDP 打开新标签页...")
             try:
-                open_new_tab(CHROME_DEBUG_PORT_EPIN, TARGET_URL_EPIN)
+                open_new_tab(CHROME_DEBUG_PORT_EPIN, initial_url)
                 time.sleep(1.5)
                 chrome_ready = True
             except Exception:
@@ -696,11 +848,11 @@ def main() -> int:
 
     # 5. Chrome 未运行时，正常启动
     if not chrome_ready:
-        logger.info("正在启动 Chrome，目标页面: %s", TARGET_URL_EPIN)
+        logger.info("正在启动 Chrome，目标页面: %s", initial_url)
         try:
             subprocess.Popen(
                 build_chrome_args(
-                    chrome_path, CHROME_PROFILE_DIR_EPIN, [TARGET_URL_EPIN], CHROME_DEBUG_PORT_EPIN
+                    chrome_path, CHROME_PROFILE_DIR_EPIN, [initial_url], CHROME_DEBUG_PORT_EPIN
                 )
             )
         except Exception:
@@ -717,7 +869,25 @@ def main() -> int:
     # 7. pins/retry-locked 模式不需要连接订单列表标签页，直接进入 PIN 提取
     op = None
     try:
-        if not only_pins and not retry_locked:
+        if only_payments:
+            logger.info("正在通过 CDP 连接到 Chrome（端口 %d）...", CHROME_DEBUG_PORT_EPIN)
+            try:
+                op = ChromeOperator(CHROME_DEBUG_PORT_EPIN).connect(tab_url=_EPIN_ORIGIN)
+            except Exception:
+                logger.error("CDP 连接失败，请确认 Chrome 已启动并端口正确", exc_info=True)
+                return 1
+            logger.info("导航到付款订单页面: %s", TARGET_URL_EPIN_PAYMENTS)
+            op.navigate(TARGET_URL_EPIN_PAYMENTS)
+            op.wait_for_condition("!!document.querySelector('#myTable')", timeout=15.0)
+            _load_all_orders(op, click_interval_seconds=EPIN_ORDER_LOAD_INTERVAL_SECONDS)
+            payment_rows = _extract_payments(op)
+            if not payment_rows:
+                logger.warning("未提取到任何付款数据，请确认页面已正确加载")
+                return 1
+            logger.info("共提取 %d 条付款记录，正在写入 Excel...", len(payment_rows))
+            output_file = _save_payments_excel(payment_rows, OUTPUT_DIR_EPIN)
+            logger.info("已输出：%s", output_file)
+        elif not only_pins and not retry_locked:
             logger.info("正在通过 CDP 连接到 Chrome（端口 %d）...", CHROME_DEBUG_PORT_EPIN)
             try:
                 op = ChromeOperator(CHROME_DEBUG_PORT_EPIN).connect(tab_url=_EPIN_ORIGIN)
@@ -825,7 +995,7 @@ def main() -> int:
                 logger.info("使用已有订单文件，共 %d 条记录", len(rows))
 
         # 12. 并行提取各订单 Pin 码并写入 Excel
-        if not only_orders:
+        if not only_orders and not only_payments:
             logger.info("正在并行提取 Pin 码（共 %d 单，每批3个）...", len(rows))
             pin_rows = _fetch_all_pins_parallel(CHROME_DEBUG_PORT_EPIN, rows)
             if pin_rows:
@@ -838,7 +1008,7 @@ def main() -> int:
             else:
                 logger.warning("未提取到任何 Pin 码数据")
         else:
-            logger.info("--mode orders：跳过 PIN 提取")
+            logger.info("--mode %s：跳过 PIN 提取", args.mode)
 
     finally:
         if op:

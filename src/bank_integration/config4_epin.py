@@ -37,3 +37,5 @@ def get_epin_order_load_interval_seconds(
 
 CHROME_DEBUG_PORT_EPIN = get_epin_debug_port()
 EPIN_ORDER_LOAD_INTERVAL_SECONDS = get_epin_order_load_interval_seconds()
+
+TARGET_URL_EPIN_PAYMENTS = "https://www.1epin.com/odemelerim"

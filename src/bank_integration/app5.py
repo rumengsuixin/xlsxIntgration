@@ -1151,11 +1151,11 @@ def _build_platform_only_rows_5(
             row[ADMIN_TP_ORDER_COL_5]    = k   # 第三方订单号 = pin码
             row[MATCH_STATUS_COL_5]      = "平台多余"
             row[ADMIN_ORG_COL_5]         = EPIN_PLATFORM_NAME_5
-            ep_pin_id = str(epin_lk.at[key, EPIN_PINLER_PIN_ID_COL_5]).strip()  if EPIN_PINLER_PIN_ID_COL_5          in epin_lk.columns else ""
+            ep_order_id = str(epin_lk.at[key, EPIN_SIPARISLER_ORDER_ID_COL_5]).strip() if EPIN_SIPARISLER_ORDER_ID_COL_5 in epin_lk.columns else ""
             ep_amt    = str(epin_lk.at[key, EPIN_SIPARISLER_UNIT_PRICE_COL_5]).strip() if EPIN_SIPARISLER_UNIT_PRICE_COL_5  in epin_lk.columns else ""
             ep_status = str(epin_lk.at[key, EPIN_SIPARISLER_STATUS_COL_5]).strip()     if EPIN_SIPARISLER_STATUS_COL_5      in epin_lk.columns else ""
             ep_time   = str(epin_lk.at[key, EPIN_SIPARISLER_CONFIRM_TIME_COL_5]).strip() if EPIN_SIPARISLER_CONFIRM_TIME_COL_5 in epin_lk.columns else ""
-            row[PLATFORM_ORDER_NO_COL_5] = ep_pin_id
+            row[PLATFORM_ORDER_NO_COL_5] = ep_order_id
             row[PLATFORM_AMOUNT_COL_5]   = ep_amt
             row[PLATFORM_CURRENCY_COL_5] = EPIN_DEFAULT_CURRENCY_5
             row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5(EPIN_PLATFORM_NAME_5, ep_status)
@@ -1336,11 +1336,11 @@ def enrich_admin_5(
             transaction_date_list.append(_format_date_5(pc_time))
             org_output_list.append(PHONECARD_PLATFORM_NAME_5)
         elif ep_hit:
-            ep_pin_id  = str(row.get(f"_e_{EPIN_PINLER_PIN_ID_COL_5}",          "")).strip() if epin_avail else ""
+            ep_order_id = str(row.get(f"_e_{EPIN_SIPARISLER_ORDER_ID_COL_5}",   "")).strip() if epin_avail else ""
             ep_status  = str(row.get(f"_e_{EPIN_SIPARISLER_STATUS_COL_5}",       "")).strip() if epin_avail else ""
             ep_time    = str(row.get(f"_e_{EPIN_SIPARISLER_CONFIRM_TIME_COL_5}", "")).strip() if epin_avail else ""
             match_status_list.append("是")
-            platform_order_no_list.append(ep_pin_id)
+            platform_order_no_list.append(ep_order_id)
             platform_amount_list.append(ep_amt)
             platform_currency_list.append(EPIN_DEFAULT_CURRENCY_5)
             platform_status_list.append(_normalize_platform_status_5(EPIN_PLATFORM_NAME_5, ep_status))

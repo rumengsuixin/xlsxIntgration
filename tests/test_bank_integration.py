@@ -86,6 +86,7 @@ from src.bank_integration.config5 import (
     FEE_COL_5,
     EPIN_PINLER_PIN_ID_COL_5,
     EPIN_SIPARISLER_CONFIRM_TIME_COL_5,
+    EPIN_SIPARISLER_ORDER_ID_COL_5,
     EPIN_SIPARISLER_STATUS_COL_5,
     EPIN_SIPARISLER_UNIT_PRICE_COL_5,
     IBFYPAY_AMOUNT_COL_5,
@@ -402,6 +403,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
         epin = pd.DataFrame(
             [{
                 EPIN_PINLER_PIN_ID_COL_5: "PIN-ID",
+                EPIN_SIPARISLER_ORDER_ID_COL_5: "EPIN-ORDER-ID",
                 EPIN_SIPARISLER_UNIT_PRICE_COL_5: "5",
                 EPIN_SIPARISLER_STATUS_COL_5: "Başarılı",
                 EPIN_SIPARISLER_CONFIRM_TIME_COL_5: "2026-04-05",
@@ -416,6 +418,8 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(keyed["SP-ADMIN"][PLATFORM_CURRENCY_COL_5], "TL")
         self.assertEqual(keyed["WG-ADMIN"][PLATFORM_CURRENCY_COL_5], "TRY")
         self.assertEqual(keyed["PC-ADMIN"][PLATFORM_CURRENCY_COL_5], "")
+        self.assertEqual(keyed["EP-ADMIN"][MATCH_STATUS_COL_5], "是")
+        self.assertEqual(keyed["EP-ADMIN"][PLATFORM_ORDER_NO_COL_5], "EPIN-ORDER-ID")
         self.assertEqual(keyed["EP-ADMIN"][PLATFORM_CURRENCY_COL_5], "USD")
 
     def test_wangguypay_fund_file_takes_priority_over_old_order_file(self):
@@ -995,14 +999,25 @@ class BankIntegrationSampleTests(unittest.TestCase):
             }],
             index=pd.Index(["WG-EXTRA"], name=WANGGUYPAY_JOIN_COL_5),
         )
+        epin = pd.DataFrame(
+            [{
+                EPIN_PINLER_PIN_ID_COL_5: "PIN-EXTRA-ID",
+                EPIN_SIPARISLER_ORDER_ID_COL_5: "EPIN-EXTRA-ORDER-ID",
+                EPIN_SIPARISLER_UNIT_PRICE_COL_5: "5",
+                EPIN_SIPARISLER_STATUS_COL_5: "Başarılı",
+                EPIN_SIPARISLER_CONFIRM_TIME_COL_5: "2026-04-01",
+            }],
+            index=pd.Index(["PIN-EXTRA"], name="Pin码"),
+        )
 
-        result = enrich_admin_5(admin, ibfpay, superpay, wangguypay)
+        result = enrich_admin_5(admin, ibfpay, superpay, wangguypay, None, epin)
         extra = result[result[MATCH_STATUS_COL_5] == "平台多余"]
         keyed = {row[PLATFORM_ORDER_NO_COL_5]: row[PLATFORM_STATUS_COL_5] for _, row in extra.iterrows()}
 
         self.assertEqual(keyed["IBF-EXTRA"], "成功")
         self.assertEqual(keyed["SP-EXTRA-NO"], "关闭")
         self.assertEqual(keyed["WG-EXTRA-NO"], "处理中")
+        self.assertEqual(keyed["EPIN-EXTRA-ORDER-ID"], "成功")
 
     def test_ibfpay_rejected_order_status_is_rejected(self):
         """含 代付驳回 行的流水账：对应订单平台状态应为"驳回"，未驳回订单仍为"成功"。"""

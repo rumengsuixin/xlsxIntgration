@@ -129,6 +129,9 @@ from .config5 import (
     FEE_COL_5,
     ARRIVE_AMOUNT_COL_5,
     TRANSACTION_DATE_COL_5,
+    IMPLIED_RATE_COL_5,
+    CALC_AMOUNT_COL_5,
+    OUTPUT_AMOUNT_DIFF_SHEET_5,
     OUTPUT_NEW_COLS_5,
     PLATFORM_PREFIXES_5,
     SUMMARY_BEGIN_BALANCE_COL_5,
@@ -1235,6 +1238,8 @@ def enrich_admin_5(
     arrive_amount_list     = []
     transaction_date_list  = []
     org_output_list        = []
+    implied_rate_list      = []
+    calc_amount_list       = []
 
     for _, row in result.iterrows():
         # IBFYPAY 命中判断（join 键：admin.第三方订单号 ↔ ibfpay.系统流水号）
@@ -1302,6 +1307,8 @@ def enrich_admin_5(
             arrive_amount_list.append(str(arrive))
             transaction_date_list.append(_format_date_5(ibf_time))
             org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
+            implied_rate_list.append("")
+            calc_amount_list.append("")
         elif sp_hit:
             sp_amt_f    = _to_float_5(sp_amt) or 0.0
             sp_actual_f = _to_float_5(sp_actual) or 0.0
@@ -1315,6 +1322,8 @@ def enrich_admin_5(
             arrive_amount_list.append(sp_actual)
             transaction_date_list.append(_format_date_5(sp_time) or _format_date_5(sp_ctime))
             org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
+            implied_rate_list.append("")
+            calc_amount_list.append("")
         elif wg_hit:
             match_status_list.append("是")
             platform_order_no_list.append(wg_no)
@@ -1325,6 +1334,8 @@ def enrich_admin_5(
             arrive_amount_list.append(wg_arrive)
             transaction_date_list.append(_format_date_5(wg_time) or _format_date_5(wg_ctime))
             org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
+            implied_rate_list.append("")
+            calc_amount_list.append("")
         elif pc_hit:
             match_status_list.append("是")
             platform_order_no_list.append(pc_no)
@@ -1335,6 +1346,8 @@ def enrich_admin_5(
             arrive_amount_list.append(pc_amt)
             transaction_date_list.append(_format_date_5(pc_time))
             org_output_list.append(PHONECARD_PLATFORM_NAME_5)
+            implied_rate_list.append("")
+            calc_amount_list.append("")
         elif ep_hit:
             ep_order_id = str(row.get(f"_e_{EPIN_SIPARISLER_ORDER_ID_COL_5}",   "")).strip() if epin_avail else ""
             ep_status  = str(row.get(f"_e_{EPIN_SIPARISLER_STATUS_COL_5}",       "")).strip() if epin_avail else ""
@@ -1348,6 +1361,23 @@ def enrich_admin_5(
             arrive_amount_list.append(ep_amt)
             transaction_date_list.append(_format_date_5(ep_time))
             org_output_list.append(EPIN_PLATFORM_NAME_5)
+            try:
+                ep_product   = str(row.get(f"_e_{EPIN_SIPARISLER_PRODUCT_COL_5}", "")).strip()
+                _m = re.search(r'([\d,]+(?:\.\d+)?)\s*TL', ep_product, re.IGNORECASE)
+                if not _m:
+                    _m = re.search(r'([\d,]+(?:\.\d+)?)', ep_product)
+                _product_amt = float(_m.group(1).replace(",", "")) if _m else None
+                _ep_price    = float(ep_amt.replace(",", ""))
+                if _product_amt is not None and _ep_price != 0:
+                    _rate = round(_product_amt / _ep_price, 4)
+                    implied_rate_list.append(_rate)
+                    calc_amount_list.append(int(round(_rate * _ep_price)))
+                else:
+                    implied_rate_list.append("")
+                    calc_amount_list.append("")
+            except (ValueError, ZeroDivisionError):
+                implied_rate_list.append("")
+                calc_amount_list.append("")
         else:
             match_status_list.append("否")
             platform_order_no_list.append("")
@@ -1358,6 +1388,8 @@ def enrich_admin_5(
             arrive_amount_list.append("")
             transaction_date_list.append("")
             org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
+            implied_rate_list.append("")
+            calc_amount_list.append("")
 
     # 还原为仅 admin 原始列，再追加新增列
     admin_cols = list(admin_df.columns)
@@ -1373,6 +1405,8 @@ def enrich_admin_5(
     result[FEE_COL_5]               = fee_list
     result[ARRIVE_AMOUNT_COL_5]     = arrive_amount_list
     result[TRANSACTION_DATE_COL_5]  = transaction_date_list
+    result[IMPLIED_RATE_COL_5]      = implied_rate_list
+    result[CALC_AMOUNT_COL_5]       = calc_amount_list
 
     # 计算 admin key 集合，用于判断平台多余行
     admin_ibfpay_keys: Set[str] = (
@@ -1657,11 +1691,20 @@ def write_output_5(
     failed_df  = result_df[result_df[MATCH_STATUS_COL_5] == "否"].copy()
     summary_df = build_summary_sheet_5(result_df, platform_balance_summary)
 
+    epin_rows  = result_df[result_df[ADMIN_ORG_COL_5] == EPIN_PLATFORM_NAME_5].copy()
+    _calc_num  = pd.to_numeric(epin_rows[CALC_AMOUNT_COL_5], errors="coerce")
+    _admin_num = pd.to_numeric(
+        epin_rows[ADMIN_AMOUNT_COL_5].astype(str).str.replace(",", "", regex=False),
+        errors="coerce",
+    )
+    diff_df = epin_rows[_calc_num.notna() & ((_calc_num - _admin_num).abs() > 0.01)].copy()
+
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         result_df.to_excel(writer, sheet_name=OUTPUT_SHEET_5, index=False)
         failed_df.to_excel(writer, sheet_name=OUTPUT_FAILED_SHEET_5, index=False)
         summary_df.to_excel(writer, sheet_name=OUTPUT_SUMMARY_SHEET_5, index=False)
-        for sname in (OUTPUT_SHEET_5, OUTPUT_FAILED_SHEET_5):
+        diff_df.to_excel(writer, sheet_name=OUTPUT_AMOUNT_DIFF_SHEET_5, index=False)
+        for sname in (OUTPUT_SHEET_5, OUTPUT_FAILED_SHEET_5, OUTPUT_AMOUNT_DIFF_SHEET_5):
             ws = writer.sheets[sname]
             ws.freeze_panes = "A2"
             ws.auto_filter.ref = ws.dimensions

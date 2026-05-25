@@ -361,8 +361,12 @@ def merge_extracted_files(
 # 输出路径
 # ---------------------------------------------------------------------------
 
+_BETCAT_PREFIX_MAP = {"代收": "betcat-payment", "代付": "betcat-payout"}
+
+
 def _build_output_path(start: date, end: date, order_type: str = "代收") -> Path:
-    return BC_OUTPUT_DIR / f"bc_{order_type}订单_{start:%Y%m%d}_{end:%Y%m%d}.xlsx"
+    prefix = _BETCAT_PREFIX_MAP.get(order_type, f"bc_{order_type}")
+    return BC_OUTPUT_DIR / f"{prefix}_{start:%Y%m%d}_{end:%Y%m%d}.xlsx"
 
 
 # ---------------------------------------------------------------------------

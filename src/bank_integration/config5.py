@@ -123,6 +123,9 @@ PLATFORM_STATUS_COL_5    = "平台状态"       # 统一为：成功 / 失败 / 
 FEE_COL_5                = "手续费"         # 平台收取的手续费（IBFYPAY 无此字段，留空串）
 ARRIVE_AMOUNT_COL_5      = "到账金额"       # 扣除手续费后实际到账（IBFYPAY 留空串）
 TRANSACTION_DATE_COL_5   = "交易日期"       # 格式化为 YYYY-MM-DD 的交易时间
+IMPLIED_RATE_COL_5       = "倒推汇率"       # 产品TL面值 / 单价(USD)，仅 EPIN 行有值
+CALC_AMOUNT_COL_5        = "计算金额"       # 倒推汇率 * 平台代付金额（取整），仅 EPIN 行
+OUTPUT_AMOUNT_DIFF_SHEET_5 = "匹配金额差异"  # 计算金额与 admin.金额 不符的 EPIN 行
 
 IBFYPAY_DEFAULT_CURRENCY_5 = "TRY"
 WANGGUYPAY_DEFAULT_CURRENCY_5 = "TRY"
@@ -137,6 +140,8 @@ OUTPUT_NEW_COLS_5 = [
     FEE_COL_5,
     ARRIVE_AMOUNT_COL_5,
     TRANSACTION_DATE_COL_5,
+    IMPLIED_RATE_COL_5,
+    CALC_AMOUNT_COL_5,
 ]
 
 # ── 平台汇总余额列 ──────────────────────────────────────────────────────────

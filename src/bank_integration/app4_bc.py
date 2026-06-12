@@ -400,6 +400,22 @@ def main(argv=None) -> int:
     # 剩余列表传给 parse_date_args 时仍能正确解析命令行参数
     actual_argv = list(_sys.argv[1:]) if argv is None else list(argv)
 
+    # 0. 帮助：-h / --help 打印参数说明后退出
+    if "-h" in actual_argv or "--help" in actual_argv:
+        print(
+            "BC 平台（betcatpay）订单抓取（代号4-BC）\n"
+            "\n"
+            "用法: 整合4_bc.py [--mode deposit|payout] "
+            "[--date-range YYYY-MM-DD YYYY-MM-DD] [--wait-seconds N]\n"
+            "\n"
+            "参数:\n"
+            "  --mode deposit|payout   deposit=代收（默认），payout=代付\n"
+            "  --date-range 开始 结束   指定日期范围，默认上一个自然月\n"
+            "  --wait-seconds N        每批等待秒数\n"
+            "  -h, --help              显示本帮助并退出"
+        )
+        return 0
+
     # 1. 解析模式（deposit=代收 / payout=代付），同时剔除 --mode 参数
     try:
         mode, remaining_argv = _parse_mode(actual_argv)

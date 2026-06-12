@@ -109,6 +109,20 @@ a7 = Analysis(
     noarchive=False,
 )
 
+a8 = Analysis(
+    ["整合6.py"],
+    pathex=[str(project_root)],
+    binaries=[],
+    datas=[],
+    hiddenimports=collect_submodules("xlrd"),
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    cipher=block_cipher,
+    noarchive=False,
+)
+
 pyz1 = PYZ(a1.pure, a1.zipped_data, cipher=block_cipher)
 pyz2 = PYZ(a2.pure, a2.zipped_data, cipher=block_cipher)
 pyz3 = PYZ(a3.pure, a3.zipped_data, cipher=block_cipher)
@@ -116,6 +130,7 @@ pyz4 = PYZ(a4.pure, a4.zipped_data, cipher=block_cipher)
 pyz5 = PYZ(a5.pure, a5.zipped_data, cipher=block_cipher)
 pyz6 = PYZ(a6.pure, a6.zipped_data, cipher=block_cipher)
 pyz7 = PYZ(a7.pure, a7.zipped_data, cipher=block_cipher)
+pyz8 = PYZ(a8.pure, a8.zipped_data, cipher=block_cipher)
 
 exe1 = EXE(
     pyz1,
@@ -243,6 +258,24 @@ exe7 = EXE(
     entitlements_file=None,
 )
 
+exe8 = EXE(
+    pyz8,
+    a8.scripts,
+    [],
+    exclude_binaries=True,
+    name="collection_payout_reconcile",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
+
 coll = COLLECT(
     exe1,
     a1.binaries,
@@ -272,6 +305,10 @@ coll = COLLECT(
     a7.binaries,
     a7.zipfiles,
     a7.datas,
+    exe8,
+    a8.binaries,
+    a8.zipfiles,
+    a8.datas,
     strip=False,
     upx=True,
     upx_exclude=[],
@@ -293,6 +330,8 @@ if data_dst.exists():
 (data_dst / "input" / "1").mkdir(parents=True, exist_ok=True)
 (data_dst / "input" / "2").mkdir(parents=True, exist_ok=True)
 (data_dst / "input" / "3").mkdir(parents=True, exist_ok=True)
+(data_dst / "input" / "5").mkdir(parents=True, exist_ok=True)
+(data_dst / "input" / "6").mkdir(parents=True, exist_ok=True)
 (data_dst / "input" / "raw").mkdir(parents=True, exist_ok=True)
 (data_dst / "input" / "raw" / "5").mkdir(parents=True, exist_ok=True)
 (data_dst / "output").mkdir(parents=True, exist_ok=True)
@@ -309,6 +348,7 @@ for filename in (
     "start_payout.command",
     "start_bc.command",
     "start_epin.command",
+    "start_dual_reconcile.command",
     "README.md",
 ):
     src = project_root / filename

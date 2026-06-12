@@ -18,17 +18,25 @@ TARGET_URL  = f"https://www.1epin.com/siparis/{SIPARIS_ID}"
 WAIT_LOAD   = 20   # 等待页面加载的最大秒数
 # ──────────────────────────────────────────────────────────────────────
 
+# 本地 Chrome 调试端口请求必须绕过系统/VPN 代理，否则会被代理拦截返回 502
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _open_local(url_or_req, timeout):
+    """访问本地 Chrome 调试端口，强制绕过任何系统/环境代理。"""
+    return _NO_PROXY_OPENER.open(url_or_req, timeout=timeout)
+
 
 def cdp_new_tab(port):
     req = urllib.request.Request(f"http://127.0.0.1:{port}/json/new", method="PUT")
-    data = urllib.request.urlopen(req, timeout=5).read()
+    data = _open_local(req, timeout=5).read()
     info = json.loads(data)
     return info["id"], info["webSocketDebuggerUrl"]
 
 
 def cdp_close_tab(port, tab_id):
     try:
-        urllib.request.urlopen(f"http://127.0.0.1:{port}/json/close/{tab_id}", timeout=3)
+        _open_local(f"http://127.0.0.1:{port}/json/close/{tab_id}", timeout=3)
     except Exception:
         pass
 
@@ -79,7 +87,7 @@ def sep(title=""):
 def main():
     # 检查 Chrome 是否可连接
     try:
-        urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=3)
+        _open_local(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=3)
     except Exception:
         print(f"[错误] 无法连接 Chrome 调试端口 {DEBUG_PORT}，请先运行 整合4.py 让 Chrome 启动。")
         sys.exit(1)

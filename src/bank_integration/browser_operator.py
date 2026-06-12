@@ -20,6 +20,15 @@ from typing import Any, Dict, Generator, Optional
 logger = logging.getLogger(__name__)
 
 
+# 本地 Chrome 调试端口请求必须绕过系统/VPN 代理，否则会被代理拦截返回 502
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _open_local(url_or_req, timeout):
+    """访问本地 Chrome 调试端口，强制绕过任何系统/环境代理。"""
+    return _NO_PROXY_OPENER.open(url_or_req, timeout=timeout)
+
+
 def _require_websocket():
     try:
         import websocket
@@ -34,9 +43,7 @@ def _require_websocket():
 def is_chrome_running(debug_port: int, timeout: float = 2.0) -> bool:
     """检查 Chrome DevTools 端口是否可达（即 Chrome 是否已启动）。"""
     try:
-        urllib.request.urlopen(
-            f"http://localhost:{debug_port}/json", timeout=timeout
-        )
+        _open_local(f"http://127.0.0.1:{debug_port}/json", timeout=timeout)
         return True
     except Exception:
         return False
@@ -44,8 +51,8 @@ def is_chrome_running(debug_port: int, timeout: float = 2.0) -> bool:
 
 def get_chrome_pages(debug_port: int, timeout: float = 3.0) -> list:
     """返回 Chrome DevTools /json 端点的标签页列表。"""
-    data = urllib.request.urlopen(
-        f"http://localhost:{debug_port}/json", timeout=timeout
+    data = _open_local(
+        f"http://127.0.0.1:{debug_port}/json", timeout=timeout
     ).read()
     return json.loads(data)
 
@@ -82,8 +89,8 @@ class ChromeOperator:
         websocket = _require_websocket()
         for attempt in range(self._connect_retries):
             try:
-                data = urllib.request.urlopen(
-                    f"http://localhost:{self._debug_port}/json", timeout=3
+                data = _open_local(
+                    f"http://127.0.0.1:{self._debug_port}/json", timeout=3
                 ).read()
                 break
             except Exception:

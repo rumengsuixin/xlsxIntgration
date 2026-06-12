@@ -18,6 +18,7 @@ from .browser_operator import (
     is_chrome_running,
     get_chrome_pages,
     open_new_tab,
+    _open_local,
 )
 from .config4_epin import (
     TARGET_URL_EPIN,
@@ -540,16 +541,15 @@ def _create_chrome_tab(debug_port: int) -> tuple:
     """在已运行的 Chrome 中创建新空白标签页，返回 (tab_id, ws_url)。"""
     import urllib.request as _req
     req = _req.Request(f"http://127.0.0.1:{debug_port}/json/new", method="PUT")
-    data = _req.urlopen(req, timeout=5).read()
+    data = _open_local(req, timeout=5).read()
     info = json.loads(data)
     return info["id"], info["webSocketDebuggerUrl"]
 
 
 def _close_chrome_tab(debug_port: int, tab_id: str) -> None:
     """关闭指定 Chrome 标签页。"""
-    import urllib.request as _req
     try:
-        _req.urlopen(f"http://127.0.0.1:{debug_port}/json/close/{tab_id}", timeout=3)
+        _open_local(f"http://127.0.0.1:{debug_port}/json/close/{tab_id}", timeout=3)
     except Exception:
         pass
 

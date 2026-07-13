@@ -9,10 +9,15 @@
     Cashnewpay兑换明细*.xlsx  → Sheet1，代付平台文件
 """
 
+import os
+from pathlib import Path
+
 from .config import DATA_DIR, OUTPUT_DIR  # noqa: F401
 
 # ── 路径常量 ──────────────────────────────────────────────────────────────────
-INPUT_DIR_6 = DATA_DIR / "input" / "6"
+# 输入目录支持 BANK_INPUT_DIR 环境变量覆盖（供 macro 桥接控制运行时目录）；
+# 未设置时回退仓库默认 data/input/6，现有启动器/命令行行为完全不变。
+INPUT_DIR_6 = Path(os.environ.get("BANK_INPUT_DIR", DATA_DIR / "input" / "6"))
 OUTPUT_FILE_TEMPLATE_6 = "代收代付对账结果_{date}.xlsx"
 
 # ── 输出工作表名称（5 个 sheet）──────────────────────────────────────────────

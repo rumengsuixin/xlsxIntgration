@@ -1,11 +1,16 @@
 """代号2（海外银行）路径与读取配置。"""
 
+import os
+from pathlib import Path
+
 from .config import DATA_DIR, OUTPUT_DIR, TEMPLATE_DIR
 
 SUMMARY_FILE_2 = "银行汇总.xlsx"
 TEMPLATE_PATH_2 = TEMPLATE_DIR / "2" / SUMMARY_FILE_2
 OUTPUT_PATH_2 = OUTPUT_DIR / SUMMARY_FILE_2
-INPUT_DIR_2 = DATA_DIR / "input" / "2"
+# 输入目录支持 BANK_INPUT_DIR 环境变量覆盖（供 macro 桥接控制运行时目录）。
+# 未设置时回退仓库默认 data/input/2，现有启动器/命令行行为完全不变。
+INPUT_DIR_2 = Path(os.environ.get("BANK_INPUT_DIR", DATA_DIR / "input" / "2"))
 
 # 余额工作表名前缀（实际名称含年份，运行时动态匹配）
 BALANCE_SHEET_PREFIX_2 = "MIG银行余额"

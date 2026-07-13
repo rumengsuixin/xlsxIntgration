@@ -1,9 +1,14 @@
 """代号5（代付订单对账）路径常量与列名配置。"""
 
+import os
+from pathlib import Path
+
 from .config import DATA_DIR, OUTPUT_DIR  # noqa: F401
 
 # ── 路径常量 ──────────────────────────────────────────────────────────────────
-INPUT_DIR_5 = DATA_DIR / "input" / "5"
+# 输入目录支持 BANK_INPUT_DIR 环境变量覆盖（供 macro 桥接控制运行时目录）；
+# 未设置时回退仓库默认 data/input/5，现有启动器/命令行行为完全不变。
+INPUT_DIR_5 = Path(os.environ.get("BANK_INPUT_DIR", DATA_DIR / "input" / "5"))
 OUTPUT_FILE_TEMPLATE_5 = "代付对账结果_{date}.xlsx"
 
 # ── 输出工作表名称 ────────────────────────────────────────────────────────────

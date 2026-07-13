@@ -179,12 +179,36 @@ def _columns_match(
     return not any_groups or any(all(col in normalized for col in group) for group in any_groups)
 
 
+def _unwrap_excel_text_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """剥离 CSV 导出时的 Excel 文本公式包裹：将 `="值"` 还原为 `值`。
+
+    部分后台导出 CSV 会把订单号、流水号、玩家ID 等字段包成 `="..."`（防止长串被
+    识别为数字或丢失前导零）。这层包裹会导致关联键与平台侧纯值对不上，进而所有
+    Adyen / Google 订单匹配全部判否。正则锚定整个单元格 `^="..."$`，只命中被包裹
+    的值；金额、日期、支付方式等纯值列不受影响。
+    """
+    unwrapped_cols = []
+    for col in df.columns:
+        s = df[col]
+        if s.dtype != object:
+            continue
+        mask = s.str.match(r'^=".*"$', na=False)
+        if mask.any():
+            # 去掉首部 `="` 与尾部 `"`，并还原 Excel 转义的连续双引号
+            df.loc[mask, col] = s[mask].str.slice(2, -1).str.replace('""', '"', regex=False)
+            unwrapped_cols.append(str(col))
+    if unwrapped_cols:
+        logging.info("剥离 Excel 文本包裹（=\"...\"）的列：%s", "、".join(unwrapped_cols))
+    return df
+
+
 def _read_csv_file(filepath: Path, *, header: int = 0, label: str = "CSV") -> pd.DataFrame:
     """按常见编码读取 CSV，全列字符串，不限制数据大小。"""
     last_error = None
     for encoding in CSV_ENCODINGS:
         try:
-            return pd.read_csv(filepath, dtype=str, encoding=encoding, header=header)
+            df = pd.read_csv(filepath, dtype=str, encoding=encoding, header=header)
+            return _unwrap_excel_text_columns(df)
         except UnicodeError as exc:
             last_error = exc
     raise UnicodeError(f"读取 {label} CSV 文件失败: {filepath.name}; 已尝试 utf-8-sig / utf-16 / gbk") from last_error

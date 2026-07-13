@@ -1,6 +1,7 @@
 """Project paths and bank-specific configuration."""
 
 from pathlib import Path
+import os
 import sys
 
 
@@ -14,9 +15,11 @@ def get_project_root() -> Path:
 PROJECT_ROOT = get_project_root()
 TEMPLATE_DIR = PROJECT_ROOT / "template"
 DATA_DIR = PROJECT_ROOT / "data"
-INPUT_DIR = DATA_DIR / "input" / "1"
+# 输入/输出目录支持环境变量覆盖（供外部程序如 macro 桥接控制运行时目录）。
+# 未设置时回退仓库默认，现有启动器/命令行/测试行为完全不变。
+INPUT_DIR = Path(os.environ.get("BANK_INPUT_DIR", DATA_DIR / "input" / "1"))
 RAW_INPUT_DIR = DATA_DIR / "input" / "raw"
-OUTPUT_DIR = DATA_DIR / "output"
+OUTPUT_DIR = Path(os.environ.get("BANK_OUTPUT_DIR", DATA_DIR / "output"))
 
 SUMMARY_FILE = "国内银行汇总.xlsx"
 TEMPLATE_PATH = TEMPLATE_DIR / "1" / SUMMARY_FILE

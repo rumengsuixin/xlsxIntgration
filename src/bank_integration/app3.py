@@ -190,7 +190,11 @@ def _unwrap_excel_text_columns(df: pd.DataFrame) -> pd.DataFrame:
     unwrapped_cols = []
     for col in df.columns:
         s = df[col]
-        if s.dtype != object:
+        # 兼容不同 pandas 版本：dtype=str 读出的列在 pandas 2.0 是 object，
+        # 在 2.2+（infer_string）/3.0 可能是 StringDtype（dtype 名 "string"）。
+        # 用 is_string_dtype 同时覆盖两者，只跳过真正的数值列；否则新版 pandas 下
+        # 整列被跳过，="..." 从不剥离，Adyen/Google 关联键对不上全判否。
+        if not pd.api.types.is_string_dtype(s):
             continue
         mask = s.str.match(r'^=".*"$', na=False)
         if mask.any():
@@ -951,6 +955,19 @@ def enrich_admin(
     google_lk: Optional[pd.DataFrame],
 ) -> pd.DataFrame:
     """以 admin 为主表，通过流水号与三个平台查找表 left-join，追加平台匹配列。"""
+    # 自诊断：若 admin 关联键仍带 Excel 文本包裹（="..."），说明剥壳未生效
+    # （常见于新版 pandas 把列读成 StringDtype、旧守卫跳过整列），匹配必然全判否。
+    if ADMIN_JOIN_COL in admin_df.columns:
+        still_wrapped = int(
+            admin_df[ADMIN_JOIN_COL].astype(str).str.match(r'^=".*"$', na=False).sum()
+        )
+        if still_wrapped > 0:
+            logging.warning(
+                "检测到 %d 条 admin 流水号仍带 Excel 文本包裹（=\"...\"）未被剥离，"
+                "匹配将失败，请检查 pandas 版本或 CSV 读取路径",
+                still_wrapped,
+            )
+
     result = admin_df.copy()
     admin_col_count = len(admin_df.columns)
 

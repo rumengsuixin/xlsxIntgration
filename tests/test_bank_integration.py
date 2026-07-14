@@ -25,6 +25,7 @@ from src.bank_integration.config2 import (
 )
 from src.bank_integration.app3 import (
     _format_date,
+    _unwrap_excel_text_columns,
     build_adyen_lookup,
     build_apple_platform_summary,
     build_google_lookup,
@@ -1404,6 +1405,28 @@ class BankIntegrationSampleTests(unittest.TestCase):
             result = read_admin(path)
 
         self.assertEqual(result.loc[0, ADMIN_JOIN_COL], "PSP-CSV")
+
+    def test_unwrap_excel_text_columns_handles_object_and_string_dtype(self):
+        # 回归：新版 pandas（2.2+/3.0）把 dtype=str 的列读成 StringDtype 而非 object，
+        # 旧守卫 `if s.dtype != object` 会跳过整列，导致 admin 流水号的 ="..." 从不
+        # 剥离，Adyen/Google 关联键对不上全判否。这里用 .astype("string") 强制
+        # StringDtype 场景，确保修复后无论列是 object 还是 string 都能正确剥壳。
+        base = pd.DataFrame(
+            {
+                "流水号": ['="BSW9J8X8C6R2VHF3"', '="GPA.123-456"'],
+                "备注": ["含 \"\"引号\"\" 的值", "普通文本"],
+                "金额": ["100.00", "1.00"],
+            }
+        )
+
+        for dtype_label, df in (("object", base.copy()), ("string", base.astype("string"))):
+            with self.subTest(dtype=dtype_label):
+                result = _unwrap_excel_text_columns(df)
+                self.assertEqual(result.loc[0, "流水号"], "BSW9J8X8C6R2VHF3")
+                self.assertEqual(result.loc[1, "流水号"], "GPA.123-456")
+                # 非包裹的纯值列不受影响
+                self.assertEqual(result.loc[0, "金额"], "100.00")
+                self.assertEqual(result.loc[1, "备注"], "普通文本")
 
     def test_read_adyen_settlement_csv_detects_metadata_header(self):
         with tempfile.TemporaryDirectory() as tmp:

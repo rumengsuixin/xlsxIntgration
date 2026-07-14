@@ -24,6 +24,7 @@ from src.bank_integration.config2 import (
     BANK_READ_CONFIG_2,
 )
 from src.bank_integration.app3 import (
+    CMP_AMOUNT_INTERNAL_COL,
     _format_date,
     _unwrap_excel_text_columns,
     build_adyen_lookup,
@@ -149,6 +150,7 @@ from src.bank_integration.config3 import (
     ADMIN_REFUND_COL,
     ADMIN_SHEET,
     ADYEN_AMOUNT_COL,
+    ADYEN_CAPTURED_PC_COL,
     ADYEN_CURRENCY_COL,
     ADYEN_DATE_COL,
     ADYEN_INTERCHANGE_COL,
@@ -1514,6 +1516,41 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertAlmostEqual(float(result.loc[0, ADYEN_MSI_FEE_COL]), 0.60, places=2)
         self.assertEqual(result.loc[0, FEE_COL], "0")
 
+    def test_adyen_compare_amount_uses_captured_pc(self):
+        # Adyen 逐笔差异对比应以 Captured (PC)（支付币已捕获额）为可比基准，而非 Main Amount
+        lookup = build_adyen_lookup(
+            self._adyen_df(
+                [
+                    {
+                        ADYEN_JOIN_COL: "PSP-CAP",
+                        ADYEN_RECORD_TYPE_COL: "Settled",
+                        ADYEN_AMOUNT_COL: "10.00",        # Main Amount
+                        ADYEN_CAPTURED_PC_COL: "8.00",    # Captured (PC)
+                    }
+                ]
+            )
+        )
+        result = enrich_admin(self._admin_df("PSP-CAP"), lookup, None, None)
+        # 平台订单金额仍为 Main Amount；内部可比金额取 Captured (PC)
+        self.assertEqual(result.loc[0, PLATFORM_AMOUNT_COL], "10.00")
+        self.assertEqual(result.loc[0, CMP_AMOUNT_INTERNAL_COL], "8.00")
+
+    def test_adyen_compare_amount_falls_back_to_main_amount_when_captured_blank(self):
+        lookup = build_adyen_lookup(
+            self._adyen_df(
+                [
+                    {
+                        ADYEN_JOIN_COL: "PSP-CAP-BLANK",
+                        ADYEN_RECORD_TYPE_COL: "Settled",
+                        ADYEN_AMOUNT_COL: "10.00",
+                        ADYEN_CAPTURED_PC_COL: "",        # 无 Captured → 回退 Main Amount
+                    }
+                ]
+            )
+        )
+        result = enrich_admin(self._admin_df("PSP-CAP-BLANK"), lookup, None, None)
+        self.assertEqual(result.loc[0, CMP_AMOUNT_INTERNAL_COL], "10.00")
+
     def test_enrich_admin_adds_settlement_currency_after_platform_currency(self):
         lookup = build_adyen_lookup(
             self._adyen_df(
@@ -2336,6 +2373,41 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertFalse(any(str(col).startswith("_google_") for col in main.columns))
         self.assertEqual(set(diff[ADMIN_JOIN_COL]), {"DIFF-OVER-ONE"})
         self.assertEqual(set(failed[ADMIN_JOIN_COL]), {"FAILED"})
+
+    def test_write_output_adyen_diff_uses_captured_pc_compare_amount(self):
+        # 逐笔差异应以内部可比金额（Adyen=Captured (PC)）为准：
+        #   平台订单金额与 admin 一致、CMP 差异大 → 进 diff（证明用 CMP 而非平台订单金额）
+        #   CMP 为负值取绝对值后与 admin 一致 → 不进 diff
+        #   CMP 为空回退平台订单金额
+        detail = pd.DataFrame(
+            [
+                {ADMIN_JOIN_COL: "CMP-DIFF", ADMIN_AMOUNT_COL: "100.00",
+                 PLATFORM_AMOUNT_COL: "100.00", CMP_AMOUNT_INTERNAL_COL: "200.00"},
+                {ADMIN_JOIN_COL: "CMP-NEG-MATCH", ADMIN_AMOUNT_COL: "100.00",
+                 PLATFORM_AMOUNT_COL: "999.00", CMP_AMOUNT_INTERNAL_COL: "-100.00"},
+                {ADMIN_JOIN_COL: "CMP-EMPTY-OK", ADMIN_AMOUNT_COL: "100.00",
+                 PLATFORM_AMOUNT_COL: "100.50", CMP_AMOUNT_INTERNAL_COL: ""},
+                {ADMIN_JOIN_COL: "CMP-EMPTY-DIFF", ADMIN_AMOUNT_COL: "100.00",
+                 PLATFORM_AMOUNT_COL: "102.00", CMP_AMOUNT_INTERNAL_COL: ""},
+            ]
+        )
+        detail[MATCH_STATUS_COL] = "是"
+        detail[STATUS_COL] = "成功"
+        detail[ADMIN_PAYMENT_COL] = "Adyen"
+        detail[TRANSACTION_DATE_COL] = "2026-03-01"
+        detail[PLATFORM_CURRENCY_COL] = "TRY"
+        detail[SETTLEMENT_CURRENCY_COL] = "USD"
+        detail[SETTLEMENT_AMOUNT_COL] = detail[PLATFORM_AMOUNT_COL]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = write_output(detail, Path(tmp))
+            diff = pd.read_excel(output_path, sheet_name=OUTPUT_DIFF_SHEET_3, dtype=str).fillna("")
+            main = pd.read_excel(output_path, sheet_name=OUTPUT_SHEET_3, dtype=str).fillna("")
+
+        self.assertEqual(set(diff[ADMIN_JOIN_COL]), {"CMP-DIFF", "CMP-EMPTY-DIFF"})
+        # 内部可比金额列不得泄漏到任何输出 sheet
+        self.assertNotIn(CMP_AMOUNT_INTERNAL_COL, list(main.columns))
+        self.assertNotIn(CMP_AMOUNT_INTERNAL_COL, list(diff.columns))
 
     def test_write_output_keeps_apple_rows_in_result_sheet(self):
         detail = pd.DataFrame(

@@ -46,6 +46,7 @@ from .config3 import (
     ADMIN_REFUND_COL,
     ADMIN_SHEET,
     ADYEN_AMOUNT_COL,
+    ADYEN_CAPTURED_PC_COL,
     ADYEN_CURRENCY_COL,
     ADYEN_DATE_COL,
     ADYEN_INTERCHANGE_COL,
@@ -111,6 +112,7 @@ from .config3 import (
 
 
 GOOGLE_CHARGE_NET_INTERNAL_COL = "_google_charge_net_amount"
+CMP_AMOUNT_INTERNAL_COL = "_compare_platform_amount"  # 逐笔差异判定用的可比平台金额，write 前 drop
 CSV_ENCODINGS = ("utf-8-sig", "utf-16", "gbk")
 
 
@@ -568,6 +570,7 @@ def build_adyen_lookup(df: pd.DataFrame) -> pd.DataFrame:
         ADYEN_JOIN_COL, ADYEN_AMOUNT_COL, ADYEN_CURRENCY_COL,
         ADYEN_SETTLEMENT_CURRENCY_COL,
         ADYEN_PAYABLE_COL, ADYEN_MARKUP_COL, ADYEN_SCHEME_FEES_COL, ADYEN_INTERCHANGE_COL,
+        ADYEN_CAPTURED_PC_COL,
         ADYEN_DATE_COL,
     ] if c in result.columns]
     return result[keep_cols].fillna("").set_index(ADYEN_JOIN_COL)
@@ -1015,6 +1018,7 @@ def enrich_admin(
     country_tax_list      = []
     transaction_date_list = []
     google_charge_net_list = []
+    compare_amt_list      = []
 
     for _, row in result.iterrows():
         src = str(row.get(ADMIN_PAYMENT_COL, "")).strip()
@@ -1134,6 +1138,13 @@ def enrich_admin(
 
         original_charge_amt_list.append(original_charge_amt)
         platform_amt_list.append(amt)
+        # 逐笔差异判定用的可比平台金额：Adyen 取 Captured (PC)（与 admin 同为支付币），
+        # 空则回退 Main Amount（现有 amt）；其它平台维持用平台订单金额（本次不改）。
+        if src == "Adyen" and adyen_avail:
+            _cap = str(row.get(f"_a_{ADYEN_CAPTURED_PC_COL}", "")).strip()
+            compare_amt_list.append(_cap if _cap != "" else amt)
+        else:
+            compare_amt_list.append(amt)
         platform_ccy_list.append(ccy)
         settlement_ccy_list.append(settle_ccy)
         match_status_list.append(match_tag if match_tag is not None else ("是" if matched else "否"))
@@ -1174,6 +1185,7 @@ def enrich_admin(
     result.insert(admin_col_count + 9, COUNTRY_TAX_COL,       country_tax_list)
     result.insert(admin_col_count + 10, TRANSACTION_DATE_COL, transaction_date_list)
     result[GOOGLE_CHARGE_NET_INTERNAL_COL] = google_charge_net_list
+    result[CMP_AMOUNT_INTERNAL_COL] = compare_amt_list
 
     # ── 追加平台多余行（平台有、admin 无对应记录）────────────
     admin_keys = set(admin_df[ADMIN_JOIN_COL].str.strip())
@@ -2092,7 +2104,10 @@ def write_output(
 
     admin_amount = _money_series(ADMIN_AMOUNT_COL)
     platform_amount = _money_series(PLATFORM_AMOUNT_COL)
-    amount_diff = (admin_amount - platform_amount).abs()
+    # 逐笔差异按“可比平台金额”对比：Adyen=Captured (PC)，其它平台=平台订单金额。
+    # Captured (PC) 带符号（退款/反向为负），取绝对值后再比；内部列为空时回退平台订单金额。
+    compare_amount = _money_series(CMP_AMOUNT_INTERNAL_COL).abs().fillna(platform_amount.abs())
+    amount_diff = (admin_amount - compare_amount).abs()
 
     diff_df = main_df.loc[
         (match_status.eq("是") & amount_diff.gt(1.0)) | match_status.eq("退款待确认")
@@ -2104,9 +2119,11 @@ def write_output(
     if not apple_summary_df.empty:
         summary_df = pd.concat([summary_df, apple_summary_df], ignore_index=True)
 
-    for df in (main_df, diff_df, failed_df):
-        if GOOGLE_CHARGE_NET_INTERNAL_COL in df.columns:
-            df.drop(columns=[GOOGLE_CHARGE_NET_INTERNAL_COL], inplace=True)
+    # 清除内部辅助列，避免泄漏到任何输出 sheet（含苹果详情，其按 apple_admin_df 全列逐行写出）
+    for df in (main_df, diff_df, failed_df, apple_admin_df):
+        for _internal_col in (GOOGLE_CHARGE_NET_INTERNAL_COL, CMP_AMOUNT_INTERNAL_COL):
+            if _internal_col in df.columns:
+                df.drop(columns=[_internal_col], inplace=True)
 
     def _format_detail_sheet(writer: pd.ExcelWriter, sheet_name: str) -> None:
         ws = writer.sheets[sheet_name]

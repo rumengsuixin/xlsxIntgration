@@ -36,6 +36,8 @@ ADYEN_PAYABLE_COL     = "Payable (SC)"
 ADYEN_MARKUP_COL      = "Markup (SC)"
 ADYEN_SCHEME_FEES_COL = "Scheme Fees (SC)"
 ADYEN_INTERCHANGE_COL = "Interchange (SC)"
+# 对账基准：Payment Currency 已捕获金额（与 admin 金额同为支付币，带符号，对比前取绝对值）
+ADYEN_CAPTURED_PC_COL = "Captured (PC)"
 ADYEN_MSI_FEE_COL     = "MSI手续费"
 
 # ── 华为平台 ──────────────────────────────────────────────

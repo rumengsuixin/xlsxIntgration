@@ -44,6 +44,7 @@ ADYEN_MSI_FEE_COL     = "MSI手续费"
 HUAWEI_SHEET = "Sheet0"
 HUAWEI_JOIN_COL = "华为订单号"
 HUAWEI_AMOUNT_COL = "支付金额"
+HUAWEI_COUPON_COL = "优惠券金额"   # 平台订单金额 = 支付金额 + 优惠券金额（券后实付需加回券额）
 HUAWEI_CURRENCY_COL = "交易货币"
 
 # ── Google Play 平台 ──────────────────────────────────────

@@ -26,6 +26,7 @@ from src.bank_integration.config2 import (
 from src.bank_integration.app3 import (
     CMP_AMOUNT_INTERNAL_COL,
     _format_date,
+    _huawei_platform_amount,
     _unwrap_excel_text_columns,
     build_adyen_lookup,
     build_apple_platform_summary,
@@ -181,6 +182,7 @@ from src.bank_integration.config3 import (
     GOOGLE_REFUND_TYPE,
     GOOGLE_TRANSACTION_TYPE_COL,
     HUAWEI_AMOUNT_COL,
+    HUAWEI_COUPON_COL,
     HUAWEI_CURRENCY_COL,
     HUAWEI_DATE_COL,
     HUAWEI_JOIN_COL,
@@ -1611,6 +1613,18 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(by_key.at["PSP-PLATFORM-ONLY", MATCH_STATUS_COL], "平台多余")
         self.assertAlmostEqual(float(by_key.at["PSP-PLATFORM-ONLY", ADYEN_MSI_FEE_COL]), 0.50, places=2)
 
+    def test_huawei_platform_amount_adds_coupon(self):
+        # 无券：原样返回支付金额字符串（向后兼容，展示零变动）
+        self.assertEqual(_huawei_platform_amount("10.00", "0.00"), "10.00")
+        # 优惠券缺失/空 → 视为 0
+        self.assertEqual(_huawei_platform_amount("10.00", ""), "10.00")
+        # 有券：支付金额 + 优惠券金额
+        self.assertEqual(_huawei_platform_amount("10.00", "5.00"), "15.0")
+        self.assertEqual(_huawei_platform_amount("129.99", "0.01"), "130.0")
+        # 支付金额缺失/非数值 → 返回 ""（保持匹配语义）
+        self.assertEqual(_huawei_platform_amount("", "3.00"), "")
+        self.assertEqual(_huawei_platform_amount("abc", "3.00"), "")
+
     def test_enrich_admin_defaults_settlement_currency_for_huawei_and_google(self):
         admin = pd.DataFrame(
             [
@@ -1635,6 +1649,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
                 {
                     HUAWEI_JOIN_COL: "HUAWEI-1",
                     HUAWEI_AMOUNT_COL: "10.00",
+                    HUAWEI_COUPON_COL: "5.00",
                     HUAWEI_CURRENCY_COL: "HKD",
                     HUAWEI_DATE_COL: "2026-03-01",
                 }
@@ -1665,6 +1680,9 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertEqual(result.loc[0, ORIGINAL_CHARGE_AMOUNT_COL], "")
         self.assertEqual(result.loc[0, PLATFORM_CURRENCY_COL], "HKD")
         self.assertEqual(result.loc[0, SETTLEMENT_CURRENCY_COL], "HKD")
+        # 华为平台订单金额 = 支付金额 10.00 + 优惠券金额 5.00；结算金额跟随（含券）
+        self.assertEqual(result.loc[0, PLATFORM_AMOUNT_COL], "15.0")
+        self.assertEqual(result.loc[0, "结算金额"], "15.0")
         self.assertEqual(result.loc[1, PLATFORM_CURRENCY_COL], "TRY")
         self.assertEqual(result.loc[1, SETTLEMENT_CURRENCY_COL], "HKD")
         self.assertEqual(result.loc[1, ORIGINAL_CHARGE_AMOUNT_COL], "10.0")

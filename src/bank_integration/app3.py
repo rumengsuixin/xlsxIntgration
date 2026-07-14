@@ -83,6 +83,7 @@ from .config3 import (
     GOOGLE_REFUND_TYPE,
     GOOGLE_TRANSACTION_TYPE_COL,
     HUAWEI_AMOUNT_COL,
+    HUAWEI_COUPON_COL,
     HUAWEI_CURRENCY_COL,
     HUAWEI_DATE_COL,
     HUAWEI_JOIN_COL,
@@ -582,7 +583,8 @@ def build_huawei_lookup(df: pd.DataFrame) -> pd.DataFrame:
     退款行在华为数据中为独立新行（华为订单号不同），正常不存在重复键；
     若出现重复则保留首行（原始成功记录在前）。
     """
-    keep_cols = [c for c in [HUAWEI_JOIN_COL, HUAWEI_AMOUNT_COL, HUAWEI_CURRENCY_COL, HUAWEI_DATE_COL]
+    keep_cols = [c for c in [HUAWEI_JOIN_COL, HUAWEI_AMOUNT_COL, HUAWEI_COUPON_COL,
+                             HUAWEI_CURRENCY_COL, HUAWEI_DATE_COL]
                  if c in df.columns]
     result = _dedup_lookup(df[keep_cols], HUAWEI_JOIN_COL, "华为")
     return result.fillna("").set_index(HUAWEI_JOIN_COL)
@@ -708,6 +710,22 @@ def _to_float(val) -> Optional[float]:
         return float(str(val).strip().replace(",", ""))
     except (ValueError, TypeError):
         return None
+
+
+def _huawei_platform_amount(payment, coupon) -> str:
+    """华为平台订单金额 = 支付金额 + 优惠券金额。
+
+    - 支付金额缺失/非数值 → 返回 ""（保持「有支付金额才算匹配」的原语义）
+    - 优惠券缺失/空 → 视为 0
+    - 优惠券为 0 → 原样返回支付金额字符串（无券订单展示零变动，向后兼容）
+    """
+    pay = _to_float(payment)
+    if pay is None:
+        return ""
+    cpn = _to_float(coupon) or 0.0
+    if cpn == 0.0:
+        return str(payment).strip()
+    return str(round(pay + cpn, 2))
 
 
 def _adyen_msi_fee_from_row(row, prefix: str = "") -> float:
@@ -887,7 +905,10 @@ def _build_platform_only_rows(
             row = {c: "" for c in result_cols}
             row[ADMIN_JOIN_COL]     = key
             row[ADMIN_PAYMENT_COL]  = "华为支付"
-            amt = str(huawei_lk.at[key, HUAWEI_AMOUNT_COL]).strip()
+            pay = str(huawei_lk.at[key, HUAWEI_AMOUNT_COL]).strip()
+            coupon = (str(huawei_lk.at[key, HUAWEI_COUPON_COL]).strip()
+                      if HUAWEI_COUPON_COL in huawei_lk.columns else "")
+            amt = _huawei_platform_amount(pay, coupon)  # 平台订单金额 = 支付金额 + 优惠券金额
             row[PLATFORM_AMOUNT_COL]   = amt
             row[PLATFORM_CURRENCY_COL] = str(huawei_lk.at[key, HUAWEI_CURRENCY_COL]).strip()
             row[SETTLEMENT_CURRENCY_COL] = row[PLATFORM_CURRENCY_COL]
@@ -1046,11 +1067,13 @@ def enrich_admin(
             transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
         elif src == "华为支付" and huawei_avail:
-            amt = str(row.get(f"_h_{HUAWEI_AMOUNT_COL}", "")).strip()
+            pay    = str(row.get(f"_h_{HUAWEI_AMOUNT_COL}", "")).strip()
+            coupon = str(row.get(f"_h_{HUAWEI_COUPON_COL}", "")).strip()
+            amt = _huawei_platform_amount(pay, coupon)   # 平台订单金额 = 支付金额 + 优惠券金额
             ccy = str(row.get(f"_h_{HUAWEI_CURRENCY_COL}", "")).strip()
             settle_ccy = ccy
             matched = amt != ""
-            settle_amt = amt  # 暂无手续费数据，结算金额 = 平台订单金额
+            settle_amt = amt  # 暂无手续费数据，结算金额 = 平台订单金额（含券）
             transaction_date = _format_date(row.get(ADMIN_DATE_COL, ""))
 
         elif "Google" in src and google_avail:

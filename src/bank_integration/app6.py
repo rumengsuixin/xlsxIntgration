@@ -292,8 +292,19 @@ def read_betcat_csv_6(filepath: Path) -> pd.DataFrame:
     列含：CreateTime / OrderNo / MerOrderNo / ChannelOrderNo / ChannelTradeNo /
          Amount / Currency / Status / TradeCharge / PayTime
     时间：ISO 8601 带时区（如 2026-04-01T00:07:49-03:00），保留为字符串
+    编码：平台导出编码不稳定（混有 UTF-8/GBK），依次尝试 utf-8-sig / gbk / gb18030 / utf-8
     """
-    df = pd.read_csv(filepath, dtype=str, keep_default_na=False)
+    df = None
+    for enc in ("utf-8-sig", "gbk", "gb18030", "utf-8"):
+        try:
+            df = pd.read_csv(filepath, dtype=str, keep_default_na=False, encoding=enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if df is None:
+        raise UnicodeError(
+            f"无法解码 Betcat CSV 文件: {filepath.name}（已尝试 utf-8-sig/gbk/gb18030/utf-8）"
+        )
     df.columns = [str(c).strip() for c in df.columns]
     return df.dropna(how="all").fillna("")
 

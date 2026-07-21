@@ -40,6 +40,7 @@
 <table>
   <thead><tr><th>日期</th><th>代号</th><th>类型</th><th>说明</th><th>状态</th></tr></thead>
   <tbody>
+    <tr><td>2026-07-21</td><td>6</td><td>修复</td><td>Betcat CSV 读取写死默认 UTF-8,平台导出混有 GBK 文件时抛 <code>UnicodeDecodeError</code>(<code>0xb8</code>);<code>read_betcat_csv_6</code> 改为依次尝试 <code>utf-8-sig / gbk / gb18030 / utf-8</code>,并借 <code>utf-8-sig</code> 剥除 BOM 残留</td><td>✅</td></tr>
     <tr><td>2026-07-14</td><td>3</td><td>修复</td><td>华为平台订单金额只取 <code>支付金额</code>(券后实付)漏加 <code>优惠券金额</code>,含券订单误判进「匹配订单差异」;改为 <code>平台订单金额 = 支付金额 + 优惠券金额</code>,结算金额跟随</td><td>✅</td></tr>
     <tr><td>2026-07-14</td><td>3</td><td>修复</td><td>「匹配订单差异」逐笔判定未以统一币种为前提;改按平台取「可比金额」,Adyen 取 <code>Captured (PC)</code>(空则回退 <code>Main Amount</code>),内部列写出前 drop</td><td>✅</td></tr>
     <tr><td>2026-07-14</td><td>3</td><td>修复</td><td>剥壳守卫写死 <code>s.dtype != object</code>,新版 pandas 把 <code>dtype=str</code> 读成 StringDtype 致整列被跳过;改用 <code>is_string_dtype</code>,pandas 加 <code>&lt;3.0.0</code> 上限</td><td>✅</td></tr>
@@ -89,6 +90,12 @@
 
 <h2>详细记录(内容 / 原因 / 效果)</h2>
 <p class="lead">点击展开查看每条的完整说明。</p>
+
+<details><summary>2026-07-21 · 代号6 · Betcat CSV 多编码兼容</summary>
+  <p><span class="kind">内容:</span><code>read_betcat_csv_6</code>(app6.py)由单次 <code>pd.read_csv</code>(默认 UTF-8)改为依次尝试 <code>utf-8-sig / gbk / gb18030 / utf-8</code>,只捕获 <code>UnicodeDecodeError</code> 重试,全部失败抛清晰中文 <code>UnicodeError</code>;保留原有 <code>dtype=str</code> 与 <code>keep_default_na=False</code> 参数。</p>
+  <p><span class="kind">原因:</span>Betcat 平台导出编码不稳定(混有 UTF-8 与 GBK),某个 GBK 文件中的中文 <code>Status</code> 值(如"支付已通知","付"字 GBK 前导字节 <code>0xb8</code>)被默认 UTF-8 解码时抛 <code>UnicodeDecodeError</code>,导致整个代号6 崩溃退出。此前代号6 是全库唯一未做多编码兼容的 CSV 读取(readers/app3/app4/app4_bc 早已具备)。</p>
+  <p><span class="kind">效果:</span>无论源文件为 UTF-8(含 BOM)还是 GBK 系编码均可正常读取;<code>utf-8-sig</code> 优先还顺带剥除 BOM,避免首列 <code>CreateTime</code> 列名残留 <code>﻿</code> 的列匹配隐患。</p>
+</details>
 
 <details><summary>2026-05-25 · 代号5 · EPIN 平台流水号改用订单ID</summary>
   <p><span class="kind">内容:</span>EPIN 已匹配行的 <code>平台流水号</code> 改为取 <code>epin_siparisler/epin_pinler</code> 关联后的 <code>订单ID</code>;平台多余行同步使用 <code>订单ID</code>,不再用 <code>Pin ID</code>;补充单元测试。</p>

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>读取配置参考 · xlsxIntgration</title>
+<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;line-height:1.65;color:#1a1a1a}
+  h1{font-size:1.5rem;border-bottom:2px solid #333;padding-bottom:.4rem}
+  h2{font-size:1.15rem;margin-top:2rem;color:#0a7d47}
+  table{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.88rem}
+  th,td{border:1px solid #ccc;padding:.4rem .55rem;text-align:left;vertical-align:top}
+  th{background:#f5f5f5}
+  code{background:#f0f0f0;padding:.1rem .3rem;border-radius:3px;font-family:Consolas,monospace;font-size:.86em}
+  ul{padding-left:1.3rem}
+  li{margin:.25rem 0}
+  .nav{font-size:.85rem;color:#666;margin-bottom:1.2rem}
+  .nav a{color:#0366d6;text-decoration:none;margin-right:.8rem}
+</style>
+</head>
+<body>
+<div class="nav">
+  索引:
+  <a href="../CLAUDE.md">CLAUDE.md</a>
+  <a href="数据流参考.html">数据流参考</a>
+  <a href="表结构参考.html">表结构参考</a>
+  <a href="变更记录.html">变更记录</a>
+</div>
+
+<h1>各代号读取配置参考</h1>
+<p>从 <code>CLAUDE.md</code> 外移的代码级读取配置(header 行号、engine、余额列/日期列映射等),对应 <code>config.py</code> / <code>config2.py</code> / <code>config5.py</code>。改配置时以源码为准。</p>
+
+<h2>代号1 各银行读取配置(config.py)</h2>
+<table>
+  <thead><tr><th>银行</th><th>header(0-indexed)</th><th>engine</th><th>格式</th><th>余额列</th><th>日期列</th></tr></thead>
+  <tbody>
+    <tr><td>工商银行</td><td>1</td><td>openpyxl</td><td>XLSX</td><td>余额</td><td>交易时间</td></tr>
+    <tr><td>中信银行</td><td>15</td><td>openpyxl</td><td>XLSX</td><td>账户余额</td><td>交易日期</td></tr>
+    <tr><td>招商银行</td><td>12</td><td>openpyxl</td><td>XLSX</td><td>余额</td><td>交易日</td></tr>
+    <tr><td>农业银行</td><td>2</td><td>xlrd</td><td>XLS</td><td>账户余额</td><td>交易时间</td></tr>
+    <tr><td>建设银行</td><td>9</td><td>xlrd</td><td>XLS</td><td>余额</td><td>交易时间</td></tr>
+    <tr><td>浦发银行</td><td>4</td><td>xlrd</td><td>XLS</td><td>余额</td><td>交易日期</td></tr>
+    <tr><td>中国银行</td><td>7</td><td>—(CSV)</td><td>CSV</td><td>交易后余额</td><td>交易日期</td></tr>
+  </tbody>
+</table>
+
+<h2>代号2 各银行读取配置(config2.py)</h2>
+<table>
+  <thead><tr><th>银行</th><th>header</th><th>格式</th><th>余额列</th><th>日期列</th><th>特殊处理</th></tr></thead>
+  <tbody>
+    <tr><td>汇丰银行</td><td>1</td><td>CSV</td><td>账面结余(前缀匹配)</td><td>日期</td><td><code>strip_col_suffix_char="("</code></td></tr>
+    <tr><td>东亚银行</td><td>0</td><td>CSV</td><td>存入金额</td><td>日期及时间</td><td><code>row_filter_prefix="总结余"</code>;余额行的 <code>日期及时间</code> 含嵌入日期(<code>总结余(截至 YYYY年M月D日)</code>),<code>_parse_date_str</code> 用 <code>re.search</code> 自动提取</td></tr>
+    <tr><td>华侨银行</td><td>0</td><td>CSV (GBK)</td><td>余额</td><td>交易日期</td><td><code>encoding="gbk"</code>;<code>col_map</code> 仅在目标列不存在时重命名,避免重复 <code>交易日期</code></td></tr>
+    <tr><td>渣打银行空中云汇</td><td>0</td><td>XLSX</td><td>Account Balance</td><td>Time</td><td>—</td></tr>
+    <tr><td>华美银行</td><td>0</td><td>PDF</td><td>Amount</td><td>Date</td><td>读取 <code>DAILY BALANCES</code>,只保留账单月份最后一条余额</td></tr>
+    <tr><td>大华银行(UOB)</td><td>3</td><td>XLSX</td><td>Ledger Balance</td><td>Value Date</td><td><code>row_filter_val="D2"</code></td></tr>
+    <tr><td>联昌国际银行(CIMB)</td><td>5</td><td>XLSX</td><td>Balance</td><td>Transaction Date</td><td>—</td></tr>
+    <tr><td>招商银行</td><td>12</td><td>XLSX</td><td>余额</td><td>交易日</td><td>—</td></tr>
+    <tr><td>工商银行</td><td>1</td><td>XLSX</td><td>余额</td><td>交易时间</td><td>列不存在时自动跳过余额提取</td></tr>
+  </tbody>
+</table>
+
+<h2>代号5 各平台读取配置(config5.py)</h2>
+<table>
+  <thead><tr><th>平台</th><th>格式</th><th>sheet</th><th>header</th><th>关联键(平台侧)</th><th>关联键(admin侧)</th><th>特殊处理</th></tr></thead>
+  <tbody>
+    <tr><td>Admin</td><td>XLS</td><td>Simple</td><td>0</td><td>—</td><td>—</td><td>engine=xlrd;sheet 不存在时回退查找</td></tr>
+    <tr><td>IBFYPAY(资金流水账)</td><td>XLSX</td><td>Sheet</td><td>0</td><td>系统流水号</td><td>第三方订单号</td><td>两行合并:代付扣款+代付扣除手续费</td></tr>
+    <tr><td>IBFYPAY(订单明细)</td><td>XLSX</td><td>Sheet</td><td>0</td><td>系统流水号</td><td>第三方订单号</td><td>无 <code>类型</code> 列时自动识别,手续费置0</td></tr>
+    <tr><td>SUPERPAY</td><td>XLSX</td><td>sheet1</td><td>0</td><td>商户订单号</td><td>订单号</td><td>手续费=代付金额−实收(取绝对值)</td></tr>
+    <tr><td>WANGGUYPAY</td><td>XLSX</td><td>付款订单</td><td>1</td><td>商户订单号</td><td>订单号</td><td>header=1(第1行为冗余标题)</td></tr>
+  </tbody>
+</table>
+
+<h2>代号3 平台识别与去重规则(config3.py)</h2>
+<ul>
+  <li><strong>源文件目录</strong>:<code>data/input/3/</code>,所有文件平铺放置(均为 <code>.xlsx</code>)</li>
+  <li><strong>文件识别</strong>(stem 小写前缀匹配):<code>admin</code> → admin 订单主表(工作表"汇总");<code>adyen-</code> → Adyen(工作表"Data");<code>华为</code> → 华为(工作表"Sheet0");<code>googol-</code>/<code>google-</code> → Google Play(第一个工作表,名称含日期后缀)</li>
+  <li><strong>流水号关联</strong>:admin.<code>流水号</code> ↔ Adyen.<code>Psp Reference</code> / 华为.<code>华为订单号</code> / Google.<code>Description</code></li>
+  <li><strong>Adyen 去重</strong>:同一 Psp Reference 有多行(Received/Authorised/SentForSettle),按 <code>ADYEN_RECORD_TYPE_PRIORITY = ["SentForSettle", "Authorised"]</code> 优先取 SentForSettle 行</li>
+  <li><strong>Google 去重</strong>:只保留 <code>Transaction Type == "Charge"</code> 行(排除 Google fee 和退款行)</li>
+  <li><strong>平台支付方式填充</strong>:Adyen → <code>Payment Method</code>(mc/visa/troy);华为 → <code>支付方式</code>(World Pay/Adyen/话费);Google → 固定值 "Google Play"</li>
+</ul>
+
+<h2>代号4 运行参数(命令行 + .env)</h2>
+<table>
+  <thead><tr><th>参数 / 环境变量</th><th>默认</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>--date-range START END</code></td><td>上一自然月</td><td>手动指定日期区间,严格校验 <code>YYYY-MM-DD</code></td></tr>
+    <tr><td><code>--wait-seconds N</code> / <code>MODE4_BATCH_WAIT_SECONDS</code></td><td>—</td><td>批次等待秒数,兼容保留;不再提前截断检查机会,重试节奏以检查机会为准</td></tr>
+    <tr><td><code>MODE4_BATCH_SIZE</code></td><td>5</td><td>单批打开的导出链接数量</td></tr>
+    <tr><td><code>MODE4_RETRY_LIMIT</code></td><td>3</td><td>每批下载不完整时自动重试次数</td></tr>
+    <tr><td><code>MODE4_MISSING_CHECK_CHANCES</code></td><td>10</td><td>检查缺失文件的机会次数,用完才重试</td></tr>
+    <tr><td><code>MODE4_CHECK_INTERVAL_SECONDS</code></td><td>2</td><td>检查缺失文件的间隔秒数</td></tr>
+    <tr><td><code>MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS</code></td><td>3</td><td>EPIN 订单列表点击"加载更多"后的下一次点击间隔</td></tr>
+  </tbody>
+</table>
+<p>命令行优先级最高;完整约束见 <code>CLAUDE.md</code> 「关键约束 › 代号4」。</p>
+
+</body>
+</html>

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>数据流参考 · xlsxIntgration</title>
+<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem;line-height:1.65;color:#1a1a1a}
+  h1{font-size:1.5rem;border-bottom:2px solid #333;padding-bottom:.4rem}
+  h2{font-size:1.15rem;margin-top:2rem;color:#0a7d47}
+  ol{padding-left:1.4rem}
+  li{margin:.3rem 0}
+  code{background:#f0f0f0;padding:.1rem .3rem;border-radius:3px;font-family:Consolas,monospace;font-size:.88em}
+  .nav{font-size:.85rem;color:#666;margin-bottom:1.2rem}
+  .nav a{color:#0366d6;text-decoration:none;margin-right:.8rem}
+</style>
+</head>
+<body>
+<div class="nav">
+  索引:
+  <a href="../CLAUDE.md">CLAUDE.md</a>
+  <a href="读取配置参考.html">读取配置参考</a>
+  <a href="表结构参考.html">表结构参考</a>
+  <a href="变更记录.html">变更记录</a>
+</div>
+
+<h1>各代号数据流参考</h1>
+<p>从 <code>CLAUDE.md</code> 外移的实现步骤细节。此文档描述函数调用链,与代码强耦合,改代码时须同步更新或删除。</p>
+
+<h2>代号1 数据流</h2>
+<ol>
+  <li><code>prepare_work_copy</code>:检查 <code>data/output/国内银行汇总.xlsx</code> 年份,若不匹配当前年则从 <code>template/1/</code> 复制并刷新余额表日期</li>
+  <li><code>scan_source_files</code>:在 <code>data/input/</code> 扫描 <code>^([A-Z])-(.+)\.(xls|xlsx|csv)$</code> 格式文件</li>
+  <li><code>read_bank_file</code>:按 <code>BANK_READ_CONFIG</code> 的 header 行偏移和引擎读取,全部列作为字符串保留,农业银行额外过滤非日期格式行</li>
+  <li><code>get_monthly_balances</code>:按月提取期末余额(同月取最新日期行)</li>
+  <li><code>write_all_to_summary</code>:覆盖写入 <code>{公司代号}-{银行缩写}</code> 明细子表,调用 <code>update_balance_sheet</code> 更新 <code>银行余额</code> 工作表对应单元格</li>
+</ol>
+
+<h2>代号2 数据流</h2>
+<ol>
+  <li><code>prepare_work_copy(template_path=TEMPLATE_PATH_2, output_path=OUTPUT_PATH_2, ...)</code>:检查 <code>data/output/银行汇总.xlsx</code> 年份,若不匹配则从 <code>template/2/</code> 复制并刷新余额表日期</li>
+  <li><code>scan_source_files_2</code>:在 <code>data/input/2/</code> 扫描 <code>^([A-Z])-(.+)-([A-Z]{2,4})\.(xls|xlsx|csv|pdf)$</code> 格式文件,返回含 <code>currency</code> 字段的列表;PDF 仅支持华美银行</li>
+  <li><code>read_bank_file</code>:传入 <code>BANK_READ_CONFIG_2</code> / <code>BANK_DATE_COL_2</code>;支持额外选项:<code>encoding</code>、<code>col_map</code>、<code>strip_col_suffix_char</code>、<code>row_filter_col</code>/<code>row_filter_prefix</code>/<code>row_filter_val</code>,华美银行 PDF 读取 <code>DAILY BALANCES</code></li>
+  <li><code>get_monthly_balances</code>:传入 <code>BANK_BALANCE_COL_2</code> / <code>BANK_DATE_COL_2</code> 按月提取期末余额</li>
+  <li><code>write_all_to_summary_2</code>:覆盖写入 <code>{公司代号}-{银行缩写}-{币种}</code> 明细子表(如 <code>A-东亚-HKD</code>),调用 <code>update_balance_sheet_2</code> 更新余额工作表</li>
+</ol>
+
+<h2>代号4 数据流</h2>
+<ol>
+  <li>无参数时自动取上一个自然月;手动指定时使用 <code>--date-range START END</code>,严格校验 <code>YYYY-MM-DD</code></li>
+  <li>按日期区间逐日生成 URL:当天同时作为 <code>pay_sdate</code> 和 <code>pay_edate</code></li>
+  <li><code>p=[PAGE]</code> 按需求原样保留,不做分页替换</li>
+  <li>查找 Google Chrome,使用 <code>data/browser_profile/4/</code> 作为独立用户目录</li>
+  <li>更新 Chrome <code>Default/Preferences</code>,将下载目录设置为 <code>data/output/4/</code></li>
+  <li>若独立 profile 尚无 <code>Default/Cookies</code> 数据,先打开固定登录页 <code>https://aim1.567okey.com/Public/login.html</code> 让用户登录并等待回车,再打开所有导出 URL</li>
+  <li>每批打开导出 URL 前先检查对应日期文件是否已存在,已存在日期直接跳过,只打开缺失日期 URL</li>
+  <li>按批次等待下载完成;<code>--wait-seconds</code> / <code>MODE4_BATCH_WAIT_SECONDS</code> 保留兼容,实际重试由检查机会和检查间隔控制,机会用完才重试</li>
+  <li>全部日期齐备后,按日期选择最新完成文件并合并为 <code>data/output/4/后台充值订单导出合并_{start}_{end}.xlsx</code></li>
+  <li>合并读取 <code>.xls</code> 时若 <code>xlrd</code> 无法直接读取,会尝试用 LibreOffice 或 Windows Excel 临时转换为 <code>.xlsx</code> 后再读取</li>
+  <li><code>整合4_epin.py</code> 抓取 1epin 订单列表时,<code>MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS</code> 控制每次点击"加载更多"后的下一次点击间隔,默认 3 秒</li>
+</ol>
+
+<h2>代号5 数据流</h2>
+<ol>
+  <li><code>scan_source_files_5</code>:在 <code>data/input/5/</code> 扫描 <code>.xls</code>/<code>.xlsx</code>,按 stem 小写前缀分类(跳过 <code>~$</code> 临时文件)</li>
+  <li><code>read_admin_5</code>:engine=xlrd,sheet="Simple",找不到时回退查找含 <code>订单号</code> 列的 sheet;<code>dropna+fillna</code></li>
+  <li><code>read_ibfpay_5</code>:自动检测资金流水账格式(有 <code>类型</code> 列,两行合并)或订单明细格式(无 <code>类型</code> 列,手续费置0)</li>
+  <li><code>read_superpay_5</code> / <code>read_wangguypay_5</code>:<code>_select_sheet_by_columns_5</code> 自动定位含必要列的 sheet</li>
+  <li><code>build_*_lookup_5</code>:三平台各构建以关联键为索引的查找表,去重并打 warning</li>
+  <li><code>enrich_admin_5</code>:admin 为主表,优先级 IBFYPAY &gt; SUPERPAY &gt; WANGGUYPAY 逐行匹配,追加新增列;末尾追加平台多余行(<code>机构</code> 填平台名称)</li>
+  <li><code>write_output_5</code>:输出 3 个 sheet 到 <code>data/output/代付对账结果_{YYYYMMDD}.xlsx</code></li>
+</ol>
+
+</body>
+</html>

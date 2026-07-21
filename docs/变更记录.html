@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>变更记录 · xlsxIntgration</title>
+<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:1050px;margin:2rem auto;padding:0 1rem;line-height:1.6;color:#1a1a1a}
+  h1{font-size:1.5rem;border-bottom:2px solid #333;padding-bottom:.4rem}
+  h2{font-size:1.15rem;margin-top:2.2rem;color:#0a7d47;border-bottom:1px solid #eee;padding-bottom:.3rem}
+  table{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.85rem}
+  th,td{border:1px solid #ccc;padding:.35rem .5rem;text-align:left;vertical-align:top}
+  th{background:#f5f5f5;position:sticky;top:0}
+  code{background:#f0f0f0;padding:.05rem .3rem;border-radius:3px;font-family:Consolas,monospace;font-size:.86em}
+  pre{background:#f6f8fa;border:1px solid #e1e4e8;border-radius:4px;padding:.6rem .8rem;overflow:auto;font-size:.82rem}
+  details{border:1px solid #e1e4e8;border-radius:5px;margin:.5rem 0;padding:.2rem .8rem;background:#fafbfc}
+  summary{cursor:pointer;font-weight:600;padding:.4rem 0}
+  details[open]{background:#fff}
+  .tag{display:inline-block;background:#e7f3ff;color:#0366d6;border-radius:3px;padding:0 .4rem;font-size:.78rem;margin-left:.4rem}
+  .kind{font-weight:600;color:#555}
+  .nav{font-size:.85rem;color:#666;margin-bottom:1.2rem}
+  .nav a{color:#0366d6;text-decoration:none;margin-right:.8rem}
+  .lead{color:#555;font-size:.92rem}
+</style>
+</head>
+<body>
+<div class="nav">
+  索引:
+  <a href="../CLAUDE.md">CLAUDE.md</a>
+  <a href="数据流参考.html">数据流参考</a>
+  <a href="读取配置参考.html">读取配置参考</a>
+  <a href="表结构参考.html">表结构参考</a>
+  <a href="../开发计划.md">开发计划.md</a>
+</div>
+
+<h1>变更记录(修复 &amp; 优化)</h1>
+<p class="lead">项目历史修复与优化的<strong>唯一来源</strong>,由原 <code>BUG记录.MD</code>、<code>优化记录.md</code>、<code>开发计划.md</code>「已知问题&amp;历史修复」三处合并去重而成,按日期倒序。今后新增的修复/优化统一追加到此文件。</p>
+
+<h2>一览表(索引)</h2>
+<table>
+  <thead><tr><th>日期</th><th>代号</th><th>类型</th><th>说明</th><th>状态</th></tr></thead>
+  <tbody>
+    <tr><td>2026-07-14</td><td>3</td><td>修复</td><td>华为平台订单金额只取 <code>支付金额</code>(券后实付)漏加 <code>优惠券金额</code>,含券订单误判进「匹配订单差异」;改为 <code>平台订单金额 = 支付金额 + 优惠券金额</code>,结算金额跟随</td><td>✅</td></tr>
+    <tr><td>2026-07-14</td><td>3</td><td>修复</td><td>「匹配订单差异」逐笔判定未以统一币种为前提;改按平台取「可比金额」,Adyen 取 <code>Captured (PC)</code>(空则回退 <code>Main Amount</code>),内部列写出前 drop</td><td>✅</td></tr>
+    <tr><td>2026-07-14</td><td>3</td><td>修复</td><td>剥壳守卫写死 <code>s.dtype != object</code>,新版 pandas 把 <code>dtype=str</code> 读成 StringDtype 致整列被跳过;改用 <code>is_string_dtype</code>,pandas 加 <code>&lt;3.0.0</code> 上限</td><td>✅</td></tr>
+    <tr><td>2026-07-13</td><td>3</td><td>修复</td><td>admin CSV 的流水号/订单号/玩家ID 被 Excel 文本公式 <code>="..."</code> 包裹致误判「否」;在 <code>_read_csv_file</code> 统一剥离后 Adyen 65325 条全部匹配</td><td>✅</td></tr>
+    <tr><td>2026-05-25</td><td>7</td><td>新增</td><td>新增代号7汇率模块:XE.com 抓取 + 本地缓存 + Excel 报表输出</td><td>✅</td></tr>
+    <tr><td>2026-05-25</td><td>5</td><td>修复</td><td>EPIN 已匹配记录 <code>平台流水号</code> 取 Pin ID 或为空,改为回填平台订单ID</td><td>✅</td></tr>
+    <tr><td>2026-05-21</td><td>4_epin</td><td>新增</td><td>新增 <code>--mode payments</code> 提取 odemelerim 付款订单列表(10列),输出 epin_odemeler_{YYYYMMDD}.xlsx</td><td>✅</td></tr>
+    <tr><td>2026-05-21</td><td>5</td><td>修复</td><td>平台汇总缺少币种维度,同月同机构多币种不便核对</td><td>✅</td></tr>
+    <tr><td>2026-05-21</td><td>4_epin</td><td>修复</td><td>订单列表连续点击加载更多间隔过短,新增可配置等待间隔</td><td>✅</td></tr>
+    <tr><td>2026-05-20</td><td>3</td><td>优化</td><td>Adyen 交易金额汇总净交易金额改为成功行结算金额合计,不含 MSI手续费;手续费按成功金额−净交易金额−税金计算</td><td>✅</td></tr>
+    <tr><td>2026-05-20</td><td>3</td><td>优化</td><td>Adyen 匹配口径改为 Settled,新增 MSI手续费并调整交易金额汇总结算口径</td><td>✅</td></tr>
+    <tr><td>2026-05-20</td><td>4_epin</td><td>新增</td><td>新增 Pin 码详情页提取:逐单访问 /siparis/{id} 取 #pin_form 表格,输出 epin_pinler_{YYYYMMDD}.xlsx</td><td>✅</td></tr>
+    <tr><td>2026-05-20</td><td>4_epin</td><td>新增</td><td>1epin.com 数据加载(反复点击加载更多)与结构化提取(16列)由 TODO 改为完整实现</td><td>✅</td></tr>
+    <tr><td>2026-05-19</td><td>6</td><td>修复</td><td>Cashnewpay 状态描述含 <code>Payment failed</code>/<code>REJECTED</code>/<code>USER_REFUND-&lt;单号&gt;</code> 等未覆盖值,补充映射与前缀匹配</td><td>✅</td></tr>
+    <tr><td>2026-05-19</td><td>6</td><td>优化</td><td>betcat 代付和代收订单文件统一补充 <code>betcat-</code> 文件名前缀</td><td>✅</td></tr>
+    <tr><td>2026-05-19</td><td>5</td><td>新增</td><td>新增 <code>Okey话费卡结算</code> 文件逐单对账支持,4月样例20笔命中 admin</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>5</td><td>修复</td><td>平台汇总包含失败/处理中/关闭状态记录,金额口径偏大</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>5</td><td>修复</td><td>平台状态直接透传各平台原文,口径不一致</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>5</td><td>修复</td><td>平台汇总仅按机构汇总,无法按交易月份核对</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>5</td><td>修复</td><td>IBFYPAY 明细文件与资金流水账同流水号去重保留明细,导致手续费全为0</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>5</td><td>修复</td><td>平台多余行「机构」列为空,无法识别来源平台</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>5</td><td>修复</td><td>手续费填入前未取绝对值,可能出现负数</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>5</td><td>修复</td><td>SUPERPAY 手续费直接取源文件列不准,改为「代付金额 − 实收」计算</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>5</td><td>修复</td><td>IBFYPAY 订单明细格式文件(<code>ibfpay-</code> 前缀)无「类型」列导致 KeyError 崩溃</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>5</td><td>实现</td><td>代号5 全部业务逻辑(扫描/读取/匹配/输出)由 TODO 骨架补全为可运行</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>5</td><td>修复</td><td>IBFYPAY 原订单明细缺少手续费列,改用资金流水账格式(两行合并)</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>4</td><td>修复</td><td><code>MODE4_BATCH_WAIT_SECONDS</code> 提前截断检查机会,导致每批过早重试并重复下载</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>4</td><td>修复</td><td>可由 Excel 打开的 <code>.xls</code> 导出文件被 <code>xlrd</code> 判定损坏,导致合并失败</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>4</td><td>修复</td><td>已存在日期仍会再次打开导出 URL,造成重复下载</td><td>✅</td></tr>
+    <tr><td>2026-05-18</td><td>4</td><td>修复</td><td>登录探测使用导出链接且缺失检查过早触发重试</td><td>✅</td></tr>
+    <tr><td>2026-05-15</td><td>4</td><td>修复</td><td>批次完整度检查过早触发重试,可能造成重复下载</td><td>✅</td></tr>
+    <tr><td>2026-05-15</td><td>3</td><td>修复</td><td>Google 多月源文件中跨月退款污染原 Charge 月份汇总</td><td>✅</td></tr>
+    <tr><td>2026-05-14</td><td>3</td><td>修复</td><td>Adyen 结算 CSV 固定 header=6 导致聚合报表表头识别失败</td><td>✅</td></tr>
+    <tr><td>2026-05-14</td><td>3</td><td>修复</td><td>代号3 仅 Google 支持 CSV,其他交易/结算源文件 CSV 会被扫描跳过</td><td>✅</td></tr>
+    <tr><td>2026-05-14</td><td>3</td><td>修复</td><td>Google 退款类订单未补齐原 Charge 净额且匹配行按 admin 日期跨月归属</td><td>✅</td></tr>
+    <tr><td>2026-05-14</td><td>3</td><td>修复</td><td>Google 平台多余行交易日期被截断为 <code>Jan 1, 202</code></td><td>✅</td></tr>
+    <tr><td>2026-05-14</td><td>3</td><td>修复</td><td>「退款待确认」订单被归入退款金额,拉低净交易金额</td><td>✅</td></tr>
+    <tr><td>2026-05-13</td><td>3</td><td>修复</td><td>苹果支付数据出现在"订单匹配结果"主 Sheet</td><td>✅</td></tr>
+    <tr><td>2026-05-13</td><td>3</td><td>修复</td><td>未匹配订单状态被错误置为"失败"</td><td>✅</td></tr>
+    <tr><td>2026-05-13</td><td>3</td><td>修复</td><td>Adyen 手续费错误计算(应置0)</td><td>✅</td></tr>
+    <tr><td>2026-05-13</td><td>3</td><td>修复</td><td>日志警告未匹配数量与 Sheet 实际行数不一致</td><td>✅</td></tr>
+    <tr><td>2026-05-09</td><td>3</td><td>新增</td><td>新增华为月度结算文件支持,手续费列完善</td><td>✅</td></tr>
+    <tr><td>2026-05-08</td><td>3</td><td>修复</td><td>Adyen 平台多余行结算币种为空导致汇总多余分组</td><td>✅</td></tr>
+    <tr><td>2026-05-08</td><td>3</td><td>修复</td><td>Adyen Refused 订单被错误标记为"成功"</td><td>✅</td></tr>
+  </tbody>
+</table>
+
+<h2>详细记录(内容 / 原因 / 效果)</h2>
+<p class="lead">点击展开查看每条的完整说明。</p>
+
+<details><summary>2026-05-25 · 代号5 · EPIN 平台流水号改用订单ID</summary>
+  <p><span class="kind">内容:</span>EPIN 已匹配行的 <code>平台流水号</code> 改为取 <code>epin_siparisler/epin_pinler</code> 关联后的 <code>订单ID</code>;平台多余行同步使用 <code>订单ID</code>,不再用 <code>Pin ID</code>;补充单元测试。</p>
+  <p><span class="kind">原因:</span>admin 通过 Pin 码命中平台记录,但输出 <code>平台流水号</code> 使用 <code>Pin ID</code>,部分源文件中为空或不符核对口径,实际需展示平台订单ID。</p>
+  <p><span class="kind">效果:</span>EPIN <code>是否匹配=是</code> 的行可直接看到平台订单ID;明细行与平台多余行流水号口径一致,便于与源文件核对。</p>
+</details>
+
+<details><summary>2026-05-21 · 代号5 · 正式输入目录改为 data/input/5</summary>
+  <p><span class="kind">内容:</span><code>config5.py</code> 的 <code>INPUT_DIR_5</code> 从 <code>data/input/raw/5</code> 调整为 <code>data/input/5</code>;同步更新入口说明、脚本提示、CLAUDE 与开发计划;保留 <code>raw/5</code> 作为开发样例。</p>
+  <p><span class="kind">原因:</span>正式输入目录按代号统一 <code>data/input/&lt;代号&gt;</code>,<code>raw/5</code> 会读到开发样例导致正式目录新 EPIN 数据不参与对账。</p>
+  <p><span class="kind">效果:</span>与代号1/2/3/6 输入目录约定一致;避免 <code>raw/5</code> 样例滞后造成 EPIN 订单误判未匹配。</p>
+</details>
+
+<details><summary>2026-05-21 · 代号5 · 平台汇总新增币种维度</summary>
+  <p><span class="kind">内容:</span><code>代付对账结果</code> 追加 <code>币种</code> 列并用于 <code>平台汇总</code>;分组从 <code>交易月份+机构</code> 改为 <code>交易月份+机构+币种</code>;币种口径:SUPERPAY 取源文件、IBFYPAY/WANGGUYPAY 固定 TRY、EPIN 固定 USD、话费卡留空;余额汇总按同键合并避免跨币种误合。</p>
+  <p><span class="kind">原因:</span>同平台同月可能多币种,原汇总缺币种列无法确认口径。</p>
+  <p><span class="kind">效果:</span>平台汇总可按币种区分金额;余额核对列只与相同币种行合并。</p>
+</details>
+
+<details><summary>2026-05-21 · 代号4 EPIN · 订单列表加载间隔可配置</summary>
+  <p><span class="kind">内容:</span>新增 <code>MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS</code>(默认3秒);每次点击"加载更多"并确认行数增加后,如仍有下一轮则先等待再点击;补充测试。</p>
+  <p><span class="kind">原因:</span>连续点击加载过快给页面和站点造成压力,也不利观察。</p>
+  <p><span class="kind">效果:</span>默认抓取节奏放缓;可通过 <code>.env</code> 调整,无需改代码。</p>
+</details>
+
+<details><summary>2026-05-20 · 代号3 · Adyen Settled 与 MSI 手续费汇总口径</summary>
+  <p><span class="kind">内容:</span>Adyen 有效 <code>Record Type</code> 从 <code>SentForSettle</code> 改为 <code>Settled</code>;订单匹配结果新增 <code>MSI手续费 = Markup(SC)+Scheme Fees(SC)+Interchange(SC)</code>,原 <code>手续费</code> 仍为0;交易金额汇总 <code>成功金额</code> 加回 MSI 手续费,<code>净交易金额</code> 保留成功行结算金额合计;新增 <code>结算金额</code> 列(Adyen 取 <code>MerchantPayout / Net Debit (NC)</code>);Adyen 手续费按 <code>成功金额−净交易金额−税金</code> 倒算。</p>
+  <p><span class="kind">原因:</span>Adyen 新报表对有效结算状态与手续费口径有变化,原 <code>SentForSettle</code> 与净交易金额覆盖方式不满足需求。</p>
+  <p><span class="kind">效果:</span>匹配结果只反映 Settled;MSI 手续费可单独核对;汇总同时保留交易成功金额、净交易金额与结算文件实际到账金额。</p>
+</details>
+
+<details><summary>2026-05-19 · 代号5 · 新增话费卡结算逐单对账</summary>
+  <p><span class="kind">内容:</span><code>config5.py</code> 新增话费卡常量识别 <code>Okey话费卡结算</code> 前缀;<code>app5.py</code> 新增 <code>read_phonecard_5()</code>/<code>build_phonecard_lookup_5()</code>,优先读含"汇总"的订单明细 Sheet,只保留 <code>日期/订单号/奖品名称/金额/状态/第三方订单号/订单类型</code>;<code>enrich_admin_5()</code> 增话费卡匹配(<code>admin.订单号 ↔ 话费卡.订单号</code>),命中后机构填"话费卡",<code>已完成</code>→<code>成功</code>;优先级 <code>IBFYPAY&gt;SUPERPAY&gt;WANGGUYPAY&gt;话费卡</code>;补充测试。</p>
+  <p><span class="kind">原因:</span>新增 <code>Okey话费卡结算（20260201-20260413）.xlsx</code>,旧扫描规则无法识别致订单不进对账。</p>
+  <p><span class="kind">效果:</span>真实样例查找表读取218条,2026-04 的20笔命中 admin,2026-02/03 的198笔作平台多余;平台汇总新增"话费卡"机构,手续费为0。</p>
+</details>
+
+<details><summary>2026-05-19 · 代号5 · 平台汇总新增「提现」列并更新期末余额公式</summary>
+  <p><span class="kind">内容:</span>新增 <code>SUMMARY_WITHDRAWAL_COL_5="提现"</code> 与 <code>BALANCE_WITHDRAWAL_KEYWORDS_5=("提现","出金","提款")</code>;<code>SUMMARY_BALANCE_COLS_5</code> 在充值后插入提现;新增 <code>_is_withdrawal_type_5()</code>;期末余额公式新增 <code>- 提现</code>。</p>
+  <p><span class="kind">原因:</span>平台流水除充值外还有提现,旧公式未扣除致期末余额偏高。</p>
+  <p><span class="kind">效果:</span><code>期末余额(计算)= 期初余额 + 充值 − 提现 − 代付金额合计 − 手续费合计</code>;无提现行时显示0。</p>
+</details>
+
+<details><summary>2026-05-19 · 代号5 · IBFYPAY 驳回订单平台状态修复</summary>
+  <p><span class="kind">内容:</span>新增 <code>IBFYPAY_TYPE_REJECT_5="代付驳回"</code>;<code>read_ibfpay_5</code> 检测存在驳回类型行的系统流水号,追加 <code>_ibfpay_rejected</code> 布尔列并保留进查找表;<code>_normalize_platform_status_5</code> 新增 <code>rejected</code> 参数,命中且 rejected 时返回"驳回"。</p>
+  <p><span class="kind">原因:</span>被驳回订单源文件中同时有 <code>代付扣款</code> 与 <code>代付驳回</code>,旧逻辑只处理扣款致平台状态误显"成功"。</p>
+  <p><span class="kind">效果:</span>被驳回订单(含匹配与平台多余)平台状态正确显示"驳回",正常订单不受影响。</p>
+</details>
+
+<details><summary>2026-05-19 · 代号5 · IBFYPAY 系统操作充值识别</summary>
+  <p><span class="kind">内容:</span>IBFYPAY 余额汇总新增专属规则:<code>类型=系统操作</code> 且 <code>变动金额&gt;0</code> 计入充值,<code>&lt;0</code> 视为提现不计充值;通用充值关键字不纳入系统操作。</p>
+  <p><span class="kind">原因:</span>IBFYPAY 结算文件用"系统操作"表示充值/提现,旧关键字逻辑漏算充值。</p>
+  <p><span class="kind">效果:</span>IBFYPAY 汇总充值正确包含正数系统操作,其他平台不受影响。</p>
+</details>
+
+<details><summary>2026-05-19 · 代号5 · 平台汇总期初余额列前移</summary>
+  <p><span class="kind">内容:</span>将 <code>期初余额</code> 移到 <code>代付金额合计</code> 前;充值、期末余额(计算)、期末余额(平台余额)仍在金额汇总列后。</p>
+  <p><span class="kind">原因:</span>核对时需先看期初余额再对照变动项。</p>
+  <p><span class="kind">效果:</span>列顺序更符合核对阅读习惯,余额提取与公式不变。</p>
+</details>
+
+<details><summary>2026-05-19 · 代号5 · 平台汇总新增余额核对列</summary>
+  <p><span class="kind">内容:</span><code>平台汇总</code> 金额汇总后新增 <code>期初余额/充值/期末余额(计算)/期末余额(平台余额)</code>;IBFYPAY 从资金流水提取,WANGGUYPAY 从资金记录提取,SUPERPAY 无余额字段留空。</p>
+  <p><span class="kind">原因:</span>原汇总无法核对平台资金流水的月初余额、充值与月末余额。</p>
+  <p><span class="kind">效果:</span>可按 <code>交易月份+机构</code> 同表核对平台资金余额。</p>
+</details>
+
+<details><summary>2026-05-19 · 代号5 · WANGGUYPAY 改用资金记录对账</summary>
+  <p><span class="kind">内容:</span>文件识别新增 <code>Wangupay资金记录</code>,与旧 <code>wangupay-代付订单</code> 同存时优先资金记录;自动定位表头,按 <code>平台订单号</code> 合并 <code>付款结算</code> 与 <code>扣除代付结算手续费</code>;匹配键改为 <code>admin.第三方订单号 ↔ 平台订单号</code>。</p>
+  <p><span class="kind">原因:</span>旧订单文件不再作主要来源,且旧逻辑用 admin 订单号无法匹配资金记录中的平台订单号。</p>
+  <p><span class="kind">效果:</span>真实样例 <code>Wangupay资金记录（20260401-20260518）.xls</code> 中 admin 第三方订单号344条全部命中。</p>
+</details>
+
+<details><summary>2026-05-18 · 代号5 · 平台汇总仅统计成功状态</summary>
+  <p><span class="kind">内容:</span><code>build_summary_sheet_5()</code> 统计范围改为仅 <code>平台状态=成功</code>;失败/处理中/关闭/空/未知不进汇总;分组维度不变。</p>
+  <p><span class="kind">原因:</span>旧逻辑按匹配状态汇总,把失败/处理中/关闭也计入致口径偏大。</p>
+  <p><span class="kind">效果:</span>金额口径与成功代付订单一致,主表与失败 Sheet 逻辑不变。</p>
+</details>
+
+<details><summary>2026-05-18 · 代号5 · 平台状态统一口径</summary>
+  <p><span class="kind">内容:</span>新增状态标准化,输出统一为 <code>成功/失败/处理中/关闭</code>;IBFYPAY 命中填成功;SUPERPAY(代付成功→成功等)、WANGGUYPAY(付款成功→成功等)映射;未识别保留原值并 warning。</p>
+  <p><span class="kind">原因:</span>原状态透传各平台原文,口径不一致影响筛选与核对。</p>
+  <p><span class="kind">效果:</span>可按统一状态筛选,主表结构与金额逻辑不变。</p>
+</details>
+
+<details><summary>2026-05-18 · 代号5 · 平台汇总增加交易月份维度</summary>
+  <p><span class="kind">内容:</span>从 <code>交易日期</code> 解析 <code>交易月份</code>;汇总从按机构改为按 <code>交易月份+机构</code>;<code>是否匹配</code> 为是或平台多余的参与汇总;日期空/无法解析时保留空月份分组不丢数据。</p>
+  <p><span class="kind">原因:</span>原只按机构聚合,跨月源文件放一起时无法按月核对。</p>
+  <p><span class="kind">效果:</span>可按月、按机构核对,匹配规则不变。</p>
+</details>
+
+<details><summary>2026-05-18 · 代号5 · IBFYPAY 多文件手续费优先级修复</summary>
+  <p><span class="kind">内容:</span><code>read_ibfpay_5()</code> 为资金流水账与订单明细加内部来源优先级标记;<code>build_ibfpay_lookup_5()</code> 去重前按"手续费非0优先、资金流水账优先"排序;补充测试。</p>
+  <p><span class="kind">原因:</span>同目录存在明细与资金流水账时,旧逻辑按读取顺序保留首行致明细 <code>手续费=0</code> 覆盖真实手续费。</p>
+  <p><span class="kind">效果:</span>同流水号出现在两类文件时优先使用资金流水账真实金额;仅明细文件场景不变。</p>
+</details>
+
+<details><summary>2026-05-18 · 代号4 · 修复检查机会被等待秒数提前截断</summary>
+  <p><span class="kind">内容:</span><code>wait_for_export_files()</code> 不再用 <code>MODE4_BATCH_WAIT_SECONDS</code> 作提前返回硬上限;缺失文件只有在 <code>MODE4_MISSING_CHECK_CHANCES</code> 次机会用完后才返回重试。</p>
+  <p><span class="kind">原因:</span>配置 15s 等待 + 5s 间隔 + 10 次机会时,旧逻辑约15秒即提前返回,实际只检查约3次,后端稍慢就误判缺失并重复下载。</p>
+  <p><span class="kind">效果:</span>机会机制严格按次数执行;后端慢时继续等待,减少整批重复下载和 <code>(1).xls</code>。</p>
+</details>
+
+<details><summary>2026-05-18 · 代号4 · XLS 合并读取增加转换兜底</summary>
+  <p><span class="kind">内容:</span><code>.xls</code> 用 <code>pandas/xlrd</code> 直接读取失败时,自动转临时 <code>.xlsx</code> 再读;优先 LibreOffice,Windows 再试 Excel COM;转换文件写临时目录不改原文件。</p>
+  <p><span class="kind">原因:</span>后台导出的 <code>.xls</code> 能被 Excel 打开但 <code>xlrd</code> 可能报 <code>CompDocError</code> 致合并失败。</p>
+  <p><span class="kind">效果:</span>提高对 Excel 可打开 <code>.xls</code> 的兼容性;失败时输出更明确错误。</p>
+</details>
+
+<details><summary>2026-05-18 · 代号4 · 导出前跳过已存在日期文件</summary>
+  <p><span class="kind">内容:</span>每批打开导出 URL 前先检查日期文件是否存在;整批存在时不启动浏览器;部分存在时只打开缺失日期 URL。</p>
+  <p><span class="kind">原因:</span>已完成日期再次打开会造成重复下载并增加压力。</p>
+  <p><span class="kind">效果:</span>标准文件与 Chrome 重复下载文件都被识别跳过;重试只围绕缺失日期。</p>
+</details>
+
+<details><summary>2026-05-18 · 代号4 · 登录入口固定与缺失文件机会检查</summary>
+  <p><span class="kind">内容:</span>无 Cookie 时固定打开 <code>https://aim1.567okey.com/Public/login.html</code>,不再用导出链接探测;新增 <code>MODE4_MISSING_CHECK_CHANCES</code>/<code>MODE4_CHECK_INTERVAL_SECONDS</code>(默认每2秒1次、最多10次);下载检查改机会机制。</p>
+  <p><span class="kind">原因:</span>用导出 URL 做登录探测会产生不必要下载;旧逻辑一次等待后立即重试易重复。</p>
+  <p><span class="kind">效果:</span>登录只进后台登录页;下载检查更宽容;机会次数与间隔可调。</p>
+</details>
+
+<details><summary>2026-05-18 · 代号4 · 自动重试次数支持 .env 配置</summary>
+  <p><span class="kind">内容:</span>新增 <code>MODE4_RETRY_LIMIT</code>(默认3)与 <code>get_mode4_retry_limit()</code>;更新 <code>.env.example</code>、README、CLAUDE、开发计划。</p>
+  <p><span class="kind">原因:</span>不同网络/后端下固定重试3次可能过多或不足。</p>
+  <p><span class="kind">效果:</span>可经 <code>.env</code> 或系统环境变量调整;无效配置回退默认。</p>
+</details>
+
+<details><summary>2026-05-18 · 代号4 · 单批导出数量支持 .env 配置</summary>
+  <p><span class="kind">内容:</span>新增 <code>MODE4_BATCH_SIZE</code>(默认5);抽出通用正整数配置读取复用给等待秒数与批量;更新文档。</p>
+  <p><span class="kind">原因:</span>不同环境标签页与后端响应能力不同,固定每批5个不够灵活。</p>
+  <p><span class="kind">效果:</span>可调整单批链接数量;无效配置回退默认。</p>
+</details>
+
+<details><summary>2026-05-15 · 代号4 · 批次等待可配置并自动合并导出文件</summary>
+  <p><span class="kind">内容:</span>新增 <code>MODE4_BATCH_WAIT_SECONDS</code>(优先级:命令行 &gt; 环境变量 &gt; .env &gt; 默认10);完整度检测支持 Chrome 重复下载文件名(如 <code>2026-05-07,2026-05-07 (1).xlsx</code>);齐备后按日期取最新完成文件合并为 <code>后台充值订单导出合并_{start}_{end}.xlsx</code>。</p>
+  <p><span class="kind">原因:</span>后端生成到触发下载存在不可预测延迟,固定等待时间易过早判缺失并重试。</p>
+  <p><span class="kind">效果:</span>可拉长批次检查等待;重复下载不误判;自动得到单个合并 Excel,保持源表头且不增来源列。</p>
+</details>
+
+<details><summary>2026-05-15 · 代号3 · Google 多月源文件按现金流日期汇总</summary>
+  <p><span class="kind">内容:</span>「交易金额汇总」改为优先用 Google 源文件原始现金流行:Charge/Google fee 按 Charge 行 <code>Transaction Date</code> 归月计入成功净额,Charge refund/Google fee refund 按退款行日期计入退款净额;订单匹配结果仍保留订单号维度。</p>
+  <p><span class="kind">原因:</span>旧逻辑按 Description 合并为订单级单行只保留一个日期,多月源文件同放时会把后续月退款归入 Charge 月致净额被拉低。</p>
+  <p><span class="kind">效果:</span>仅放单月与同放多月时 <code>2026-01/Google支付/HKD</code> 口径一致;跨月退款按退款日期归月,不污染 Charge 月。</p>
+</details>
+
+<details><summary>2026-05-14 · 代号3 · Adyen 结算 CSV 自动识别表头行</summary>
+  <p><span class="kind">内容:</span>按配置 <code>header</code> 读取后找不到必需列时,自动扫描 CSV 前50行定位真实表头后重读。</p>
+  <p><span class="kind">原因:</span>Adyen <code>settlement_report_aggregate</code> 前两行是说明,真实表头在第3行;旧逻辑固定 <code>header=6</code> 致缺列报错。</p>
+  <p><span class="kind">效果:</span><code>ADYEN-settlement_report_aggregate_*.csv</code> 可正常读取生成月度汇总;兼容旧样式。</p>
+</details>
+
+<details><summary>2026-05-14 · 代号3 · 交易与结算源文件全量支持 CSV</summary>
+  <p><span class="kind">内容:</span>扫描与读取层扩展 CSV,覆盖 Admin/Adyen/华为/Google/苹果/Adyen结算/华为结算;按 <code>utf-8-sig</code>、<code>utf-16</code>、<code>gbk</code> 依次尝试;各结算/苹果 CSV 保持原 header。</p>
+  <p><span class="kind">原因:</span>旧逻辑只 Google 允许 CSV,其他源文件即使命名正确也被扫描跳过。</p>
+  <p><span class="kind">效果:</span>交易源与结算文件可统一用 CSV;Excel 多 Sheet 选择逻辑不变;读取后仍全列字符串处理。</p>
+</details>
+
+<details><summary>2026-05-14 · 代号3 · Google 汇总口径按源文件现金流对齐</summary>
+  <p><span class="kind">内容:</span>Google 匹配订单 <code>交易日期</code> 优先用源文件 <code>Transaction Date</code>,缺失才回退 admin;退款/退款待确认订单汇总时补入原 Charge 净额;保持 <code>净交易金额=成功金额−退款金额</code>,内部辅助金额不写出。</p>
+  <p><span class="kind">原因:</span>源文件全量相加含四类现金流,旧汇总只体现退款净额未补回原 Charge 净额,且部分按 admin 日期跨月归属致 2026-01 口径不一致。</p>
+  <p><span class="kind">效果:</span><code>2026-01/Google支付/HKD</code> 净交易金额从 1,729,073.44 调整为 1,749,324.27;跨月 82.71 归回 2026-01;输出 Sheet 不增可见列。</p>
+</details>
+
+<details><summary>2026-05-14 · 代号3 · 平台多余行交易日期格式统一</summary>
+  <p><span class="kind">内容:</span>所有经 <code>_format_date()</code> 生成的 <code>交易日期</code> 统一为 <code>YYYY-MM-DD</code>;改为优先用 <code>pandas.to_datetime</code> 解析输出 <code>%Y-%m-%d</code>。</p>
+  <p><span class="kind">原因:</span>Google 平台多余行用平台原始日期(如 <code>Jan 1, 2026</code>)时旧逻辑截前10位致输出 <code>Jan 1, 202</code>。</p>
+  <p><span class="kind">效果:</span>修正为 <code>2026-01-01</code>;各平台日期统一保持 <code>YYYY-MM-DD</code>。</p>
+</details>
+
+<details><summary>2026-05-14 · 代号3 · 交易金额汇总新增「退款待确认」独立统计列</summary>
+  <p><span class="kind">内容:</span>将 <code>是否匹配="退款待确认"</code> 的 Google 订单从退款笔数/金额剥离,新增「退款待确认笔数」「退款待确认金额」两列;净交易金额 = 成功金额 − 退款金额(不受待确认影响)。</p>
+  <p><span class="kind">原因:</span>待确认退款尚未经平台确认,计入退款金额会不准确拉低净额。</p>
+  <p><span class="kind">效果:</span>新增两列独立显示;净交易金额不受未确认退款影响;华为/Adyen 结算逻辑不受影响。</p>
+</details>
+
+<details><summary>2026-05-13 · 代号3 · Adyen 手续费错误计算 + 未匹配订单状态错误置为"失败"</summary>
+  <p><span class="kind">内容:</span>(1) Adyen 订单行 <code>手续费</code> 仍在算 Markup/Scheme Fees/Interchange 加和,业务要求置0;(2) <code>是否匹配="否"</code> 统一置状态"失败",但"未匹配"≠"支付失败"。</p>
+  <p><span class="kind">根本原因:</span>Adyen 手续费由三分量相加未归零;状态直接用 <code>matched</code> 决定,致 Refused(真失败)与无平台数据(缺失)被统一处理。</p>
+  <p><span class="kind">修复:</span><code>enrich_admin()</code>/<code>_build_platform_only_rows()</code> Adyen 分支 <code>fee_amt="0"</code>;<code>build_adyen_lookup()</code> 返回增 <code>refused_keys</code>,状态改为:Adyen 命中→成功、在 refused_keys→失败、其余→空;非 Adyen 命中→成功、未匹配→空。</p>
+  <p><span class="kind">效果:</span>Adyen 行手续费=0;Refused→失败,缺失→空;非 Adyen 未匹配→空。</p>
+</details>
+
+<details><summary>2026-05-13 · 代号3 · 苹果支付数据出现在"订单匹配结果"Sheet</summary>
+  <p><span class="kind">内容:</span>苹果支付无法通过流水号匹配,应仅出现在"苹果支付"Sheet,却出现在主结果 Sheet。</p>
+  <p><span class="kind">根本原因:</span><code>enrich_admin()</code> 用 <code>"苹果支付" in src</code>(子串)识别,但 <code>write_output()</code> 用 <code>.eq("苹果支付Lua")</code>(精确)过滤;值为"苹果支付"(无 Lua 后缀)的记录被处理为 matched 却通不过过滤。</p>
+  <p><span class="kind">修复:</span>过滤改为子串匹配 <code>str.contains("苹果支付", na=False)</code>,与 <code>enrich_admin()</code> 一致。</p>
+  <p><span class="kind">效果:</span>所有"苹果支付"变体被排除出主 Sheet,仅写入"苹果支付"Sheet。</p>
+</details>
+
+<details><summary>2026-05-13 · 代号3 · 日志警告未匹配数量与"匹配失败订单"sheet 行数不一致</summary>
+  <p><span class="kind">内容:</span>日志打印未匹配 3807 条,但"匹配失败订单"sheet 实际3850行,差43。</p>
+  <p><span class="kind">根本原因:</span><code>log_match_stats()</code> 用 <code>STATUS_COL=="失败"</code> 计数(3807),而 <code>write_output()</code> 用 <code>MATCH_STATUS_COL=="否"</code> 筛选(3850);差值43=已退款但未匹配订单(<code>refund_flag=="已退款"</code> 时状态置"退款"但 MATCH_STATUS 仍为"否")。</p>
+  <p><span class="kind">修复:</span>警告改用 <code>MATCH_STATUS_COL=="否"</code> 统计,与写入 sheet 条件一致。</p>
+  <p><span class="kind">效果:</span>日志未匹配数量与 sheet 实际行数完全一致。</p>
+</details>
+
+<details><summary>2026-05-09 · 代号3 · 新增华为月度结算文件支持,完善交易金额汇总手续费列</summary>
+  <p><span class="kind">内容:</span>「交易金额汇总」新增「手续费」列:Adyen/Google 从每笔 FEE_COL 聚合,华为从月度结算文件按 <code>手续费=结算金额−((总交易额−销项税额)×汇率)</code> 计算,苹果留空;华为结算 HKD 行替换原 TRY 匹配行合并为单行。</p>
+  <p><span class="kind">原因:</span>华为交易明细文件只含订单金额无手续费,手续费实由月度结算文件提供但此前被排除。</p>
+  <p><span class="kind">改动:</span><code>config3.py</code> 新增 <code>HUAWEI_SETTLE_*</code> 常量;<code>app3.py</code> 新增 <code>read_huawei_settlement()</code>/<code>build_huawei_fee_summary()</code> 并接入汇总与写出。</p>
+  <p><span class="kind">效果:</span>汇总增手续费列;华为各月 HKD 结算行手续费正确(如 2026-03:−485.3 HKD);对比表不受影响。</p>
+</details>
+
+<details><summary>2026-05-08 · 代号3 · Adyen Refused 订单被错误标记为"成功"(两轮修复)</summary>
+  <p><span class="kind">内容:</span>Adyen Record Type=Refused 的拒付订单输出仍显示"成功"。</p>
+  <p><span class="kind">根本原因:</span>拒付流程为同一 PSP Reference 生成 <code>Received</code> 与 <code>Refused</code> 两条(优先级同为 fallback=2),稳定排序 Received 在前,<code>drop_duplicates(keep="first")</code> 保留 Received;第一轮只过滤 Refused,而 Received 有非空 Main Amount → matched → 仍"成功"。</p>
+  <p><span class="kind">最终修复:</span>由"排除 Refused"改为"只保留优先级列表内类型":<code>valid_mask = result[ADYEN_RECORD_TYPE_COL].str.strip().isin(ADYEN_RECORD_TYPE_PRIORITY)</code>,仅 SentForSettle/Authorised 进查找表。</p>
+  <p><span class="kind">效果:</span>拒付订单→失败,正常成交→成功不受影响。</p>
+</details>
+
+<details><summary>2026-05-08 · 代号3 · Adyen 平台多余行结算币种为空导致汇总多余分组</summary>
+  <p><span class="kind">内容:</span>某平台多余行 SentForSettle 的 <code>Payable (SC)</code> 为空致结算币种也为空,被分入独立 <code>(Adyen/TRY/"")</code> 分组,汇总多出一行。</p>
+  <p><span class="kind">原因:</span><code>if _to_float(settle_amt) else ""</code> 使 Payable 为空时结算币种也置空,空币种反而成新分组维度。</p>
+  <p><span class="kind">修复:</span>结算币种始终从 <code>Settlement Currency</code> 取值,不与 Payable 是否为空挂钩;结算金额仍只在 Payable 有值时填写。</p>
+  <p><span class="kind">效果:</span>Payable 为空仍正确归入 USD/HKD 分组;不再出现"结算币种为空"多余分组行。</p>
+</details>
+
+</body>
+</html>

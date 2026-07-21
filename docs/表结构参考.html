@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>表结构参考 · xlsxIntgration</title>
+<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem;line-height:1.65;color:#1a1a1a}
+  h1{font-size:1.5rem;border-bottom:2px solid #333;padding-bottom:.4rem}
+  h2{font-size:1.15rem;margin-top:2rem;color:#0a7d47}
+  table{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.88rem}
+  th,td{border:1px solid #ccc;padding:.4rem .55rem;text-align:left;vertical-align:top}
+  th{background:#f5f5f5}
+  code{background:#f0f0f0;padding:.1rem .3rem;border-radius:3px;font-family:Consolas,monospace;font-size:.86em}
+  ul{padding-left:1.3rem}
+  li{margin:.25rem 0}
+  .nav{font-size:.85rem;color:#666;margin-bottom:1.2rem}
+  .nav a{color:#0366d6;text-decoration:none;margin-right:.8rem}
+</style>
+</head>
+<body>
+<div class="nav">
+  索引:
+  <a href="../CLAUDE.md">CLAUDE.md</a>
+  <a href="数据流参考.html">数据流参考</a>
+  <a href="读取配置参考.html">读取配置参考</a>
+  <a href="变更记录.html">变更记录</a>
+</div>
+
+<h1>汇总/输出文件工作表结构参考</h1>
+<p>从 <code>CLAUDE.md</code> 外移的单元格坐标级细节,属低频参考。修改模板或写入逻辑时对照此表。</p>
+
+<h2>代号1 汇总文件工作表结构</h2>
+<ul>
+  <li><strong>Sheet9</strong>:公司代号映射(A–V = 22 个公司)</li>
+  <li><strong>银行余额</strong>:A 列=月末日期,C 列=银行名,E 列=公司A,Z 列=公司V
+    <ul>
+      <li>每个月块含 8 家银行行(顺序固定:<code>BALANCE_BANK_ORDER</code>)+ 1 行"货币资金合计"</li>
+      <li>D 列=该行公司合计(SUM 公式)</li>
+    </ul>
+  </li>
+  <li><strong>{公司代号}-{银行缩写}</strong>:明细子表(如 <code>B-建行</code>、<code>A-招行</code>)</li>
+</ul>
+
+<h2>代号2 汇总文件工作表结构</h2>
+<ul>
+  <li><strong>MIG银行余额(YYYYMMDD)</strong>:余额工作表,名称以 <code>MIG银行余额</code> 开头(含年份后缀)
+    <ul>
+      <li>A 列=月末日期,C 列=银行名,F 列=币种,G–U 列=公司A–O(共15个公司)</li>
+      <li>D 列=折合人民币,E 列=合计</li>
+      <li>每个月块固定 16 行(<code>BALANCE_BLOCK_SIZE_2 = 16</code>),无合计汇总行</li>
+    </ul>
+  </li>
+  <li><strong>汇率</strong>:汇率参考表(受保护,不写入)</li>
+  <li><strong>{公司代号}-{银行缩写}-{币种}</strong>:明细子表(如 <code>A-东亚-HKD</code>、<code>B-大华-SGD</code>)</li>
+</ul>
+
+<h2>代号3 输出结构</h2>
+<p>输出文件:<code>data/output/订单匹配结果_{YYYYMMDD}.xlsx</code>。单工作表 <strong>订单匹配结果</strong>,包含 admin 全部原始列 + 末尾追加「平台支付方式」列(每日覆盖)。</p>
+
+<h2>代号5 输出结构</h2>
+<p>输出文件:<code>data/output/代付对账结果_{YYYYMMDD}.xlsx</code>,含 3 个 sheet:</p>
+<table>
+  <thead><tr><th>Sheet</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td>代付对账结果</td><td>admin 全部原始列 + 7 个新增列(是否匹配/平台流水号/平台代付金额/平台状态/手续费/到账金额/交易日期)</td></tr>
+    <tr><td>匹配失败订单</td><td><code>是否匹配 == "否"</code> 的行</td></tr>
+    <tr><td>平台汇总</td><td>按 <code>机构</code> 聚合:笔数/代付金额合计/手续费合计/到账金额合计(仅统计匹配成功行)</td></tr>
+  </tbody>
+</table>
+
+</body>
+</html>

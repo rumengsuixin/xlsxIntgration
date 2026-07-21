@@ -53,54 +53,12 @@ a3 = Analysis(
     noarchive=False,
 )
 
-a4 = Analysis(
-    ["整合4.py"],
-    pathex=[str(project_root)],
-    binaries=[],
-    datas=[],
-    hiddenimports=collect_submodules("xlrd"),
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
-    cipher=block_cipher,
-    noarchive=False,
-)
-
 a5 = Analysis(
     ["整合5.py"],
     pathex=[str(project_root)],
     binaries=[],
     datas=[],
     hiddenimports=collect_submodules("xlrd"),
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
-    cipher=block_cipher,
-    noarchive=False,
-)
-
-a6 = Analysis(
-    ["整合4_bc.py"],
-    pathex=[str(project_root)],
-    binaries=[],
-    datas=[],
-    hiddenimports=collect_submodules("xlrd") + ["websocket"],
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
-    cipher=block_cipher,
-    noarchive=False,
-)
-
-a7 = Analysis(
-    ["整合4_epin.py"],
-    pathex=[str(project_root)],
-    binaries=[],
-    datas=[],
-    hiddenimports=collect_submodules("xlrd") + ["websocket"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -126,10 +84,7 @@ a8 = Analysis(
 pyz1 = PYZ(a1.pure, a1.zipped_data, cipher=block_cipher)
 pyz2 = PYZ(a2.pure, a2.zipped_data, cipher=block_cipher)
 pyz3 = PYZ(a3.pure, a3.zipped_data, cipher=block_cipher)
-pyz4 = PYZ(a4.pure, a4.zipped_data, cipher=block_cipher)
 pyz5 = PYZ(a5.pure, a5.zipped_data, cipher=block_cipher)
-pyz6 = PYZ(a6.pure, a6.zipped_data, cipher=block_cipher)
-pyz7 = PYZ(a7.pure, a7.zipped_data, cipher=block_cipher)
 pyz8 = PYZ(a8.pure, a8.zipped_data, cipher=block_cipher)
 
 exe1 = EXE(
@@ -186,66 +141,12 @@ exe3 = EXE(
     entitlements_file=None,
 )
 
-exe4 = EXE(
-    pyz4,
-    a4.scripts,
-    [],
-    exclude_binaries=True,
-    name="recharge_order_export",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
-
 exe5 = EXE(
     pyz5,
     a5.scripts,
     [],
     exclude_binaries=True,
     name="payout_order_reconcile",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
-
-exe6 = EXE(
-    pyz6,
-    a6.scripts,
-    [],
-    exclude_binaries=True,
-    name="bc_order_export",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
-
-exe7 = EXE(
-    pyz7,
-    a7.scripts,
-    [],
-    exclude_binaries=True,
-    name="epin_data_extract",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -289,22 +190,10 @@ coll = COLLECT(
     a3.binaries,
     a3.zipfiles,
     a3.datas,
-    exe4,
-    a4.binaries,
-    a4.zipfiles,
-    a4.datas,
     exe5,
     a5.binaries,
     a5.zipfiles,
     a5.datas,
-    exe6,
-    a6.binaries,
-    a6.zipfiles,
-    a6.datas,
-    exe7,
-    a7.binaries,
-    a7.zipfiles,
-    a7.datas,
     exe8,
     a8.binaries,
     a8.zipfiles,
@@ -335,19 +224,12 @@ if data_dst.exists():
 (data_dst / "input" / "raw").mkdir(parents=True, exist_ok=True)
 (data_dst / "input" / "raw" / "5").mkdir(parents=True, exist_ok=True)
 (data_dst / "output").mkdir(parents=True, exist_ok=True)
-(data_dst / "output" / "4").mkdir(parents=True, exist_ok=True)
-(data_dst / "output" / "4_bc").mkdir(parents=True, exist_ok=True)
-(data_dst / "output" / "4_epin").mkdir(parents=True, exist_ok=True)
-(data_dst / "browser_profile" / "4").mkdir(parents=True, exist_ok=True)
 
 for filename in (
     "start_domestic.command",
     "start_overseas.command",
     "start_orders.command",
-    "start_export.command",
     "start_payout.command",
-    "start_bc.command",
-    "start_epin.command",
     "start_dual_reconcile.command",
     "README.md",
 ):

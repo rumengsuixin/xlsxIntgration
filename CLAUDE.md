@@ -8,10 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **代号1**:国内银行,将多家银行的交易流水原始导出文件(CSV/XLS/XLSX)汇总到 `国内银行汇总.xlsx`
 - **代号2**:海外银行,源文件命名携带币种,汇总到 `银行汇总.xlsx`,余额表每行代表"银行+币种"组合
 - **代号3**:游戏订单匹配,admin 订单表与 Adyen / 华为 / Google Play 商户平台订单通过流水号关联,输出 `订单匹配结果_{YYYYMMDD}.xlsx`
-- **代号4**:后台充值订单浏览器导出,按支付日期逐日打开导出 URL,复用独立 Chrome 登录态并下载到 `data/output/4/`(含 `整合4_epin.py`、`整合4_bc.py` 子功能)
 - **代号5**:代付订单对账,admin 代付订单与 IBFYPAY / SUPERPAY / WANGGUYPAY / 话费卡 / EPIN 通过订单号关联,输出 `代付对账结果_{YYYYMMDD}.xlsx`
 - **代号6**:代收代付对账(Betcat / Cashnewpay),admin 收款/兑换订单与平台关联,输出 `代收代付对账结果_{YYYYMMDD}.xlsx`
-- **代号7**:汇率抓取,从 XE.com 按日期抓取货币对 USD 汇率(本地 JSON 缓存),输出 `汇率_{start}_{end}.xlsx`
 
 ## 文档维护原则(铁律)
 
@@ -31,13 +29,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 venv/Scripts/python.exe 整合1.py    # 国内银行整合
 venv/Scripts/python.exe 整合2.py    # 海外银行整合
 venv/Scripts/python.exe 整合3.py    # 游戏订单支付方式匹配
-venv/Scripts/python.exe 整合4.py    # 后台充值订单浏览器导出
 venv/Scripts/python.exe 整合5.py    # 代付订单对账
 venv/Scripts/python.exe 整合6.py    # 代收代付对账
-venv/Scripts/python.exe 整合7.py    # 汇率抓取
-
-# 代号4 手动指定日期范围(严格 YYYY-MM-DD;运行参数/环境变量见 docs/读取配置参考.html)
-venv/Scripts/python.exe 整合4.py --date-range 2026-04-01 2026-04-30
 
 # 运行全部回归测试
 venv/Scripts/python.exe -m unittest discover -s tests
@@ -51,26 +44,24 @@ venv/Scripts/pip.exe install -r requirements.txt
 ## 目录结构
 
 ```
-整合1.py ~ 整合7.py          # 各代号入口(整合.py=代号1兼容入口;整合4_epin.py/整合4_bc.py 为代号4子功能)
+整合1.py ~ 整合6.py          # 各代号入口(整合.py=代号1兼容入口)
 src/bank_integration/
-    config.py ~ config7.py    # 各代号:路径常量、读取配置、列名映射(config4_epin/config4_bc 为子功能)
+    config.py ~ config6.py    # 各代号:路径常量、读取配置、列名映射
     scanner.py / readers.py   # 扫描源文件目录、按配置读取 CSV/XLS/XLSX
     balances.py / workbook.py # 提取期末余额、复制工作副本并写入子表
-    app.py ~ app7.py          # 各代号 main() 主流程
-    exchange_rate.py          # 代号7 汇率抓取/缓存/查询
-    browser_operator.py       # 代号4 浏览器操作、pdf_daily_balance.py 代号2 PDF 解析
+    app.py ~ app6.py          # 各代号 main() 主流程
+    pdf_daily_balance.py      # 代号2 华美银行 PDF 解析
 template/1|2/                 # 代号1/2 模板(必须预先存在)
 data/
     input/                    # 代号1 源文件;input/2 ~ input/6 各代号源文件;input/raw 原始样例(不扫描)
-    browser_profile/4/        # 代号4 独立 Chrome 登录态(运行时生成)
-    output/                   # 各代号最终输出(汇总/匹配/对账/汇率文件)
+    output/                   # 各代号最终输出(汇总/匹配/对账文件)
 docs/                         # 参考文档(HTML):数据流/读取配置/表结构/变更记录
 tests/test_bank_integration.py
 ```
 
 ## 关键约束
 
-各代号读取配置、数据流步骤、表结构、代号4运行参数等细节见「文档索引」下的 `docs/*.html`。以下为必须遵守的护栏。
+各代号读取配置、数据流步骤、表结构等细节见「文档索引」下的 `docs/*.html`。以下为必须遵守的护栏。
 
 ### 代号1
 - **源文件命名**:`{大写字母}-{银行全称}.{xls|xlsx|csv}`,放入 `data/input/`(不处理 `raw/` 子目录)
@@ -95,15 +86,6 @@ tests/test_bank_integration.py
 - **Adyen 去重**:按 `ADYEN_RECORD_TYPE_PRIORITY` 只保留优先类型行(避免 Received/Refused 误判成功)
 - **Google 去重**:只保留 `Transaction Type == "Charge"` 行
 - **输出**:`data/output/订单匹配结果_{YYYYMMDD}.xlsx`,admin 全部原始列 + 末尾追加「平台支付方式」列(每日覆盖)
-
-### 代号4
-- **日期输入**:只接受 `YYYY-MM-DD`,不接受 `YYYY/MM/DD`、`YYYYMMDD` 或不存在日期
-- **Chrome 依赖**:需要安装 Google Chrome;不自行构造 HTTP 请求,通过独立 Chrome profile(`data/browser_profile/4/`)保存登录态
-- **登录入口**:无 Cookie 时只打开 `https://aim1.567okey.com/Public/login.html`,不使用导出链接探测登录;仅以 `Default/Cookies` 作为可复用登录态判断依据
-- **下载目录**:尽量通过 Chrome Preferences 指定为 `data/output/4/`,以 Chrome 实际行为为准
-- **已存在跳过**:打开导出 URL 前先检查日期文件,已存在的标准文件或 Chrome 重复下载文件(`YYYY-MM-DD,YYYY-MM-DD (1).xlsx`)直接跳过
-- **合并输出**:下载齐备后自动合并为单个 `.xlsx`,不新增来源列,首个文件决定表头;`.xls` 读取失败时依次尝试 LibreOffice / Windows Excel COM 临时转 `.xlsx`
-- **运行参数**:`--date-range`、`--wait-seconds` 及 `MODE4_*` 环境变量见 [docs/读取配置参考.html](docs/读取配置参考.html);`p=[PAGE]` 原样保留,不做分页循环
 
 ### 代号5
 - **源文件目录**:`data/input/5/`,平铺放置;按 stem 小写前缀识别:`admin-` / `ibfpay-`(订单明细,手续费置0)/ `ibf平台`(资金流水账,两行合并)/ `superpay-` / `wangupay-`|`wangguypay-`
@@ -131,8 +113,8 @@ tests/test_bank_integration.py
 
 | 文档 | 内容 |
 |---|---|
-| [docs/数据流参考.html](docs/数据流参考.html) | 代号1/2/4/5 数据流步骤(函数调用链) |
-| [docs/读取配置参考.html](docs/读取配置参考.html) | 各银行(代号1/2)+ 平台(代号5)读取配置表、代号3 平台识别/去重、代号4 运行参数 |
+| [docs/数据流参考.html](docs/数据流参考.html) | 代号1/2/5 数据流步骤(函数调用链) |
+| [docs/读取配置参考.html](docs/读取配置参考.html) | 各银行(代号1/2)+ 平台(代号5)读取配置表、代号3 平台识别/去重 |
 | [docs/表结构参考.html](docs/表结构参考.html) | 代号1/2 汇总表工作表结构、代号3/5 输出结构 |
 | [docs/变更记录.html](docs/变更记录.html) | 修复/优化历史(唯一来源,倒序) |
 | [开发计划.md](开发计划.md) | 各代号功能、待办、工程状态(当前未决 ⚠️ 记于各代号「待办」) |

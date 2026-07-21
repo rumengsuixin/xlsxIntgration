@@ -57,22 +57,6 @@ a3 = Analysis(
     noarchive=False,
 )
 
-a4 = Analysis(
-    ["整合4.py"],
-    pathex=[str(project_root)],
-    binaries=[],
-    datas=[],
-    hiddenimports=collect_submodules("xlrd"),
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
-    noarchive=False,
-)
-
 a5 = Analysis(
     ["整合5.py"],
     pathex=[str(project_root)],
@@ -108,7 +92,6 @@ a6 = Analysis(
 pyz1 = PYZ(a1.pure, a1.zipped_data, cipher=block_cipher)
 pyz2 = PYZ(a2.pure, a2.zipped_data, cipher=block_cipher)
 pyz3 = PYZ(a3.pure, a3.zipped_data, cipher=block_cipher)
-pyz4 = PYZ(a4.pure, a4.zipped_data, cipher=block_cipher)
 pyz5 = PYZ(a5.pure, a5.zipped_data, cipher=block_cipher)
 pyz6 = PYZ(a6.pure, a6.zipped_data, cipher=block_cipher)
 
@@ -154,24 +137,6 @@ exe3 = EXE(
     [],
     exclude_binaries=True,
     name="游戏订单匹配",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
-
-exe4 = EXE(
-    pyz4,
-    a4.scripts,
-    [],
-    exclude_binaries=True,
-    name="后台订单导出",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -233,10 +198,6 @@ coll = COLLECT(
     a3.binaries,
     a3.zipfiles,
     a3.datas,
-    exe4,
-    a4.binaries,
-    a4.zipfiles,
-    a4.datas,
     exe5,
     a5.binaries,
     a5.zipfiles,
@@ -271,20 +232,16 @@ if data_dst.exists():
 (data_dst / "input" / "raw").mkdir(parents=True, exist_ok=True)
 (data_dst / "input" / "raw" / "5").mkdir(parents=True, exist_ok=True)
 (data_dst / "output").mkdir(parents=True, exist_ok=True)
-(data_dst / "output" / "4").mkdir(parents=True, exist_ok=True)
-(data_dst / "browser_profile" / "4").mkdir(parents=True, exist_ok=True)
 
 for filename in (
     "开始整合1.bat",
     "开始整合2.bat",
     "开始整合3.bat",
-    "开始整合4.bat",
     "开始整合5.bat",
     "开始整合6.bat",
     "run_1.ps1",
     "run_2.ps1",
     "run_3.ps1",
-    "run_4.ps1",
     "run_5.ps1",
     "run_6.ps1",
     "使用说明.txt",

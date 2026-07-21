@@ -55,7 +55,5 @@ data/browser_profile/*
 **/**.bat
 **/**.spec
 **/**.ps1
-!开始整合4.bat
-!run_4.ps1
 !bank_integration.spec
 !bank_integration_mac.spec

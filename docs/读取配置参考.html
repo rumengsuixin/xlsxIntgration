@@ -82,20 +82,5 @@
   <li><strong>平台支付方式填充</strong>:Adyen → <code>Payment Method</code>(mc/visa/troy);华为 → <code>支付方式</code>(World Pay/Adyen/话费);Google → 固定值 "Google Play"</li>
 </ul>
 
-<h2>代号4 运行参数(命令行 + .env)</h2>
-<table>
-  <thead><tr><th>参数 / 环境变量</th><th>默认</th><th>说明</th></tr></thead>
-  <tbody>
-    <tr><td><code>--date-range START END</code></td><td>上一自然月</td><td>手动指定日期区间,严格校验 <code>YYYY-MM-DD</code></td></tr>
-    <tr><td><code>--wait-seconds N</code> / <code>MODE4_BATCH_WAIT_SECONDS</code></td><td>—</td><td>批次等待秒数,兼容保留;不再提前截断检查机会,重试节奏以检查机会为准</td></tr>
-    <tr><td><code>MODE4_BATCH_SIZE</code></td><td>5</td><td>单批打开的导出链接数量</td></tr>
-    <tr><td><code>MODE4_RETRY_LIMIT</code></td><td>3</td><td>每批下载不完整时自动重试次数</td></tr>
-    <tr><td><code>MODE4_MISSING_CHECK_CHANCES</code></td><td>10</td><td>检查缺失文件的机会次数,用完才重试</td></tr>
-    <tr><td><code>MODE4_CHECK_INTERVAL_SECONDS</code></td><td>2</td><td>检查缺失文件的间隔秒数</td></tr>
-    <tr><td><code>MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS</code></td><td>3</td><td>EPIN 订单列表点击"加载更多"后的下一次点击间隔</td></tr>
-  </tbody>
-</table>
-<p>命令行优先级最高;完整约束见 <code>CLAUDE.md</code> 「关键约束 › 代号4」。</p>
-
 </body>
 </html>

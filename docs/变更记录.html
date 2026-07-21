@@ -46,15 +46,10 @@
     <tr><td>2026-07-14</td><td>3</td><td>修复</td><td>「匹配订单差异」逐笔判定未以统一币种为前提;改按平台取「可比金额」,Adyen 取 <code>Captured (PC)</code>(空则回退 <code>Main Amount</code>),内部列写出前 drop</td><td>✅</td></tr>
     <tr><td>2026-07-14</td><td>3</td><td>修复</td><td>剥壳守卫写死 <code>s.dtype != object</code>,新版 pandas 把 <code>dtype=str</code> 读成 StringDtype 致整列被跳过;改用 <code>is_string_dtype</code>,pandas 加 <code>&lt;3.0.0</code> 上限</td><td>✅</td></tr>
     <tr><td>2026-07-13</td><td>3</td><td>修复</td><td>admin CSV 的流水号/订单号/玩家ID 被 Excel 文本公式 <code>="..."</code> 包裹致误判「否」;在 <code>_read_csv_file</code> 统一剥离后 Adyen 65325 条全部匹配</td><td>✅</td></tr>
-    <tr><td>2026-05-25</td><td>7</td><td>新增</td><td>新增代号7汇率模块:XE.com 抓取 + 本地缓存 + Excel 报表输出</td><td>✅</td></tr>
     <tr><td>2026-05-25</td><td>5</td><td>修复</td><td>EPIN 已匹配记录 <code>平台流水号</code> 取 Pin ID 或为空,改为回填平台订单ID</td><td>✅</td></tr>
-    <tr><td>2026-05-21</td><td>4_epin</td><td>新增</td><td>新增 <code>--mode payments</code> 提取 odemelerim 付款订单列表(10列),输出 epin_odemeler_{YYYYMMDD}.xlsx</td><td>✅</td></tr>
     <tr><td>2026-05-21</td><td>5</td><td>修复</td><td>平台汇总缺少币种维度,同月同机构多币种不便核对</td><td>✅</td></tr>
-    <tr><td>2026-05-21</td><td>4_epin</td><td>修复</td><td>订单列表连续点击加载更多间隔过短,新增可配置等待间隔</td><td>✅</td></tr>
     <tr><td>2026-05-20</td><td>3</td><td>优化</td><td>Adyen 交易金额汇总净交易金额改为成功行结算金额合计,不含 MSI手续费;手续费按成功金额−净交易金额−税金计算</td><td>✅</td></tr>
     <tr><td>2026-05-20</td><td>3</td><td>优化</td><td>Adyen 匹配口径改为 Settled,新增 MSI手续费并调整交易金额汇总结算口径</td><td>✅</td></tr>
-    <tr><td>2026-05-20</td><td>4_epin</td><td>新增</td><td>新增 Pin 码详情页提取:逐单访问 /siparis/{id} 取 #pin_form 表格,输出 epin_pinler_{YYYYMMDD}.xlsx</td><td>✅</td></tr>
-    <tr><td>2026-05-20</td><td>4_epin</td><td>新增</td><td>1epin.com 数据加载(反复点击加载更多)与结构化提取(16列)由 TODO 改为完整实现</td><td>✅</td></tr>
     <tr><td>2026-05-19</td><td>6</td><td>修复</td><td>Cashnewpay 状态描述含 <code>Payment failed</code>/<code>REJECTED</code>/<code>USER_REFUND-&lt;单号&gt;</code> 等未覆盖值,补充映射与前缀匹配</td><td>✅</td></tr>
     <tr><td>2026-05-19</td><td>6</td><td>优化</td><td>betcat 代付和代收订单文件统一补充 <code>betcat-</code> 文件名前缀</td><td>✅</td></tr>
     <tr><td>2026-05-19</td><td>5</td><td>新增</td><td>新增 <code>Okey话费卡结算</code> 文件逐单对账支持,4月样例20笔命中 admin</td><td>✅</td></tr>
@@ -68,10 +63,6 @@
     <tr><td>2026-05-18</td><td>5</td><td>修复</td><td>IBFYPAY 订单明细格式文件(<code>ibfpay-</code> 前缀)无「类型」列导致 KeyError 崩溃</td><td>✅</td></tr>
     <tr><td>2026-05-18</td><td>5</td><td>实现</td><td>代号5 全部业务逻辑(扫描/读取/匹配/输出)由 TODO 骨架补全为可运行</td><td>✅</td></tr>
     <tr><td>2026-05-18</td><td>5</td><td>修复</td><td>IBFYPAY 原订单明细缺少手续费列,改用资金流水账格式(两行合并)</td><td>✅</td></tr>
-    <tr><td>2026-05-18</td><td>4</td><td>修复</td><td><code>MODE4_BATCH_WAIT_SECONDS</code> 提前截断检查机会,导致每批过早重试并重复下载</td><td>✅</td></tr>
-    <tr><td>2026-05-18</td><td>4</td><td>修复</td><td>可由 Excel 打开的 <code>.xls</code> 导出文件被 <code>xlrd</code> 判定损坏,导致合并失败</td><td>✅</td></tr>
-    <tr><td>2026-05-18</td><td>4</td><td>修复</td><td>已存在日期仍会再次打开导出 URL,造成重复下载</td><td>✅</td></tr>
-    <tr><td>2026-05-18</td><td>4</td><td>修复</td><td>登录探测使用导出链接且缺失检查过早触发重试</td><td>✅</td></tr>
     <tr><td>2026-05-15</td><td>4</td><td>修复</td><td>批次完整度检查过早触发重试,可能造成重复下载</td><td>✅</td></tr>
     <tr><td>2026-05-15</td><td>3</td><td>修复</td><td>Google 多月源文件中跨月退款污染原 Charge 月份汇总</td><td>✅</td></tr>
     <tr><td>2026-05-14</td><td>3</td><td>修复</td><td>Adyen 结算 CSV 固定 header=6 导致聚合报表表头识别失败</td><td>✅</td></tr>
@@ -100,7 +91,7 @@
 
 <details><summary>2026-07-21 · 代号6 · Betcat CSV 多编码兼容</summary>
   <p><span class="kind">内容:</span><code>read_betcat_csv_6</code>(app6.py)由单次 <code>pd.read_csv</code>(默认 UTF-8)改为依次尝试 <code>utf-8-sig / gbk / gb18030 / utf-8</code>,只捕获 <code>UnicodeDecodeError</code> 重试,全部失败抛清晰中文 <code>UnicodeError</code>;保留原有 <code>dtype=str</code> 与 <code>keep_default_na=False</code> 参数。</p>
-  <p><span class="kind">原因:</span>Betcat 平台导出编码不稳定(混有 UTF-8 与 GBK),某个 GBK 文件中的中文 <code>Status</code> 值(如"支付已通知","付"字 GBK 前导字节 <code>0xb8</code>)被默认 UTF-8 解码时抛 <code>UnicodeDecodeError</code>,导致整个代号6 崩溃退出。此前代号6 是全库唯一未做多编码兼容的 CSV 读取(readers/app3/app4/app4_bc 早已具备)。</p>
+  <p><span class="kind">原因:</span>Betcat 平台导出编码不稳定(混有 UTF-8 与 GBK),某个 GBK 文件中的中文 <code>Status</code> 值(如"支付已通知","付"字 GBK 前导字节 <code>0xb8</code>)被默认 UTF-8 解码时抛 <code>UnicodeDecodeError</code>,导致整个代号6 崩溃退出。此前代号6 是全库唯一未做多编码兼容的 CSV 读取(readers/app3 早已具备)。</p>
   <p><span class="kind">效果:</span>无论源文件为 UTF-8(含 BOM)还是 GBK 系编码均可正常读取;<code>utf-8-sig</code> 优先还顺带剥除 BOM,避免首列 <code>CreateTime</code> 列名残留 <code>﻿</code> 的列匹配隐患。</p>
 </details>
 
@@ -120,12 +111,6 @@
   <p><span class="kind">内容:</span><code>代付对账结果</code> 追加 <code>币种</code> 列并用于 <code>平台汇总</code>;分组从 <code>交易月份+机构</code> 改为 <code>交易月份+机构+币种</code>;币种口径:SUPERPAY 取源文件、IBFYPAY/WANGGUYPAY 固定 TRY、EPIN 固定 USD、话费卡留空;余额汇总按同键合并避免跨币种误合。</p>
   <p><span class="kind">原因:</span>同平台同月可能多币种,原汇总缺币种列无法确认口径。</p>
   <p><span class="kind">效果:</span>平台汇总可按币种区分金额;余额核对列只与相同币种行合并。</p>
-</details>
-
-<details><summary>2026-05-21 · 代号4 EPIN · 订单列表加载间隔可配置</summary>
-  <p><span class="kind">内容:</span>新增 <code>MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS</code>(默认3秒);每次点击"加载更多"并确认行数增加后,如仍有下一轮则先等待再点击;补充测试。</p>
-  <p><span class="kind">原因:</span>连续点击加载过快给页面和站点造成压力,也不利观察。</p>
-  <p><span class="kind">效果:</span>默认抓取节奏放缓;可通过 <code>.env</code> 调整,无需改代码。</p>
 </details>
 
 <details><summary>2026-05-20 · 代号3 · Adyen Settled 与 MSI 手续费汇总口径</summary>
@@ -198,48 +183,6 @@
   <p><span class="kind">内容:</span><code>read_ibfpay_5()</code> 为资金流水账与订单明细加内部来源优先级标记;<code>build_ibfpay_lookup_5()</code> 去重前按"手续费非0优先、资金流水账优先"排序;补充测试。</p>
   <p><span class="kind">原因:</span>同目录存在明细与资金流水账时,旧逻辑按读取顺序保留首行致明细 <code>手续费=0</code> 覆盖真实手续费。</p>
   <p><span class="kind">效果:</span>同流水号出现在两类文件时优先使用资金流水账真实金额;仅明细文件场景不变。</p>
-</details>
-
-<details><summary>2026-05-18 · 代号4 · 修复检查机会被等待秒数提前截断</summary>
-  <p><span class="kind">内容:</span><code>wait_for_export_files()</code> 不再用 <code>MODE4_BATCH_WAIT_SECONDS</code> 作提前返回硬上限;缺失文件只有在 <code>MODE4_MISSING_CHECK_CHANCES</code> 次机会用完后才返回重试。</p>
-  <p><span class="kind">原因:</span>配置 15s 等待 + 5s 间隔 + 10 次机会时,旧逻辑约15秒即提前返回,实际只检查约3次,后端稍慢就误判缺失并重复下载。</p>
-  <p><span class="kind">效果:</span>机会机制严格按次数执行;后端慢时继续等待,减少整批重复下载和 <code>(1).xls</code>。</p>
-</details>
-
-<details><summary>2026-05-18 · 代号4 · XLS 合并读取增加转换兜底</summary>
-  <p><span class="kind">内容:</span><code>.xls</code> 用 <code>pandas/xlrd</code> 直接读取失败时,自动转临时 <code>.xlsx</code> 再读;优先 LibreOffice,Windows 再试 Excel COM;转换文件写临时目录不改原文件。</p>
-  <p><span class="kind">原因:</span>后台导出的 <code>.xls</code> 能被 Excel 打开但 <code>xlrd</code> 可能报 <code>CompDocError</code> 致合并失败。</p>
-  <p><span class="kind">效果:</span>提高对 Excel 可打开 <code>.xls</code> 的兼容性;失败时输出更明确错误。</p>
-</details>
-
-<details><summary>2026-05-18 · 代号4 · 导出前跳过已存在日期文件</summary>
-  <p><span class="kind">内容:</span>每批打开导出 URL 前先检查日期文件是否存在;整批存在时不启动浏览器;部分存在时只打开缺失日期 URL。</p>
-  <p><span class="kind">原因:</span>已完成日期再次打开会造成重复下载并增加压力。</p>
-  <p><span class="kind">效果:</span>标准文件与 Chrome 重复下载文件都被识别跳过;重试只围绕缺失日期。</p>
-</details>
-
-<details><summary>2026-05-18 · 代号4 · 登录入口固定与缺失文件机会检查</summary>
-  <p><span class="kind">内容:</span>无 Cookie 时固定打开 <code>https://aim1.567okey.com/Public/login.html</code>,不再用导出链接探测;新增 <code>MODE4_MISSING_CHECK_CHANCES</code>/<code>MODE4_CHECK_INTERVAL_SECONDS</code>(默认每2秒1次、最多10次);下载检查改机会机制。</p>
-  <p><span class="kind">原因:</span>用导出 URL 做登录探测会产生不必要下载;旧逻辑一次等待后立即重试易重复。</p>
-  <p><span class="kind">效果:</span>登录只进后台登录页;下载检查更宽容;机会次数与间隔可调。</p>
-</details>
-
-<details><summary>2026-05-18 · 代号4 · 自动重试次数支持 .env 配置</summary>
-  <p><span class="kind">内容:</span>新增 <code>MODE4_RETRY_LIMIT</code>(默认3)与 <code>get_mode4_retry_limit()</code>;更新 <code>.env.example</code>、README、CLAUDE、开发计划。</p>
-  <p><span class="kind">原因:</span>不同网络/后端下固定重试3次可能过多或不足。</p>
-  <p><span class="kind">效果:</span>可经 <code>.env</code> 或系统环境变量调整;无效配置回退默认。</p>
-</details>
-
-<details><summary>2026-05-18 · 代号4 · 单批导出数量支持 .env 配置</summary>
-  <p><span class="kind">内容:</span>新增 <code>MODE4_BATCH_SIZE</code>(默认5);抽出通用正整数配置读取复用给等待秒数与批量;更新文档。</p>
-  <p><span class="kind">原因:</span>不同环境标签页与后端响应能力不同,固定每批5个不够灵活。</p>
-  <p><span class="kind">效果:</span>可调整单批链接数量;无效配置回退默认。</p>
-</details>
-
-<details><summary>2026-05-15 · 代号4 · 批次等待可配置并自动合并导出文件</summary>
-  <p><span class="kind">内容:</span>新增 <code>MODE4_BATCH_WAIT_SECONDS</code>(优先级:命令行 &gt; 环境变量 &gt; .env &gt; 默认10);完整度检测支持 Chrome 重复下载文件名(如 <code>2026-05-07,2026-05-07 (1).xlsx</code>);齐备后按日期取最新完成文件合并为 <code>后台充值订单导出合并_{start}_{end}.xlsx</code>。</p>
-  <p><span class="kind">原因:</span>后端生成到触发下载存在不可预测延迟,固定等待时间易过早判缺失并重试。</p>
-  <p><span class="kind">效果:</span>可拉长批次检查等待;重复下载不误判;自动得到单个合并 Excel,保持源表头且不增来源列。</p>
 </details>
 
 <details><summary>2026-05-15 · 代号3 · Google 多月源文件按现金流日期汇总</summary>

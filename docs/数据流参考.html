@@ -45,21 +45,6 @@
   <li><code>write_all_to_summary_2</code>:覆盖写入 <code>{公司代号}-{银行缩写}-{币种}</code> 明细子表(如 <code>A-东亚-HKD</code>),调用 <code>update_balance_sheet_2</code> 更新余额工作表</li>
 </ol>
 
-<h2>代号4 数据流</h2>
-<ol>
-  <li>无参数时自动取上一个自然月;手动指定时使用 <code>--date-range START END</code>,严格校验 <code>YYYY-MM-DD</code></li>
-  <li>按日期区间逐日生成 URL:当天同时作为 <code>pay_sdate</code> 和 <code>pay_edate</code></li>
-  <li><code>p=[PAGE]</code> 按需求原样保留,不做分页替换</li>
-  <li>查找 Google Chrome,使用 <code>data/browser_profile/4/</code> 作为独立用户目录</li>
-  <li>更新 Chrome <code>Default/Preferences</code>,将下载目录设置为 <code>data/output/4/</code></li>
-  <li>若独立 profile 尚无 <code>Default/Cookies</code> 数据,先打开固定登录页 <code>https://aim1.567okey.com/Public/login.html</code> 让用户登录并等待回车,再打开所有导出 URL</li>
-  <li>每批打开导出 URL 前先检查对应日期文件是否已存在,已存在日期直接跳过,只打开缺失日期 URL</li>
-  <li>按批次等待下载完成;<code>--wait-seconds</code> / <code>MODE4_BATCH_WAIT_SECONDS</code> 保留兼容,实际重试由检查机会和检查间隔控制,机会用完才重试</li>
-  <li>全部日期齐备后,按日期选择最新完成文件并合并为 <code>data/output/4/后台充值订单导出合并_{start}_{end}.xlsx</code></li>
-  <li>合并读取 <code>.xls</code> 时若 <code>xlrd</code> 无法直接读取,会尝试用 LibreOffice 或 Windows Excel 临时转换为 <code>.xlsx</code> 后再读取</li>
-  <li><code>整合4_epin.py</code> 抓取 1epin 订单列表时,<code>MODE4_EPIN_ORDER_LOAD_INTERVAL_SECONDS</code> 控制每次点击"加载更多"后的下一次点击间隔,默认 3 秒</li>
-</ol>
-
 <h2>代号5 数据流</h2>
 <ol>
   <li><code>scan_source_files_5</code>:在 <code>data/input/5/</code> 扫描 <code>.xls</code>/<code>.xlsx</code>,按 stem 小写前缀分类(跳过 <code>~$</code> 临时文件)</li>

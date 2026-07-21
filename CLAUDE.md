@@ -113,6 +113,12 @@ tests/test_bank_integration.py
 - **平台多余行**:平台有、admin 无的记录,`是否匹配 = "平台多余"`,`机构` 填平台名称
 - **admin 必须存在**:找不到 admin 文件时直接退出并打印错误
 
+### 代号6
+- **源文件目录**:`data/input/6/`,平铺放置;按 stem 小写前缀识别:`admin收款` / `admin兑换` / `betcat-payment` / `betcat-payout` / `cashnewpay收款` / `cashnewpay兑换`
+- **多格式自适应**:各平台源文件支持 `.csv/.xls/.xlsx` 任一格式,由 `_read_source_table_6` 按扩展名分派(`.csv`→多编码 utf-8-sig/gbk/gb18030/utf-8、`.xls`→xlrd、`.xlsx`→openpyxl);扫描白名单已放行三格式
+- **关联键**:admin.`订单号` ↔ Betcat.`MerOrderNo` / Cashnewpay.`商户订单号`;匹配优先级 Betcat > Cashnewpay
+- **admin 必须存在**:代收/代付 admin 均缺失时直接退出
+
 ## 日期格式支持
 
 `_parse_date_str()` 支持以下格式(按优先级):

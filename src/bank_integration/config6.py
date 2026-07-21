@@ -1,12 +1,12 @@
 """代号6（代收代付对账）路径常量与列名配置。
 
-数据来源（data/input/6/）：
-    Admin收款订单明细*.xlsx   → 已完成订单 sheet，代收主表
-    Admin兑换订单明细*.xlsx   → Sheet1，代付主表
-    betcat-payment_*.csv     → 代收平台文件（多文件合并）
-    betcat-payout_*.csv      → 代付平台文件（多文件合并）
-    Cashnewpay收款明细*.xlsx  → Sheet1，代收平台文件
-    Cashnewpay兑换明细*.xlsx  → Sheet1，代付平台文件
+数据来源（data/input/6/，源文件均支持 .csv/.xls/.xlsx，按扩展名自适应读取）：
+    Admin收款订单明细*   → Excel 取"已完成订单"sheet，代收主表
+    Admin兑换订单明细*   → Excel 取 Sheet1，代付主表
+    betcat-payment_*     → 代收平台文件（多文件合并）
+    betcat-payout_*      → 代付平台文件（多文件合并）
+    Cashnewpay收款明细*  → Excel 取 Sheet1，代收平台文件
+    Cashnewpay兑换明细*  → Excel 取 Sheet1，代付平台文件
 """
 
 import os
@@ -39,7 +39,7 @@ PLATFORM_PREFIXES_6: dict = {
     "cashnewpay_exchange": ["cashnewpay兑换"],
 }
 
-# ── Admin 收款主表（xlsx，openpyxl，sheet="已完成订单"）──────────────────────
+# ── Admin 收款主表（格式自适应，Excel sheet="已完成订单"）──────────────────────
 # 文件：Admin收款订单明细*.xlsx，14 列，27,247 行（2026-04 样例）
 ADMIN_COLLECTION_SHEET_6           = "已完成订单"
 ADMIN_COLLECTION_JOIN_COL_6        = "订单号"       # 关联平台 MerOrderNo / 商户订单号
@@ -51,7 +51,7 @@ ADMIN_COLLECTION_GAME_COL_6        = "充值游戏"
 ADMIN_COLLECTION_PLAYER_ID_COL_6   = "玩家ID"
 ADMIN_COLLECTION_PAY_METHOD_COL_6  = "支付方式"     # BetcatPay / CashnewPay 等
 
-# ── Admin 兑换主表（xlsx，openpyxl，sheet="Sheet1"）──────────────────────────
+# ── Admin 兑换主表（格式自适应，Excel sheet="Sheet1"）──────────────────────────
 # 文件：Admin兑换订单明细*.xlsx，8 列，11,685 行（2026-04 样例）
 ADMIN_PAYOUT_SHEET_6          = "Sheet1"
 ADMIN_PAYOUT_JOIN_COL_6       = "订单号"            # 关联平台 MerOrderNo / 商户订单号
@@ -61,7 +61,7 @@ ADMIN_PAYOUT_PHONE_TYPE_COL_6 = "话费种类"          # 如 R$30, R$200
 ADMIN_PAYOUT_PLAYER_NO_COL_6  = "玩家号"
 ADMIN_PAYOUT_PHONE_NO_COL_6   = "充值手机号"
 
-# ── Betcat 平台（CSV，代收/代付列结构相同，header=0）────────────────────────
+# ── Betcat 平台（格式自适应，代收/代付列结构相同，header=0）────────────────────────
 # 时间格式：ISO 8601 带时区，如 2026-04-01T00:07:49-03:00
 # 货币：BRL（巴西雷亚尔）
 BETCAT_HEADER_6           = 0
@@ -76,7 +76,7 @@ BETCAT_FEE_COL_6          = "TradeCharge"       # 代收有值；代付通常为
 BETCAT_CREATE_TIME_COL_6  = "CreateTime"
 BETCAT_PAY_TIME_COL_6     = "PayTime"
 
-# ── Cashnewpay 平台（xlsx，openpyxl，sheet="Sheet1"，代收/代付列结构相同）───
+# ── Cashnewpay 平台（格式自适应，Excel sheet="Sheet1"，代收/代付列结构相同）───
 # 时间格式：字符串含毫秒，如 "2026-04-28 08:30:03.313"
 CASHNEWPAY_SHEET_6             = "Sheet1"
 CASHNEWPAY_JOIN_COL_6          = "商户订单号"   # 关联 Admin.订单号

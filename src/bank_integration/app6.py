@@ -1,18 +1,18 @@
 """代号6（代收代付对账）应用逻辑。
 
 数据流：
-    data/input/6/
-        Admin收款订单明细*.xlsx   → 代收主表
-        Admin兑换订单明细*.xlsx   → 代付主表
-        betcat-payment_*.csv      → Betcat 代收（多文件合并）
-        betcat-payout_*.csv       → Betcat 代付（多文件合并）
-        Cashnewpay收款明细*.xlsx  → Cashnewpay 代收
-        Cashnewpay兑换明细*.xlsx  → Cashnewpay 代付
+    data/input/6/（源文件均支持 .csv/.xls/.xlsx，按扩展名自适应读取）
+        Admin收款订单明细*   → 代收主表
+        Admin兑换订单明细*   → 代付主表
+        betcat-payment_*     → Betcat 代收（多文件合并）
+        betcat-payout_*      → Betcat 代付（多文件合并）
+        Cashnewpay收款明细*  → Cashnewpay 代收
+        Cashnewpay兑换明细*  → Cashnewpay 代付
                   ↓
         scan_source_files_6()
                   ↓
         read_admin_collection_6 / read_admin_payout_6
-        read_betcat_csv_6 / read_cashnewpay_xlsx_6
+        read_betcat_6 / read_cashnewpay_6
                   ↓
         build_betcat_lookup_6 / build_cashnewpay_lookup_6
                   ↓
@@ -211,38 +211,126 @@ def scan_source_files_6(input_dir: Path) -> Dict[str, List[Path]]:
 # 平台文件读取
 # ─────────────────────────────────────────────────────────────────────────────
 
-def read_admin_collection_6(filepath: Path) -> pd.DataFrame:
-    """读取 Admin 收款订单主表。
+# ── 通用读取：按扩展名自适应（.csv 多编码 / .xls→xlrd / .xlsx→openpyxl）──────
+# 说明：平台可能以任意格式导出同一批数据，读取入口按扩展名分派，
+#       各平台读取函数只负责 sheet 选择与自身后处理，核心对账逻辑不受影响。
+CSV_ENCODINGS_6 = ("utf-8-sig", "gbk", "gb18030", "utf-8")
 
-    格式：xlsx，engine=openpyxl，sheet=ADMIN_COLLECTION_SHEET_6（"已完成订单"）
+
+def _excel_engine_6(filepath: Path) -> str:
+    """按扩展名选择 Excel 引擎：.xls → xlrd（仅 xlrd 2.x 支持），其余 → openpyxl。"""
+    return "xlrd" if filepath.suffix.lower() == ".xls" else "openpyxl"
+
+
+def _read_csv_multi_encoding_6(filepath: Path) -> pd.DataFrame:
+    """多编码尝试读取 CSV（平台导出编码不稳定，混有 UTF-8/GBK）。
+
+    依次尝试 utf-8-sig / gbk / gb18030 / utf-8，只捕获 UnicodeDecodeError 重试，
+    全部失败抛清晰中文 UnicodeError；保留 dtype=str 与 keep_default_na=False。
     """
-    with pd.ExcelFile(filepath, engine="openpyxl") as xls:
-        sheet_names = xls.sheet_names
-        if ADMIN_COLLECTION_SHEET_6 in sheet_names:
-            target = ADMIN_COLLECTION_SHEET_6
-        else:
-            # 回退：查找含 ADMIN_COLLECTION_JOIN_COL_6 列的 sheet
-            target = None
-            for s in sheet_names:
-                try:
-                    preview = pd.read_excel(xls, sheet_name=s, nrows=0, dtype=str)
-                    if ADMIN_COLLECTION_JOIN_COL_6 in _normalize_columns_6(preview.columns):
-                        target = s
-                        break
-                except Exception:
-                    continue
-            if target is None:
-                raise ValueError(
-                    f"admin 收款文件 {filepath.name} 中找不到 sheet '{ADMIN_COLLECTION_SHEET_6}' "
-                    f"或含 '{ADMIN_COLLECTION_JOIN_COL_6}' 列的 sheet，可用 sheet: {sheet_names}"
-                )
-            logger.warning(
-                "admin 收款文件未找到 sheet '%s'，回退使用 sheet '%s'",
-                ADMIN_COLLECTION_SHEET_6, target,
+    for enc in CSV_ENCODINGS_6:
+        try:
+            return pd.read_csv(filepath, dtype=str, keep_default_na=False, encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    raise UnicodeError(
+        f"无法解码 CSV 文件: {filepath.name}（已尝试 {'/'.join(CSV_ENCODINGS_6)}）"
+    )
+
+
+def _select_sheet_6(
+    xls: pd.ExcelFile,
+    preferred_sheet: Optional[str],
+    *,
+    fallback_join_col: Optional[str] = None,
+    use_first_sheet: bool = False,
+    label: str = "",
+    filename: str = "",
+) -> str:
+    """在 Excel 多 sheet 中选择目标 sheet。
+
+    - 命中 preferred_sheet 直接返回；
+    - 否则传了 fallback_join_col → 遍历找含该列的 sheet（找不到抛 ValueError）；
+    - 否则 use_first_sheet=True → 用首个 sheet 并打 warning；
+    - 均不适用（如 preferred_sheet 为 None）→ 兜底用首个 sheet。
+    """
+    sheet_names = xls.sheet_names
+    if preferred_sheet and preferred_sheet in sheet_names:
+        return preferred_sheet
+
+    if fallback_join_col is not None:
+        for s in sheet_names:
+            try:
+                preview = pd.read_excel(xls, sheet_name=s, nrows=0, dtype=str)
+                if fallback_join_col in _normalize_columns_6(preview.columns):
+                    logger.warning(
+                        "%s文件未找到 sheet '%s'，回退使用含 '%s' 列的 sheet '%s'",
+                        label, preferred_sheet, fallback_join_col, s,
+                    )
+                    return s
+            except Exception:
+                continue
+        raise ValueError(
+            f"{label}文件 {filename} 中找不到 sheet '{preferred_sheet}' "
+            f"或含 '{fallback_join_col}' 列的 sheet，可用 sheet: {sheet_names}"
+        )
+
+    if use_first_sheet:
+        target = sheet_names[0]
+        logger.warning(
+            "%s文件未找到 sheet '%s'，使用首个 sheet '%s'",
+            label, preferred_sheet, target,
+        )
+        return target
+
+    return sheet_names[0]
+
+
+def _read_source_table_6(
+    filepath: Path,
+    *,
+    preferred_sheet: Optional[str] = None,
+    fallback_join_col: Optional[str] = None,
+    use_first_sheet: bool = False,
+    label: str = "",
+) -> pd.DataFrame:
+    """按扩展名自适应读取源文件为 DataFrame，并做通用清洗。
+
+    - .csv          → 多编码读取（preferred_sheet 等 Excel 参数忽略）
+    - .xls / .xlsx  → 按扩展名选引擎；命中/回退 sheet 后读取
+    统一收尾：列名 strip + dropna(how="all") + fillna("")（与既有行为一致）。
+    """
+    ext = filepath.suffix.lower()
+    if ext == ".csv":
+        df = _read_csv_multi_encoding_6(filepath)
+    else:
+        engine = _excel_engine_6(filepath)
+        with pd.ExcelFile(filepath, engine=engine) as xls:
+            target = _select_sheet_6(
+                xls,
+                preferred_sheet,
+                fallback_join_col=fallback_join_col,
+                use_first_sheet=use_first_sheet,
+                label=label,
+                filename=filepath.name,
             )
-    df = pd.read_excel(filepath, sheet_name=target, dtype=str, engine="openpyxl")
+        df = pd.read_excel(filepath, sheet_name=target, dtype=str, engine=engine)
     df.columns = [str(c).strip() for c in df.columns]
-    df = df.dropna(how="all").fillna("")
+    return df.dropna(how="all").fillna("")
+
+
+def read_admin_collection_6(filepath: Path) -> pd.DataFrame:
+    """读取 Admin 收款订单主表（格式自适应：.csv/.xls/.xlsx）。
+
+    Excel 优先 sheet=ADMIN_COLLECTION_SHEET_6（"已完成订单"），
+    未命中则回退到含 ADMIN_COLLECTION_JOIN_COL_6 列的 sheet。
+    """
+    df = _read_source_table_6(
+        filepath,
+        preferred_sheet=ADMIN_COLLECTION_SHEET_6,
+        fallback_join_col=ADMIN_COLLECTION_JOIN_COL_6,
+        label="admin 收款",
+    )
     # Excel 文本前缀单引号（防科学计数法）：openpyxl 会原样保留 '，需清除
     for col in df.select_dtypes(include="object").columns:
         df[col] = df[col].str.lstrip("'")
@@ -250,84 +338,48 @@ def read_admin_collection_6(filepath: Path) -> pd.DataFrame:
 
 
 def read_admin_payout_6(filepath: Path) -> pd.DataFrame:
-    """读取 Admin 兑换订单主表。
+    """读取 Admin 兑换订单主表（格式自适应：.csv/.xls/.xlsx）。
 
-    格式：xlsx，engine=openpyxl，sheet=ADMIN_PAYOUT_SHEET_6（"Sheet1"）
+    Excel 优先 sheet=ADMIN_PAYOUT_SHEET_6（"Sheet1"），
+    未命中则回退到含 ADMIN_PAYOUT_JOIN_COL_6 列的 sheet。
     """
-    with pd.ExcelFile(filepath, engine="openpyxl") as xls:
-        sheet_names = xls.sheet_names
-        if ADMIN_PAYOUT_SHEET_6 in sheet_names:
-            target = ADMIN_PAYOUT_SHEET_6
-        else:
-            target = None
-            for s in sheet_names:
-                try:
-                    preview = pd.read_excel(xls, sheet_name=s, nrows=0, dtype=str)
-                    if ADMIN_PAYOUT_JOIN_COL_6 in _normalize_columns_6(preview.columns):
-                        target = s
-                        break
-                except Exception:
-                    continue
-            if target is None:
-                raise ValueError(
-                    f"admin 兑换文件 {filepath.name} 中找不到 sheet '{ADMIN_PAYOUT_SHEET_6}' "
-                    f"或含 '{ADMIN_PAYOUT_JOIN_COL_6}' 列的 sheet，可用 sheet: {sheet_names}"
-                )
-            logger.warning(
-                "admin 兑换文件未找到 sheet '%s'，回退使用 sheet '%s'",
-                ADMIN_PAYOUT_SHEET_6, target,
-            )
-    df = pd.read_excel(filepath, sheet_name=target, dtype=str, engine="openpyxl")
-    df.columns = [str(c).strip() for c in df.columns]
-    df = df.dropna(how="all").fillna("")
+    df = _read_source_table_6(
+        filepath,
+        preferred_sheet=ADMIN_PAYOUT_SHEET_6,
+        fallback_join_col=ADMIN_PAYOUT_JOIN_COL_6,
+        label="admin 兑换",
+    )
     # Excel 文本前缀单引号（防科学计数法）：openpyxl 会原样保留 '，需清除
     for col in df.select_dtypes(include="object").columns:
         df[col] = df[col].str.lstrip("'")
     return df
 
 
-def read_betcat_csv_6(filepath: Path) -> pd.DataFrame:
-    """读取 Betcat 平台 CSV 文件（payment 和 payout 格式相同）。
+def read_betcat_6(filepath: Path) -> pd.DataFrame:
+    """读取 Betcat 平台文件（格式自适应：.csv/.xls/.xlsx；payment 与 payout 列结构相同）。
 
     列含：CreateTime / OrderNo / MerOrderNo / ChannelOrderNo / ChannelTradeNo /
          Amount / Currency / Status / TradeCharge / PayTime
     时间：ISO 8601 带时区（如 2026-04-01T00:07:49-03:00），保留为字符串
-    编码：平台导出编码不稳定（混有 UTF-8/GBK），依次尝试 utf-8-sig / gbk / gb18030 / utf-8
+    编码：CSV 编码不稳定（混有 UTF-8/GBK），依次尝试 utf-8-sig / gbk / gb18030 / utf-8；
+         Excel 无 sheet 约定，取首个 sheet。
     """
-    df = None
-    for enc in ("utf-8-sig", "gbk", "gb18030", "utf-8"):
-        try:
-            df = pd.read_csv(filepath, dtype=str, keep_default_na=False, encoding=enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    if df is None:
-        raise UnicodeError(
-            f"无法解码 Betcat CSV 文件: {filepath.name}（已尝试 utf-8-sig/gbk/gb18030/utf-8）"
-        )
-    df.columns = [str(c).strip() for c in df.columns]
-    return df.dropna(how="all").fillna("")
+    return _read_source_table_6(filepath, label="Betcat")
 
 
-def read_cashnewpay_xlsx_6(filepath: Path) -> pd.DataFrame:
-    """读取 Cashnewpay 平台 xlsx 文件（收款明细和兑换明细格式相同）。
+def read_cashnewpay_6(filepath: Path) -> pd.DataFrame:
+    """读取 Cashnewpay 平台文件（格式自适应：.csv/.xls/.xlsx；收款与兑换列结构相同）。
 
-    格式：xlsx，engine=openpyxl，sheet=CASHNEWPAY_SHEET_6（"Sheet1"）
+    Excel 优先 sheet=CASHNEWPAY_SHEET_6（"Sheet1"），未命中用首个 sheet。
     列含：18 列，含商户订单号 / 订单金额 / 手续费 / 订单状态 / 创建时间 / 完成时间 等
+    时间：字符串含毫秒，如 "2026-04-28 08:30:03.313"
     """
-    with pd.ExcelFile(filepath, engine="openpyxl") as xls:
-        sheet_names = xls.sheet_names
-        if CASHNEWPAY_SHEET_6 in sheet_names:
-            target = CASHNEWPAY_SHEET_6
-        else:
-            target = sheet_names[0]
-            logger.warning(
-                "Cashnewpay 文件未找到 sheet '%s'，使用首个 sheet '%s'",
-                CASHNEWPAY_SHEET_6, target,
-            )
-    df = pd.read_excel(filepath, sheet_name=target, dtype=str, engine="openpyxl")
-    df.columns = [str(c).strip() for c in df.columns]
-    return df.dropna(how="all").fillna("")
+    return _read_source_table_6(
+        filepath,
+        preferred_sheet=CASHNEWPAY_SHEET_6,
+        use_first_sheet=True,
+        label="Cashnewpay",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -796,7 +848,7 @@ def main() -> int:
     # ── 读取 Betcat Payment（代收）────────────────────────────────────────────
     betcat_payment_lk: Optional[pd.DataFrame] = None
     if files["betcat_payment"]:
-        frames = [read_betcat_csv_6(fp) for fp in files["betcat_payment"]]
+        frames = [read_betcat_6(fp) for fp in files["betcat_payment"]]
         raw = pd.concat(frames, ignore_index=True)
         betcat_payment_lk = build_betcat_lookup_6(raw)
         logger.info("Betcat payment 查找表共 %d 条（来自 %d 个文件）",
@@ -805,7 +857,7 @@ def main() -> int:
     # ── 读取 Betcat Payout（代付）─────────────────────────────────────────────
     betcat_payout_lk: Optional[pd.DataFrame] = None
     if files["betcat_payout"]:
-        frames = [read_betcat_csv_6(fp) for fp in files["betcat_payout"]]
+        frames = [read_betcat_6(fp) for fp in files["betcat_payout"]]
         raw = pd.concat(frames, ignore_index=True)
         betcat_payout_lk = build_betcat_lookup_6(raw)
         logger.info("Betcat payout 查找表共 %d 条（来自 %d 个文件）",
@@ -814,7 +866,7 @@ def main() -> int:
     # ── 读取 Cashnewpay 收款（代收）───────────────────────────────────────────
     cashnewpay_collection_lk: Optional[pd.DataFrame] = None
     if files["cashnewpay_collection"]:
-        frames = [read_cashnewpay_xlsx_6(fp) for fp in files["cashnewpay_collection"]]
+        frames = [read_cashnewpay_6(fp) for fp in files["cashnewpay_collection"]]
         raw = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         cashnewpay_collection_lk = build_cashnewpay_lookup_6(raw)
         logger.info("Cashnewpay 收款查找表共 %d 条", len(cashnewpay_collection_lk))
@@ -822,7 +874,7 @@ def main() -> int:
     # ── 读取 Cashnewpay 兑换（代付）───────────────────────────────────────────
     cashnewpay_exchange_lk: Optional[pd.DataFrame] = None
     if files["cashnewpay_exchange"]:
-        frames = [read_cashnewpay_xlsx_6(fp) for fp in files["cashnewpay_exchange"]]
+        frames = [read_cashnewpay_6(fp) for fp in files["cashnewpay_exchange"]]
         raw = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         cashnewpay_exchange_lk = build_cashnewpay_lookup_6(raw)
         logger.info("Cashnewpay 兑换查找表共 %d 条", len(cashnewpay_exchange_lk))

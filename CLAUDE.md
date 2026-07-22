@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 常用命令
 
 ```powershell
-# 各代号入口(代号1 兼容旧入口 整合.py)
+# 各代号入口
 venv/Scripts/python.exe 整合1.py    # 国内银行整合
 venv/Scripts/python.exe 整合2.py    # 海外银行整合
 venv/Scripts/python.exe 整合3.py    # 游戏订单支付方式匹配
@@ -44,7 +44,7 @@ venv/Scripts/pip.exe install -r requirements.txt
 ## 目录结构
 
 ```
-整合1.py ~ 整合6.py          # 各代号入口(整合.py=代号1兼容入口)
+整合1.py ~ 整合6.py          # 各代号入口
 src/bank_integration/
     config.py ~ config6.py    # 各代号:路径常量、读取配置、列名映射
     scanner.py / readers.py   # 扫描源文件目录、按配置读取 CSV/XLS/XLSX

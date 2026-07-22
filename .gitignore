@@ -57,3 +57,13 @@ data/browser_profile/*
 **/**.ps1
 !bank_integration.spec
 !bank_integration_mac.spec
+!开始整合1.bat
+!开始整合2.bat
+!开始整合3.bat
+!开始整合5.bat
+!开始整合6.bat
+!run_1.ps1
+!run_2.ps1
+!run_3.ps1
+!run_5.ps1
+!run_6.ps1

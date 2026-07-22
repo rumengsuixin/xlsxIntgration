@@ -1,0 +1,45 @@
+{
+  "key": "EPIN",
+  "priority": 50,
+  "handler": "epin",
+  "join_col": "Pin码",
+  "admin_join_col": "第三方订单号",
+  "currency_default": "USD",
+  "fee_mode": "none",
+  "arrive_mode": "equals_amount",
+  "org_source": "platform",
+  "org_name": "EPIN",
+  "admin_match_filter": {
+    "col": "机构",
+    "pattern": "^\\d+$"
+  },
+  "emits_amount_diff": true,
+  "balance_handler": true,
+  "status_map": {
+    "Başarılı": "成功",
+    "Başarısız": "失败",
+    "Beklemede": "处理中",
+    "İptal": "关闭"
+  },
+  "columns": {
+    "platform_no": "订单ID",
+    "amount": "单价(USD)",
+    "status": "订单状态",
+    "finish_time": "确认时间"
+  },
+  "handler_params": {
+    "pinler_prefixes": [
+      "epin_pinler_"
+    ],
+    "odemeler_prefixes": [
+      "epin_odemeler_"
+    ]
+  },
+  "directions": {
+    "payout": {
+      "prefixes": [
+        "epin_siparisler_"
+      ]
+    }
+  }
+}

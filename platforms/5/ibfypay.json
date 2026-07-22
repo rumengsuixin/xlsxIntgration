@@ -1,0 +1,28 @@
+{
+  "key": "IBFYPAY",
+  "priority": 10,
+  "handler": "ibfpay",
+  "join_col": "系统流水号",
+  "admin_join_col": "第三方订单号",
+  "sheet": "Sheet",
+  "currency_default": "TRY",
+  "fee_mode": "column",
+  "arrive_mode": "amount_minus_fee",
+  "org_source": "admin",
+  "org_name": "IBFYPAY",
+  "extra_backfill_admin_col": null,
+  "balance_handler": true,
+  "columns": {
+    "amount": "代付金额",
+    "fee": "手续费",
+    "finish_time": "变动时间"
+  },
+  "directions": {
+    "payout": {
+      "prefixes": [
+        "ibfpay-",
+        "ibf平台"
+      ]
+    }
+  }
+}

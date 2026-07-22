@@ -239,6 +239,9 @@ IBFYPAY_REJECTED_COL_5 = "_ibfpay_rejected"   # build_ibfpay_lookup 产出的驳
 IBFYPAY_AMOUNT_LOOKUP_COL_5 = "代付金额"       # build_ibfpay_lookup 归一后的代付金额列(非源"变动金额")
 IBFYPAY_FEE_LOOKUP_COL_5    = "手续费"          # build_ibfpay_lookup 归一后的手续费列
 
+# 内置(疑难)平台 key:其 read/build 保留在 app5 由 main 分派;其余(外部 JSON/插件)走通用 handler
+BUILTIN_PLATFORM_KEYS_5 = {"IBFYPAY", "SUPERPAY", "WANGGUYPAY", "PHONECARD", "EPIN"}
+
 BUILTIN_SPECS_5 = [
     {
         "key": "IBFYPAY",

@@ -1,0 +1,38 @@
+{
+  "key": "SUPERPAY",
+  "priority": 20,
+  "handler": "generic5",
+  "join_col": "商户订单号",
+  "admin_join_col": "订单号",
+  "sheet": "sheet1",
+  "required_columns": [
+    "商户订单号",
+    "代付金额",
+    "支付状态"
+  ],
+  "currency_col": "币种",
+  "fee_mode": "amount_minus_arrive",
+  "arrive_mode": "column",
+  "org_source": "admin",
+  "status_map": {
+    "代付成功": "成功",
+    "代付失败": "失败",
+    "代付关闭": "关闭"
+  },
+  "columns": {
+    "platform_no": "代付订单Id",
+    "amount": "代付金额",
+    "arrive_amount": "实收",
+    "fee": "手续费",
+    "status": "支付状态",
+    "finish_time": "订单支付成功时间",
+    "create_time": "创建时间"
+  },
+  "directions": {
+    "payout": {
+      "prefixes": [
+        "superpay-"
+      ]
+    }
+  }
+}

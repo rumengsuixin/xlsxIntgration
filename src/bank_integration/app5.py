@@ -31,10 +31,11 @@ from typing import List, Optional, Set
 import pandas as pd
 
 from .config import OUTPUT_DIR
-from .platform_engine import enrich_admin_columnar
+from .platform_engine import enrich_admin_columnar, resolve_handler
 from .platform_loader import load_platform_registry
 from .platform_handlers_5 import SCHEMA_5  # noqa: F401  （导入即注册代号5 handler）
 from .config5 import (
+    BUILTIN_PLATFORM_KEYS_5,
     INPUT_DIR_5,
     OUTPUT_FILE_TEMPLATE_5,
     OUTPUT_SHEET_5,
@@ -113,7 +114,6 @@ from .config5 import (
     EPIN_PINLER_ORDER_NO_COL_5,
     EPIN_PINLER_PIN_ID_COL_5,
     EPIN_PINLER_PIN_CODE_COL_5,
-    EPIN_ORG_PATTERN_5,
     EPIN_ADMIN_JOIN_COL_5,
     EPIN_ODEMELER_PAYMENT_ID_COL_5,
     EPIN_ODEMELER_STATUS_COL_5,
@@ -156,32 +156,7 @@ IBFYPAY_SOURCE_PRIORITY_COL_5 = "_ibfpay_source_priority"
 WANGGUYPAY_FORMAT_COL_5 = "_wangguypay_format"
 WANGGUYPAY_FORMAT_FUND_5 = "fund"
 WANGGUYPAY_FORMAT_ORDER_5 = "order"
-PLATFORM_STATUS_MAP_5 = {
-    "SUPERPAY": {
-        "代付成功": "成功",
-        "代付失败": "失败",
-        "代付关闭": "关闭",
-    },
-    "WANGGUYPAY": {
-        "付款成功": "成功",
-        "付款失败": "失败",
-        "处理中": "处理中",
-        WANGGUYPAY_FUND_STATUS_5: "成功",
-    },
-    "PHONECARD": {
-        "已完成": "成功",
-        "成功": "成功",
-        "失败": "失败",
-        "处理中": "处理中",
-        "关闭": "关闭",
-    },
-    "EPIN": {
-        "Başarılı":  "成功",    # 土耳其语"成功"
-        "Başarısız": "失败",    # 土耳其语"失败"
-        "Beklemede": "处理中",  # 土耳其语"等待中"
-        "İptal":     "关闭",    # 土耳其语"取消"
-    },
-}
+# 平台状态映射已迁至 config5.PLATFORM_STATUS_MAP_5（单一事实来源，供外置化引擎与 spec 共用）
 
 
 # ---------------------------------------------------------------------------
@@ -293,25 +268,6 @@ def _pick_chain_end_5(grp: pd.DataFrame) -> Optional[float]:
     return _first_valid_float_5(rows["_end"].tolist(), reverse=True)
 
 
-def _normalize_platform_status_5(platform: str, raw_status: str = "", *, rejected: bool = False) -> str:
-    """将各平台原始状态统一为 成功/失败/处理中/关闭/驳回。"""
-    platform_key = str(platform).strip().upper()
-    if platform_key == "IBFYPAY":
-        return "驳回" if rejected else "成功"
-
-    status = str(raw_status).strip()
-    if not status:
-        return ""
-
-    mapping = PLATFORM_STATUS_MAP_5.get(platform_key, {})
-    normalized = mapping.get(status)
-    if normalized is not None:
-        return normalized
-
-    logging.warning("【%s】发现未识别平台状态 '%s'，保留原值", platform_key or platform, status)
-    return status
-
-
 def _normalize_currency_5(value: object) -> str:
     """清洗平台币种显示值。"""
     return str(value or "").strip().upper()
@@ -332,7 +288,7 @@ def _dedup_lookup_5(df: pd.DataFrame, key_col: str, label: str) -> pd.DataFrame:
 # 文件扫描
 # ---------------------------------------------------------------------------
 
-def scan_source_files_5(input_dir: Path) -> dict:
+def scan_source_files_5(input_dir: Path, specs=None) -> dict:
     """扫描输入目录，按平台识别文件，返回 {"admin": [...], "ibfpay": [...], ...}。
 
     识别规则（文件名 stem 小写前缀匹配，来自 PLATFORM_PREFIXES_5）：
@@ -345,6 +301,19 @@ def scan_source_files_5(input_dir: Path) -> dict:
     同平台多文件时全部收录，由调用方合并。
     """
     result: dict = {key: [] for key in PLATFORM_PREFIXES_5}
+
+    # 外部(注册表新增)平台:非内置 key 的 spec，按其 directions 前缀识别，存 result[spec.key]
+    external = []
+    if specs:
+        for s in specs:
+            if s.key in BUILTIN_PLATFORM_KEYS_5:
+                continue
+            prefixes = []
+            for d in s.directions.values():
+                prefixes.extend(p.lower() for p in d.prefixes)
+            if prefixes:
+                external.append((s.key, prefixes))
+                result.setdefault(s.key, [])
 
     if not input_dir.exists():
         logging.warning("输入目录不存在: %s", input_dir)
@@ -362,6 +331,12 @@ def scan_source_files_5(input_dir: Path) -> dict:
                 result[platform_key].append(f)
                 matched = True
                 break
+        if not matched:
+            for key, prefixes in external:
+                if any(stem.startswith(p) for p in prefixes):
+                    result[key].append(f)
+                    matched = True
+                    break
         if not matched:
             logging.warning("未识别文件，已跳过: %s", f.name)
 
@@ -1023,158 +998,6 @@ def build_epin_lookup_5(
 # 主匹配逻辑
 # ---------------------------------------------------------------------------
 
-def _build_platform_only_rows_5(
-    result_cols: list,
-    admin_ibfpay_keys: Set[str],
-    admin_order_keys: Set[str],
-    admin_wangguypay_keys: Set[str],
-    ibfpay_lk: Optional[pd.DataFrame],
-    superpay_lk: Optional[pd.DataFrame],
-    wangguypay_lk: Optional[pd.DataFrame],
-    phonecard_lk: Optional[pd.DataFrame],
-    epin_lk: Optional[pd.DataFrame] = None,
-) -> pd.DataFrame:
-    """构建平台有、admin 无的多余行（MATCH_STATUS_COL_5 = "平台多余"）。
-
-    admin_ibfpay_keys: admin.第三方订单号 集合，与 ibfpay_lk.index（系统流水号）比对
-    admin_order_keys:  admin.订单号 集合，与 superpay_lk.index（商户订单号）比对
-    admin_wangguypay_keys: admin.第三方订单号 集合，与 wangguypay_lk.index（平台订单号）比对
-    """
-    extra = []
-
-    # ── IBFYPAY 多余行 ────────────────────────────────────────
-    if ibfpay_lk is not None:
-        for key in ibfpay_lk.index:
-            k = str(key).strip()
-            if not k or k in admin_ibfpay_keys:
-                continue
-            row: dict = {c: "" for c in result_cols}
-            row[MATCH_STATUS_COL_5]      = "平台多余"
-            row[ADMIN_ORG_COL_5]         = "IBFYPAY"
-            row[PLATFORM_ORDER_NO_COL_5] = k
-            amt = str(ibfpay_lk.at[key, "代付金额"]).strip() if "代付金额" in ibfpay_lk.columns else ""
-            fee = str(ibfpay_lk.at[key, "手续费"]).strip()   if "手续费"   in ibfpay_lk.columns else ""
-            amt_f = _to_float_5(amt) or 0.0
-            fee_f = _to_float_5(fee) or 0.0
-            is_rejected = (
-                bool(ibfpay_lk.at[key, "_ibfpay_rejected"])
-                if "_ibfpay_rejected" in ibfpay_lk.columns else False
-            )
-            row[PLATFORM_AMOUNT_COL_5] = amt
-            row[PLATFORM_CURRENCY_COL_5] = IBFYPAY_DEFAULT_CURRENCY_5
-            row[PLATFORM_STATUS_COL_5] = _normalize_platform_status_5("IBFYPAY", rejected=is_rejected)
-            row[FEE_COL_5]             = fee
-            row[ARRIVE_AMOUNT_COL_5]   = str(round(amt_f - fee_f, 2))
-            if IBFYPAY_TIME_COL_5 in ibfpay_lk.columns:
-                row[TRANSACTION_DATE_COL_5] = _format_date_5(ibfpay_lk.at[key, IBFYPAY_TIME_COL_5])
-            extra.append(row)
-
-    # ── SUPERPAY 多余行 ───────────────────────────────────────
-    if superpay_lk is not None:
-        for key in superpay_lk.index:
-            k = str(key).strip()
-            if not k or k in admin_order_keys:
-                continue
-            row = {c: "" for c in result_cols}
-            row[ADMIN_JOIN_COL_5]        = k
-            row[MATCH_STATUS_COL_5]      = "平台多余"
-            row[ADMIN_ORG_COL_5]         = "SUPERPAY"
-            sp_no     = str(superpay_lk.at[key, SUPERPAY_PLATFORM_NO_COL_5]).strip()  if SUPERPAY_PLATFORM_NO_COL_5  in superpay_lk.columns else ""
-            sp_amt    = str(superpay_lk.at[key, SUPERPAY_AMOUNT_COL_5]).strip()       if SUPERPAY_AMOUNT_COL_5       in superpay_lk.columns else ""
-            sp_fee    = str(superpay_lk.at[key, SUPERPAY_FEE_TOTAL_COL_5]).strip()    if SUPERPAY_FEE_TOTAL_COL_5    in superpay_lk.columns else ""
-            sp_actual = str(superpay_lk.at[key, SUPERPAY_ACTUAL_COL_5]).strip()       if SUPERPAY_ACTUAL_COL_5       in superpay_lk.columns else ""
-            sp_currency = _normalize_currency_5(superpay_lk.at[key, SUPERPAY_CURRENCY_COL_5]) if SUPERPAY_CURRENCY_COL_5 in superpay_lk.columns else ""
-            sp_status = str(superpay_lk.at[key, SUPERPAY_STATUS_COL_5]).strip()       if SUPERPAY_STATUS_COL_5       in superpay_lk.columns else ""
-            sp_time   = str(superpay_lk.at[key, SUPERPAY_FINISH_TIME_COL_5]).strip()  if SUPERPAY_FINISH_TIME_COL_5  in superpay_lk.columns else ""
-            sp_amt_f    = _to_float_5(sp_amt) or 0.0
-            sp_actual_f = _to_float_5(sp_actual) or 0.0
-            sp_calc_fee = str(round(abs(sp_amt_f - sp_actual_f), 2)) if (sp_amt or sp_actual) else ""
-            row[PLATFORM_ORDER_NO_COL_5] = sp_no
-            row[PLATFORM_AMOUNT_COL_5]   = sp_amt
-            row[PLATFORM_CURRENCY_COL_5] = sp_currency
-            row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5("SUPERPAY", sp_status)
-            row[FEE_COL_5]               = sp_calc_fee
-            row[ARRIVE_AMOUNT_COL_5]     = sp_actual
-            row[TRANSACTION_DATE_COL_5]  = _format_date_5(sp_time)
-            extra.append(row)
-
-    # ── WANGGUYPAY 多余行 ─────────────────────────────────────
-    if wangguypay_lk is not None:
-        for key in wangguypay_lk.index:
-            k = str(key).strip()
-            if not k or k in admin_wangguypay_keys:
-                continue
-            row = {c: "" for c in result_cols}
-            row[ADMIN_TP_ORDER_COL_5]    = k
-            row[MATCH_STATUS_COL_5]      = "平台多余"
-            row[ADMIN_ORG_COL_5]         = "WANGGUYPAY"
-            wg_no     = str(wangguypay_lk.at[key, WANGGUYPAY_PLATFORM_NO_COL_5]).strip() if WANGGUYPAY_PLATFORM_NO_COL_5  in wangguypay_lk.columns else ""
-            wg_amt    = str(wangguypay_lk.at[key, WANGGUYPAY_AMOUNT_COL_5]).strip()      if WANGGUYPAY_AMOUNT_COL_5       in wangguypay_lk.columns else ""
-            wg_fee    = str(wangguypay_lk.at[key, WANGGUYPAY_FEE_COL_5]).strip()         if WANGGUYPAY_FEE_COL_5          in wangguypay_lk.columns else ""
-            wg_arrive = str(wangguypay_lk.at[key, WANGGUYPAY_ARRIVE_COL_5]).strip()      if WANGGUYPAY_ARRIVE_COL_5       in wangguypay_lk.columns else ""
-            wg_status = str(wangguypay_lk.at[key, WANGGUYPAY_STATUS_COL_5]).strip()      if WANGGUYPAY_STATUS_COL_5       in wangguypay_lk.columns else ""
-            wg_time   = str(wangguypay_lk.at[key, WANGGUYPAY_FINISH_TIME_COL_5]).strip() if WANGGUYPAY_FINISH_TIME_COL_5  in wangguypay_lk.columns else ""
-            row[PLATFORM_ORDER_NO_COL_5] = wg_no
-            row[PLATFORM_AMOUNT_COL_5]   = wg_amt
-            row[PLATFORM_CURRENCY_COL_5] = WANGGUYPAY_DEFAULT_CURRENCY_5
-            row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5("WANGGUYPAY", wg_status)
-            row[FEE_COL_5]               = wg_fee
-            row[ARRIVE_AMOUNT_COL_5]     = wg_arrive
-            row[TRANSACTION_DATE_COL_5]  = _format_date_5(wg_time)
-            extra.append(row)
-
-    # ── 话费卡多余行 ─────────────────────────────────────────
-    if phonecard_lk is not None:
-        for key in phonecard_lk.index:
-            k = str(key).strip()
-            if not k or k in admin_order_keys:
-                continue
-            row = {c: "" for c in result_cols}
-            row[ADMIN_JOIN_COL_5]        = k
-            row[MATCH_STATUS_COL_5]      = "平台多余"
-            row[ADMIN_ORG_COL_5]         = PHONECARD_PLATFORM_NAME_5
-            pc_no     = str(phonecard_lk.at[key, PHONECARD_PLATFORM_NO_COL_5]).strip() if PHONECARD_PLATFORM_NO_COL_5 in phonecard_lk.columns else ""
-            pc_amt    = str(phonecard_lk.at[key, PHONECARD_AMOUNT_COL_5]).strip()      if PHONECARD_AMOUNT_COL_5      in phonecard_lk.columns else ""
-            pc_status = str(phonecard_lk.at[key, PHONECARD_STATUS_COL_5]).strip()      if PHONECARD_STATUS_COL_5      in phonecard_lk.columns else ""
-            pc_time   = str(phonecard_lk.at[key, PHONECARD_DATE_COL_5]).strip()        if PHONECARD_DATE_COL_5        in phonecard_lk.columns else ""
-            row[PLATFORM_ORDER_NO_COL_5] = pc_no
-            row[PLATFORM_AMOUNT_COL_5]   = pc_amt
-            row[PLATFORM_CURRENCY_COL_5] = ""
-            row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5("PHONECARD", pc_status)
-            row[FEE_COL_5]               = ""
-            row[ARRIVE_AMOUNT_COL_5]     = pc_amt
-            row[TRANSACTION_DATE_COL_5]  = _format_date_5(pc_time)
-            extra.append(row)
-
-    # ── epin 多余行（pin码在 epin 平台有、admin 无）────────────────────────────
-    # 关联键与 IBFYPAY 相同（admin.第三方订单号），复用 admin_ibfpay_keys 作比对集合
-    if epin_lk is not None:
-        for key in epin_lk.index:
-            k = str(key).strip()
-            if not k or k in admin_ibfpay_keys:
-                continue
-            row: dict = {c: "" for c in result_cols}
-            row[ADMIN_TP_ORDER_COL_5]    = k   # 第三方订单号 = pin码
-            row[MATCH_STATUS_COL_5]      = "平台多余"
-            row[ADMIN_ORG_COL_5]         = EPIN_PLATFORM_NAME_5
-            ep_order_id = str(epin_lk.at[key, EPIN_SIPARISLER_ORDER_ID_COL_5]).strip() if EPIN_SIPARISLER_ORDER_ID_COL_5 in epin_lk.columns else ""
-            ep_amt    = str(epin_lk.at[key, EPIN_SIPARISLER_UNIT_PRICE_COL_5]).strip() if EPIN_SIPARISLER_UNIT_PRICE_COL_5  in epin_lk.columns else ""
-            ep_status = str(epin_lk.at[key, EPIN_SIPARISLER_STATUS_COL_5]).strip()     if EPIN_SIPARISLER_STATUS_COL_5      in epin_lk.columns else ""
-            ep_time   = str(epin_lk.at[key, EPIN_SIPARISLER_CONFIRM_TIME_COL_5]).strip() if EPIN_SIPARISLER_CONFIRM_TIME_COL_5 in epin_lk.columns else ""
-            row[PLATFORM_ORDER_NO_COL_5] = ep_order_id
-            row[PLATFORM_AMOUNT_COL_5]   = ep_amt
-            row[PLATFORM_CURRENCY_COL_5] = EPIN_DEFAULT_CURRENCY_5
-            row[PLATFORM_STATUS_COL_5]   = _normalize_platform_status_5(EPIN_PLATFORM_NAME_5, ep_status)
-            row[FEE_COL_5]               = ""
-            row[ARRIVE_AMOUNT_COL_5]     = ep_amt
-            row[TRANSACTION_DATE_COL_5]  = _format_date_5(ep_time)
-            extra.append(row)
-
-    if not extra:
-        return pd.DataFrame(columns=result_cols)
-    return pd.DataFrame(extra, columns=result_cols)
-
-
 def enrich_admin_5(
     admin_df: pd.DataFrame,
     ibfpay_lk: Optional[pd.DataFrame],
@@ -1207,255 +1030,6 @@ def enrich_admin_5(
         "EPIN": epin_lk,
     }
     return enrich_admin_columnar(admin_df, lookups, specs, SCHEMA_5)
-
-    # ── 以下为旧逐平台硬编码实现，阶段4 删除（当前不可达）─────────────────────
-    result = admin_df.copy()
-    expected_rows = len(admin_df)
-
-    def _safe_merge(base, lookup, left_on, prefix, label):
-        if left_on not in base.columns:
-            logging.warning("【%s】admin 文件中缺少关联列 '%s'，跳过该平台匹配", label, left_on)
-            return base
-        merged = base.merge(
-            lookup.add_prefix(prefix),
-            left_on=left_on, right_index=True, how="left",
-        )
-        if len(merged) != expected_rows:
-            raise ValueError(
-                f"【{label}】merge 后行数从 {expected_rows} 变为 {len(merged)}，"
-                f"请检查 build_{label.lower()}_lookup 去重逻辑"
-            )
-        for c in lookup.columns:
-            merged[f"{prefix}{c}"] = merged[f"{prefix}{c}"].fillna("")
-        return merged
-
-    ibfpay_avail     = ibfpay_lk is not None    and not ibfpay_lk.empty
-    superpay_avail   = superpay_lk is not None  and not superpay_lk.empty
-    wangguypay_avail = wangguypay_lk is not None and not wangguypay_lk.empty
-    phonecard_avail  = phonecard_lk is not None and not phonecard_lk.empty
-    epin_avail       = epin_lk is not None       and not epin_lk.empty
-
-    if ibfpay_avail:
-        result = _safe_merge(result, ibfpay_lk, IBFYPAY_ADMIN_JOIN_COL_5, "_i_", "IBFYPAY")
-    if superpay_avail:
-        result = _safe_merge(result, superpay_lk, ADMIN_JOIN_COL_5, "_s_", "SUPERPAY")
-    if wangguypay_avail:
-        result = _safe_merge(result, wangguypay_lk, ADMIN_TP_ORDER_COL_5, "_w_", "WANGGUYPAY")
-    if phonecard_avail:
-        result = _safe_merge(result, phonecard_lk, ADMIN_JOIN_COL_5, "_p_", "PHONECARD")
-    if epin_avail:
-        result = _safe_merge(result, epin_lk, EPIN_ADMIN_JOIN_COL_5, "_e_", "EPIN")
-
-    match_status_list      = []
-    platform_order_no_list = []
-    platform_amount_list   = []
-    platform_currency_list = []
-    platform_status_list   = []
-    fee_list               = []
-    arrive_amount_list     = []
-    transaction_date_list  = []
-    org_output_list        = []
-    implied_rate_list      = []
-    calc_amount_list       = []
-
-    for _, row in result.iterrows():
-        # IBFYPAY 命中判断（join 键：admin.第三方订单号 ↔ ibfpay.系统流水号）
-        ibf_amt  = str(row.get("_i_代付金额",               "")).strip() if ibfpay_avail    else ""
-        ibf_fee  = str(row.get("_i_手续费",                 "")).strip() if ibfpay_avail    else ""
-        ibf_time = str(row.get(f"_i_{IBFYPAY_TIME_COL_5}",  "")).strip() if ibfpay_avail    else ""
-        ibf_tp   = str(row.get(IBFYPAY_ADMIN_JOIN_COL_5,    "")).strip()
-        ibf_hit  = ibf_amt != ""
-        ibf_rejected = (
-            str(row.get("_i__ibfpay_rejected", "")).strip().lower() == "true"
-            if ibfpay_avail else False
-        )
-
-        # SUPERPAY 命中判断（join 键：admin.订单号 ↔ superpay.商户订单号）
-        sp_amt    = str(row.get(f"_s_{SUPERPAY_AMOUNT_COL_5}",     "")).strip() if superpay_avail else ""
-        sp_no     = str(row.get(f"_s_{SUPERPAY_PLATFORM_NO_COL_5}","")).strip() if superpay_avail else ""
-        sp_fee    = str(row.get(f"_s_{SUPERPAY_FEE_TOTAL_COL_5}",  "")).strip() if superpay_avail else ""
-        sp_actual = str(row.get(f"_s_{SUPERPAY_ACTUAL_COL_5}",     "")).strip() if superpay_avail else ""
-        sp_currency = _normalize_currency_5(row.get(f"_s_{SUPERPAY_CURRENCY_COL_5}", "")) if superpay_avail else ""
-        sp_status = str(row.get(f"_s_{SUPERPAY_STATUS_COL_5}",     "")).strip() if superpay_avail else ""
-        sp_time   = str(row.get(f"_s_{SUPERPAY_FINISH_TIME_COL_5}","")).strip() if superpay_avail else ""
-        sp_ctime  = str(row.get(f"_s_{SUPERPAY_CREATE_TIME_COL_5}","")).strip() if superpay_avail else ""
-        sp_hit    = sp_amt != ""
-
-        # WANGGUYPAY 命中判断（join 键：admin.第三方订单号 ↔ wangguypay.平台订单号）
-        wg_amt    = str(row.get(f"_w_{WANGGUYPAY_AMOUNT_COL_5}",    "")).strip() if wangguypay_avail else ""
-        wg_no     = str(row.get(f"_w_{WANGGUYPAY_PLATFORM_NO_COL_5}","")).strip() if wangguypay_avail else ""
-        wg_fee    = str(row.get(f"_w_{WANGGUYPAY_FEE_COL_5}",        "")).strip() if wangguypay_avail else ""
-        wg_arrive = str(row.get(f"_w_{WANGGUYPAY_ARRIVE_COL_5}",     "")).strip() if wangguypay_avail else ""
-        wg_status = str(row.get(f"_w_{WANGGUYPAY_STATUS_COL_5}",     "")).strip() if wangguypay_avail else ""
-        wg_time   = str(row.get(f"_w_{WANGGUYPAY_FINISH_TIME_COL_5}","")).strip() if wangguypay_avail else ""
-        wg_ctime  = str(row.get(f"_w_{WANGGUYPAY_CREATE_TIME_COL_5}","")).strip() if wangguypay_avail else ""
-        wg_hit    = wg_amt != ""
-
-        # 话费卡命中判断（join 键：admin.订单号 ↔ 话费卡.订单号）
-        pc_amt    = str(row.get(f"_p_{PHONECARD_AMOUNT_COL_5}",      "")).strip() if phonecard_avail else ""
-        pc_no     = str(row.get(f"_p_{PHONECARD_PLATFORM_NO_COL_5}", "")).strip() if phonecard_avail else ""
-        pc_status = str(row.get(f"_p_{PHONECARD_STATUS_COL_5}",      "")).strip() if phonecard_avail else ""
-        pc_time   = str(row.get(f"_p_{PHONECARD_DATE_COL_5}",        "")).strip() if phonecard_avail else ""
-        pc_hit    = pc_amt != ""
-
-        # epin 命中判断（仅对机构为纯数字的行；join 键待 build_epin_lookup_5 实现后生效）
-        org_val  = str(row.get(ADMIN_ORG_COL_5, "")).strip()
-        is_epin_candidate = bool(re.match(EPIN_ORG_PATTERN_5, org_val)) if org_val else False
-        # TODO: epin_lk 目前恒为 None，ep_hit 恒为 False；build_epin_lookup_5 实现后此处自动生效
-        ep_amt   = str(row.get(f"_e_{EPIN_SIPARISLER_UNIT_PRICE_COL_5}", "")).strip() if (epin_avail and is_epin_candidate) else ""
-        ep_hit   = ep_amt != ""
-
-        if ibf_hit and (sp_hit or wg_hit or pc_hit):
-            logging.warning(
-                "订单 %s 同时命中多个平台，取 IBFYPAY",
-                str(row.get(ADMIN_JOIN_COL_5, "")).strip(),
-            )
-
-        if ibf_hit:
-            ibf_amt_f = _to_float_5(ibf_amt) or 0.0
-            ibf_fee_f = _to_float_5(ibf_fee) or 0.0
-            arrive    = round(ibf_amt_f - ibf_fee_f, 2)
-            match_status_list.append("是")
-            platform_order_no_list.append(ibf_tp)
-            platform_amount_list.append(ibf_amt)
-            platform_currency_list.append(IBFYPAY_DEFAULT_CURRENCY_5)
-            platform_status_list.append(_normalize_platform_status_5("IBFYPAY", rejected=ibf_rejected))
-            fee_list.append(ibf_fee)
-            arrive_amount_list.append(str(arrive))
-            transaction_date_list.append(_format_date_5(ibf_time))
-            org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
-            implied_rate_list.append("")
-            calc_amount_list.append("")
-        elif sp_hit:
-            sp_amt_f    = _to_float_5(sp_amt) or 0.0
-            sp_actual_f = _to_float_5(sp_actual) or 0.0
-            sp_calc_fee = str(round(abs(sp_amt_f - sp_actual_f), 2))
-            match_status_list.append("是")
-            platform_order_no_list.append(sp_no)
-            platform_amount_list.append(sp_amt)
-            platform_currency_list.append(sp_currency)
-            platform_status_list.append(_normalize_platform_status_5("SUPERPAY", sp_status))
-            fee_list.append(sp_calc_fee)
-            arrive_amount_list.append(sp_actual)
-            transaction_date_list.append(_format_date_5(sp_time) or _format_date_5(sp_ctime))
-            org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
-            implied_rate_list.append("")
-            calc_amount_list.append("")
-        elif wg_hit:
-            match_status_list.append("是")
-            platform_order_no_list.append(wg_no)
-            platform_amount_list.append(wg_amt)
-            platform_currency_list.append(WANGGUYPAY_DEFAULT_CURRENCY_5)
-            platform_status_list.append(_normalize_platform_status_5("WANGGUYPAY", wg_status))
-            fee_list.append(wg_fee)
-            arrive_amount_list.append(wg_arrive)
-            transaction_date_list.append(_format_date_5(wg_time) or _format_date_5(wg_ctime))
-            org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
-            implied_rate_list.append("")
-            calc_amount_list.append("")
-        elif pc_hit:
-            match_status_list.append("是")
-            platform_order_no_list.append(pc_no)
-            platform_amount_list.append(pc_amt)
-            platform_currency_list.append("")
-            platform_status_list.append(_normalize_platform_status_5("PHONECARD", pc_status))
-            fee_list.append("")
-            arrive_amount_list.append(pc_amt)
-            transaction_date_list.append(_format_date_5(pc_time))
-            org_output_list.append(PHONECARD_PLATFORM_NAME_5)
-            implied_rate_list.append("")
-            calc_amount_list.append("")
-        elif ep_hit:
-            ep_order_id = str(row.get(f"_e_{EPIN_SIPARISLER_ORDER_ID_COL_5}",   "")).strip() if epin_avail else ""
-            ep_status  = str(row.get(f"_e_{EPIN_SIPARISLER_STATUS_COL_5}",       "")).strip() if epin_avail else ""
-            ep_time    = str(row.get(f"_e_{EPIN_SIPARISLER_CONFIRM_TIME_COL_5}", "")).strip() if epin_avail else ""
-            match_status_list.append("是")
-            platform_order_no_list.append(ep_order_id)
-            platform_amount_list.append(ep_amt)
-            platform_currency_list.append(EPIN_DEFAULT_CURRENCY_5)
-            platform_status_list.append(_normalize_platform_status_5(EPIN_PLATFORM_NAME_5, ep_status))
-            fee_list.append("")
-            arrive_amount_list.append(ep_amt)
-            transaction_date_list.append(_format_date_5(ep_time))
-            org_output_list.append(EPIN_PLATFORM_NAME_5)
-            try:
-                ep_product   = str(row.get(f"_e_{EPIN_SIPARISLER_PRODUCT_COL_5}", "")).strip()
-                _m = re.search(r'([\d,]+(?:\.\d+)?)\s*TL', ep_product, re.IGNORECASE)
-                if not _m:
-                    _m = re.search(r'([\d,]+(?:\.\d+)?)', ep_product)
-                _product_amt = float(_m.group(1).replace(",", "")) if _m else None
-                _ep_price    = float(ep_amt.replace(",", ""))
-                if _product_amt is not None and _ep_price != 0:
-                    _rate = round(_product_amt / _ep_price, 4)
-                    implied_rate_list.append(_rate)
-                    calc_amount_list.append(int(round(_rate * _ep_price)))
-                else:
-                    implied_rate_list.append("")
-                    calc_amount_list.append("")
-            except (ValueError, ZeroDivisionError):
-                implied_rate_list.append("")
-                calc_amount_list.append("")
-        else:
-            match_status_list.append("否")
-            platform_order_no_list.append("")
-            platform_amount_list.append("")
-            platform_currency_list.append("")
-            platform_status_list.append("")
-            fee_list.append("")
-            arrive_amount_list.append("")
-            transaction_date_list.append("")
-            org_output_list.append(row.get(ADMIN_ORG_COL_5, ""))
-            implied_rate_list.append("")
-            calc_amount_list.append("")
-
-    # 还原为仅 admin 原始列，再追加新增列
-    admin_cols = list(admin_df.columns)
-    result = result[admin_cols].copy()
-    if ADMIN_ORG_COL_5 in result.columns:
-        result[ADMIN_ORG_COL_5] = org_output_list
-
-    result[MATCH_STATUS_COL_5]      = match_status_list
-    result[PLATFORM_ORDER_NO_COL_5] = platform_order_no_list
-    result[PLATFORM_AMOUNT_COL_5]   = platform_amount_list
-    result[PLATFORM_CURRENCY_COL_5] = platform_currency_list
-    result[PLATFORM_STATUS_COL_5]   = platform_status_list
-    result[FEE_COL_5]               = fee_list
-    result[ARRIVE_AMOUNT_COL_5]     = arrive_amount_list
-    result[TRANSACTION_DATE_COL_5]  = transaction_date_list
-    result[IMPLIED_RATE_COL_5]      = implied_rate_list
-    result[CALC_AMOUNT_COL_5]       = calc_amount_list
-
-    # 计算 admin key 集合，用于判断平台多余行
-    admin_ibfpay_keys: Set[str] = (
-        {str(v).strip() for v in admin_df[IBFYPAY_ADMIN_JOIN_COL_5] if str(v).strip()}
-        if IBFYPAY_ADMIN_JOIN_COL_5 in admin_df.columns else set()
-    )
-    admin_order_keys: Set[str] = (
-        {str(v).strip() for v in admin_df[ADMIN_JOIN_COL_5] if str(v).strip()}
-        if ADMIN_JOIN_COL_5 in admin_df.columns else set()
-    )
-    admin_wangguypay_keys: Set[str] = (
-        {str(v).strip() for v in admin_df[ADMIN_TP_ORDER_COL_5] if str(v).strip()}
-        if ADMIN_TP_ORDER_COL_5 in admin_df.columns else set()
-    )
-
-    result_cols = list(result.columns)
-    extra_df = _build_platform_only_rows_5(
-        result_cols,
-        admin_ibfpay_keys,
-        admin_order_keys,
-        admin_wangguypay_keys,
-        ibfpay_lk if ibfpay_avail else None,
-        superpay_lk if superpay_avail else None,
-        wangguypay_lk if wangguypay_avail else None,
-        phonecard_lk if phonecard_avail else None,
-        epin_lk if epin_avail else None,
-    )
-
-    if not extra_df.empty:
-        result = pd.concat([result, extra_df], ignore_index=True)
-
-    return result
 
 
 def log_match_stats_5(result_df: pd.DataFrame) -> None:
@@ -1746,8 +1320,12 @@ def main() -> int:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # ── 扫描 ──────────────────────────────────────────────────
-    files = scan_source_files_5(INPUT_DIR_5)
+    # ── 加载平台注册表(内置 + 外置 JSON/插件)──────────────────
+    specs = load_platform_registry("5")
+    logging.info("已加载 %d 个平台: %s", len(specs), ", ".join(s.key for s in specs))
+
+    # ── 扫描(注册表驱动:含外部新增平台前缀)────────────────────
+    files = scan_source_files_5(INPUT_DIR_5, specs)
 
     # ── admin 必须存在 ────────────────────────────────────────
     if not files["admin"]:
@@ -1825,8 +1403,28 @@ def main() -> int:
 
     platform_balance_summary = build_platform_balance_summary_5(ibfpay_balance_raw, wangguypay_raw, epin_odemeler_df)
 
-    # ── 匹配 ──────────────────────────────────────────────────
-    result_df = enrich_admin_5(admin_df, ibfpay_lk, superpay_lk, wangguypay_lk, phonecard_lk, epin_lk)
+    # ── 外部(注册表新增)平台:通用/插件 handler 建查找表 ──────
+    lookups = {
+        "IBFYPAY": ibfpay_lk,
+        "SUPERPAY": superpay_lk,
+        "WANGGUYPAY": wangguypay_lk,
+        "PHONECARD": phonecard_lk,
+        "EPIN": epin_lk,
+    }
+    for spec in specs:
+        if spec.key in BUILTIN_PLATFORM_KEYS_5:
+            continue
+        ext_files = files.get(spec.key, [])
+        if not ext_files:
+            continue
+        try:
+            lookups[spec.key] = resolve_handler(spec).build_from_files(spec, ext_files)
+            logging.info("%s 查找表共 %d 条", spec.key, len(lookups[spec.key]))
+        except Exception:
+            logging.error("平台 %s 构建查找表失败，已跳过", spec.key, exc_info=True)
+
+    # ── 匹配(注册表驱动列式引擎)──────────────────────────────
+    result_df = enrich_admin_columnar(admin_df, lookups, specs, SCHEMA_5)
     log_match_stats_5(result_df)
 
     # ── 输出 ──────────────────────────────────────────────────

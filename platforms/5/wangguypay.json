@@ -1,0 +1,38 @@
+{
+  "key": "WANGGUYPAY",
+  "priority": 30,
+  "handler": "wangguypay",
+  "join_col": "平台订单号",
+  "admin_join_col": "第三方订单号",
+  "currency_default": "TRY",
+  "fee_mode": "column",
+  "arrive_mode": "column",
+  "org_source": "admin",
+  "org_name": "WANGGUYPAY",
+  "balance_handler": true,
+  "status_map": {
+    "付款成功": "成功",
+    "付款失败": "失败",
+    "处理中": "处理中",
+    "成功": "成功"
+  },
+  "columns": {
+    "platform_no": "平台订单号",
+    "amount": "交易金额(try)",
+    "arrive_amount": "到账金额(try)",
+    "fee": "手续费(try)",
+    "status": "交易状态",
+    "finish_time": "完成时间",
+    "create_time": "创建时间"
+  },
+  "directions": {
+    "payout": {
+      "prefixes": [
+        "wangupay-",
+        "wangguypay-",
+        "wangupay资金记录",
+        "wangguypay资金记录"
+      ]
+    }
+  }
+}

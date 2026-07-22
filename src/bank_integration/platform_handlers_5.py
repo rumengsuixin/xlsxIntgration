@@ -11,11 +11,23 @@
 声明的原生列名从(带前缀的)合并行 / 查找表行取值。所有输出列由 SCHEMA_5.column_plan 声明。
 """
 
+import logging
 import re
 
+import pandas as pd
+
 from . import config5 as c5
-from .platform_engine import format_date, normalize_currency, normalize_status, to_float
+from .platform_engine import (
+    dedup_lookup,
+    format_date,
+    normalize_currency,
+    normalize_status,
+    read_source_table,
+    to_float,
+)
 from .platform_spec import OutputColumn, OutputSchema, register_handler
+
+logger = logging.getLogger(__name__)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -25,12 +37,37 @@ from .platform_spec import OutputColumn, OutputSchema, register_handler
 class GenericPayout5Handler:
     """代号5 声明式平台默认 handler。取值全部由 spec 字段驱动。"""
 
-    # ── 读取 / 查找表(阶段3 由 app5 对应函数平移进来)────────────────────────
-    def read(self, spec, files):
-        raise NotImplementedError("read 将于阶段3 迁入;当前由 app5 旧 read_*_5 负责")
+    # ── 读取 / 查找表(声明式平台:结构类似 SUPERPAY 的直连平台)───────────────
+    # 内置疑难平台(IBFYPAY/WANGGUYPAY/EPIN/PHONECARD)的 read/build 保留在 app5
+    # (已验证),由 main 按 key 分派;此处的通用实现服务新增声明式平台与插件基类。
+    def read(self, spec, filepath):
+        """按 spec.sheet / required_columns 读取单个 .xls/.xlsx。"""
+        return read_source_table(
+            filepath,
+            preferred_sheet=spec.sheet,
+            required_columns=(spec.required_columns or None),
+            use_first_sheet=True,
+            label=spec.key,
+        )
 
     def build_lookup(self, spec, df):
-        raise NotImplementedError("build_lookup 将于阶段3 迁入;当前由 app5 旧 build_*_lookup_5 负责")
+        """保留 join_col + spec.columns/currency_col 涉及的原生列,去重后以 join_col 为索引。"""
+        join = spec.join_col
+        if join not in df.columns:
+            logger.warning("【%s】缺少关联列 '%s'，返回空查找表", spec.key, join)
+            return pd.DataFrame()
+        wanted = list(spec.columns.values())
+        if spec.currency_col:
+            wanted.append(spec.currency_col)
+        keep = [join] + [c for c in dict.fromkeys(wanted) if c and c in df.columns and c != join]
+        sub = dedup_lookup(df[keep], join, spec.key)
+        return sub.set_index(join)
+
+    def build_from_files(self, spec, filepaths):
+        """读取(多文件合并)并构建查找表——main 对外部/插件平台的统一入口。"""
+        frames = [self.read(spec, fp) for fp in filepaths]
+        raw = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        return self.build_lookup(spec, raw)
 
     # ── 命中判定 ──────────────────────────────────────────────────────────────
     def is_hit(self, spec, row, prefix):

@@ -1,0 +1,32 @@
+{
+  "key": "PHONECARD",
+  "priority": 40,
+  "handler": "phonecard",
+  "join_col": "订单号",
+  "admin_join_col": "订单号",
+  "currency_default": "",
+  "fee_mode": "none",
+  "arrive_mode": "equals_amount",
+  "org_source": "platform",
+  "org_name": "话费卡",
+  "status_map": {
+    "已完成": "成功",
+    "成功": "成功",
+    "失败": "失败",
+    "处理中": "处理中",
+    "关闭": "关闭"
+  },
+  "columns": {
+    "platform_no": "第三方订单号",
+    "amount": "金额",
+    "status": "状态",
+    "finish_time": "日期"
+  },
+  "directions": {
+    "payout": {
+      "prefixes": [
+        "okey话费卡结算"
+      ]
+    }
+  }
+}

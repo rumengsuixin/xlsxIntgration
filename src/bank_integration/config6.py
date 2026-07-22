@@ -37,6 +37,8 @@ PLATFORM_PREFIXES_6: dict = {
     "betcat_payout":       ["betcat-payout"],
     "cashnewpay_collection": ["cashnewpay收款"],
     "cashnewpay_exchange": ["cashnewpay兑换"],
+    "goldenpay_collection": ["goldenpay收款"],
+    "goldenpay_exchange":   ["goldenpay兑换"],
 }
 
 # ── Admin 收款主表（格式自适应，Excel sheet="已完成订单"）──────────────────────
@@ -96,6 +98,27 @@ CASHNEWPAY_PIX_ACCOUNT_COL_6   = "Pix账号"
 CASHNEWPAY_STATE_DESC_COL_6    = "状态描述"     # 英文原始状态，如 PAID
 CASHNEWPAY_CHANNEL_COL_6       = "支付渠道"
 
+# ── Goldenpay 平台（格式自适应，Excel）─────────────────────────────────────────
+# 与 Betcat/Cashnewpay 不同：收款与兑换列结构不一致（收款 22 列 / 兑换 17 列），
+# 金额列与平台单号列名收/付各异，故 build_goldenpay_lookup_6 读取时归一化到规范列名。
+# 时间列为真正的 Excel datetime 对象；货币 BRL。
+GOLDENPAY_COLLECTION_SHEET_6 = "代收订单导出"
+GOLDENPAY_PAYOUT_SHEET_6     = "代付订单导出"
+GOLDENPAY_JOIN_COL_6         = "商户单号"      # 收/付相同，关联 Admin.订单号
+# 收/付相同
+GOLDENPAY_FEE_COL_6          = "手续费"
+GOLDENPAY_STATUS_COL_6       = "订单状态"       # 收款值="支付成功"，兑换值="成功"
+GOLDENPAY_CREATE_TIME_COL_6  = "创建时间"
+GOLDENPAY_FINISH_TIME_COL_6  = "完成时间"
+# 收/付各异（作为 build 时的源列名，归一化到下方规范名）
+GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6 = "订单号"    # 收款：平台单号源列（P 开头）
+GOLDENPAY_COLLECTION_AMOUNT_SRC_6      = "订单金额"  # 收款：金额源列（非"实际金额"）
+GOLDENPAY_PAYOUT_PLATFORM_NO_SRC_6     = "订单编号"  # 兑换：平台单号源列（T 开头）
+GOLDENPAY_PAYOUT_AMOUNT_SRC_6          = "金额"      # 兑换：金额源列
+# 归一化后的规范列名（enrich 统一引用；查找表内部列，merge 时加 _g_ 前缀，不与输出列冲突）
+GOLDENPAY_PLATFORM_NO_COL_6  = "平台单号"
+GOLDENPAY_AMOUNT_COL_6       = "金额"
+
 # ── 输出新增列（代收/代付共用，追加在 admin 原始列之后）─────────────────────
 MATCH_STATUS_COL_6      = "是否匹配"    # 是 / 否 / 平台多余
 PLATFORM_SOURCE_COL_6   = "来源平台"    # BETCAT / CASHNEWPAY
@@ -141,6 +164,15 @@ PLATFORM_STATUS_MAP_6: dict = {
         "PENDING":         "处理中",
         "CREATED":         "处理中",
         "PROCESSING":      "处理中",
+    },
+    "GOLDENPAY": {
+        "支付成功": "成功",
+        "成功":     "成功",
+        "支付失败": "失败",
+        "失败":     "失败",
+        "待支付":   "处理中",
+        "处理中":   "处理中",
+        "关闭":     "关闭",
     },
 }
 

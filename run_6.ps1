@@ -18,7 +18,7 @@ Write-Host "========================================"
 Write-Host "代收代付对账（代号6）"
 Write-Host "========================================"
 Write-Host ""
-Write-Host "请将 admin收款/兑换、Betcat、Cashnewpay 源文件放入 data\input\6\ 后运行。"
+Write-Host "请将 admin收款/兑换、Betcat、Cashnewpay、Goldenpay 源文件放入 data\input\6\ 后运行。"
 Write-Host ""
 
 $exitCode = 1

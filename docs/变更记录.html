@@ -40,6 +40,7 @@
 <table>
   <thead><tr><th>日期</th><th>代号</th><th>类型</th><th>说明</th><th>状态</th></tr></thead>
   <tbody>
+    <tr><td>2026-07-22</td><td>6</td><td>新增</td><td>代号6 接入第三个平台 <code>Goldenpay</code>(收款/兑换);因其收/付表头不同(金额列 <code>订单金额</code> vs <code>金额</code>、平台单号列 <code>订单号</code> vs <code>订单编号</code>、sheet <code>代收订单导出</code> vs <code>代付订单导出</code>),<code>build_goldenpay_lookup_6</code> 读取时将金额/平台单号列归一化为统一列名;关联键 <code>商户单号</code> ↔ admin.<code>订单号</code>,优先级 Betcat &gt; Cashnewpay &gt; Goldenpay;新增 4 个单元测试(收/付匹配、平台多余、优先级)</td><td>✅</td></tr>
     <tr><td>2026-07-21</td><td>6</td><td>优化</td><td>代号6 平台文件读取写死格式(Betcat 仅 CSV;Admin/Cashnewpay 硬编码 <code>openpyxl</code> 连 <code>.xls</code> 都打不开);抽 <code>_read_source_table_6</code> 分派器按扩展名自适应(<code>.csv</code> 多编码 / <code>.xls</code>→xlrd / <code>.xlsx</code>→openpyxl),三格式通吃;<code>read_betcat_csv_6</code>/<code>read_cashnewpay_xlsx_6</code> 更名 <code>read_betcat_6</code>/<code>read_cashnewpay_6</code></td><td>✅</td></tr>
     <tr><td>2026-07-21</td><td>6</td><td>修复</td><td>Betcat CSV 读取写死默认 UTF-8,平台导出混有 GBK 文件时抛 <code>UnicodeDecodeError</code>(<code>0xb8</code>);<code>read_betcat_csv_6</code> 改为依次尝试 <code>utf-8-sig / gbk / gb18030 / utf-8</code>,并借 <code>utf-8-sig</code> 剥除 BOM 残留</td><td>✅</td></tr>
     <tr><td>2026-07-14</td><td>3</td><td>修复</td><td>华为平台订单金额只取 <code>支付金额</code>(券后实付)漏加 <code>优惠券金额</code>,含券订单误判进「匹配订单差异」;改为 <code>平台订单金额 = 支付金额 + 优惠券金额</code>,结算金额跟随</td><td>✅</td></tr>

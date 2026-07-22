@@ -178,6 +178,37 @@ from src.bank_integration.config3 import (
 )
 from src.bank_integration.readers import read_bank_file
 from src.bank_integration.scanner import scan_source_files, scan_source_files_2
+from src.bank_integration.app6 import (
+    build_betcat_lookup_6,
+    build_goldenpay_lookup_6,
+    enrich_admin_6,
+)
+from src.bank_integration.config6 import (
+    ADMIN_COLLECTION_JOIN_COL_6,
+    BETCAT_AMOUNT_COL_6,
+    BETCAT_CREATE_TIME_COL_6,
+    BETCAT_FEE_COL_6,
+    BETCAT_JOIN_COL_6,
+    BETCAT_PAY_TIME_COL_6,
+    BETCAT_PLATFORM_NO_COL_6,
+    BETCAT_STATUS_COL_6,
+    FEE_COL_6,
+    GOLDENPAY_COLLECTION_AMOUNT_SRC_6,
+    GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6,
+    GOLDENPAY_CREATE_TIME_COL_6,
+    GOLDENPAY_FEE_COL_6,
+    GOLDENPAY_FINISH_TIME_COL_6,
+    GOLDENPAY_JOIN_COL_6,
+    GOLDENPAY_PAYOUT_AMOUNT_SRC_6,
+    GOLDENPAY_PAYOUT_PLATFORM_NO_SRC_6,
+    GOLDENPAY_STATUS_COL_6,
+    MATCH_STATUS_COL_6,
+    PLATFORM_AMOUNT_COL_6,
+    PLATFORM_ORDER_NO_COL_6,
+    PLATFORM_SOURCE_COL_6,
+    PLATFORM_STATUS_COL_6,
+    TRANSACTION_DATE_COL_6,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2793,6 +2824,125 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertAlmostEqual(df.iloc[0]["Amount"], 3297.03, places=2)
         self.assertEqual(monthly[0][0], "2025-02-04")
         self.assertAlmostEqual(monthly[0][1], 3297.03, places=2)
+
+    # ── 代号6 Goldenpay 平台 ──────────────────────────────────────────────────
+    def test_goldenpay_collection_matches_admin_and_normalizes_status(self):
+        admin = pd.DataFrame([
+            {ADMIN_COLLECTION_JOIN_COL_6: "MORDER-1", "金额": "10"},
+            {ADMIN_COLLECTION_JOIN_COL_6: "NO-MATCH", "金额": "5"},
+        ])
+        raw = pd.DataFrame([{
+            GOLDENPAY_JOIN_COL_6: "MORDER-1",
+            GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6: "P20721508385028096021782874233",
+            GOLDENPAY_COLLECTION_AMOUNT_SRC_6: "10",
+            GOLDENPAY_FEE_COL_6: "0.025",
+            GOLDENPAY_STATUS_COL_6: "支付成功",
+            GOLDENPAY_CREATE_TIME_COL_6: "2026-06-30 23:50:33",
+            GOLDENPAY_FINISH_TIME_COL_6: "2026-06-30 23:51:12",
+        }])
+        gp_lk = build_goldenpay_lookup_6(
+            raw, GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6, GOLDENPAY_COLLECTION_AMOUNT_SRC_6)
+
+        result = enrich_admin_6(admin, None, None, gp_lk)
+        keyed = {row[ADMIN_COLLECTION_JOIN_COL_6]: row for _, row in result.iterrows()
+                 if row[ADMIN_COLLECTION_JOIN_COL_6]}
+
+        self.assertEqual(keyed["MORDER-1"][MATCH_STATUS_COL_6], "是")
+        self.assertEqual(keyed["MORDER-1"][PLATFORM_SOURCE_COL_6], "GOLDENPAY")
+        self.assertEqual(keyed["MORDER-1"][PLATFORM_ORDER_NO_COL_6], "P20721508385028096021782874233")
+        self.assertEqual(keyed["MORDER-1"][PLATFORM_AMOUNT_COL_6], "10")
+        self.assertEqual(keyed["MORDER-1"][PLATFORM_STATUS_COL_6], "成功")
+        self.assertEqual(keyed["MORDER-1"][FEE_COL_6], "0.025")
+        self.assertEqual(keyed["MORDER-1"][TRANSACTION_DATE_COL_6], "2026-06-30")
+        self.assertEqual(keyed["NO-MATCH"][MATCH_STATUS_COL_6], "否")
+
+    def test_goldenpay_payout_matches_admin_with_distinct_columns(self):
+        admin = pd.DataFrame([{ADMIN_COLLECTION_JOIN_COL_6: "MORDER-2", "金额": "30"}])
+        raw = pd.DataFrame([{
+            GOLDENPAY_JOIN_COL_6: "MORDER-2",
+            GOLDENPAY_PAYOUT_PLATFORM_NO_SRC_6: "T20721519487526379531782874497",
+            GOLDENPAY_PAYOUT_AMOUNT_SRC_6: "30",
+            GOLDENPAY_FEE_COL_6: "0",
+            GOLDENPAY_STATUS_COL_6: "成功",
+            GOLDENPAY_CREATE_TIME_COL_6: "2026-06-30 23:54:58",
+            GOLDENPAY_FINISH_TIME_COL_6: "2026-06-30 23:55:00",
+        }])
+        gp_lk = build_goldenpay_lookup_6(
+            raw, GOLDENPAY_PAYOUT_PLATFORM_NO_SRC_6, GOLDENPAY_PAYOUT_AMOUNT_SRC_6)
+
+        result = enrich_admin_6(admin, None, None, gp_lk)
+        row = result.iloc[0]
+
+        self.assertEqual(row[MATCH_STATUS_COL_6], "是")
+        self.assertEqual(row[PLATFORM_SOURCE_COL_6], "GOLDENPAY")
+        self.assertEqual(row[PLATFORM_ORDER_NO_COL_6], "T20721519487526379531782874497")
+        self.assertEqual(row[PLATFORM_AMOUNT_COL_6], "30")
+        self.assertEqual(row[PLATFORM_STATUS_COL_6], "成功")
+        self.assertEqual(row[TRANSACTION_DATE_COL_6], "2026-06-30")
+
+    def test_goldenpay_platform_only_row(self):
+        admin = pd.DataFrame([{ADMIN_COLLECTION_JOIN_COL_6: "MORDER-1", "金额": "10"}])
+        raw = pd.DataFrame([
+            {
+                GOLDENPAY_JOIN_COL_6: "MORDER-1",
+                GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6: "P-1",
+                GOLDENPAY_COLLECTION_AMOUNT_SRC_6: "10",
+                GOLDENPAY_FEE_COL_6: "0.02",
+                GOLDENPAY_STATUS_COL_6: "支付成功",
+                GOLDENPAY_FINISH_TIME_COL_6: "2026-06-30 23:51:12",
+            },
+            {
+                GOLDENPAY_JOIN_COL_6: "MORDER-EXTRA",
+                GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6: "P-2",
+                GOLDENPAY_COLLECTION_AMOUNT_SRC_6: "20",
+                GOLDENPAY_FEE_COL_6: "0.04",
+                GOLDENPAY_STATUS_COL_6: "支付成功",
+                GOLDENPAY_FINISH_TIME_COL_6: "2026-06-30 23:52:00",
+            },
+        ])
+        gp_lk = build_goldenpay_lookup_6(
+            raw, GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6, GOLDENPAY_COLLECTION_AMOUNT_SRC_6)
+
+        result = enrich_admin_6(admin, None, None, gp_lk)
+        extra = result[result[MATCH_STATUS_COL_6] == "平台多余"].iloc[0]
+
+        self.assertEqual(extra[PLATFORM_SOURCE_COL_6], "GOLDENPAY")
+        # 平台多余行不回填 admin 订单号列（与 Betcat/Cashnewpay 一致），身份见平台流水号
+        self.assertEqual(extra[ADMIN_COLLECTION_JOIN_COL_6], "")
+        self.assertEqual(extra[PLATFORM_ORDER_NO_COL_6], "P-2")
+        self.assertEqual(extra[PLATFORM_AMOUNT_COL_6], "20")
+        self.assertEqual(extra[PLATFORM_STATUS_COL_6], "成功")
+
+    def test_goldenpay_priority_is_after_betcat(self):
+        admin = pd.DataFrame([{ADMIN_COLLECTION_JOIN_COL_6: "MORDER-1", "金额": "10"}])
+        betcat_raw = pd.DataFrame([{
+            BETCAT_JOIN_COL_6: "MORDER-1",
+            BETCAT_PLATFORM_NO_COL_6: "BOrder1",
+            BETCAT_AMOUNT_COL_6: "10",
+            BETCAT_STATUS_COL_6: "支付成功",
+            BETCAT_FEE_COL_6: "0.1",
+            BETCAT_PAY_TIME_COL_6: "2026-06-30T23:50:00-03:00",
+            BETCAT_CREATE_TIME_COL_6: "2026-06-30T23:49:00-03:00",
+        }])
+        betcat_lk = build_betcat_lookup_6(betcat_raw)
+        gp_raw = pd.DataFrame([{
+            GOLDENPAY_JOIN_COL_6: "MORDER-1",
+            GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6: "P-1",
+            GOLDENPAY_COLLECTION_AMOUNT_SRC_6: "10",
+            GOLDENPAY_FEE_COL_6: "0.02",
+            GOLDENPAY_STATUS_COL_6: "支付成功",
+            GOLDENPAY_FINISH_TIME_COL_6: "2026-06-30 23:51:12",
+        }])
+        gp_lk = build_goldenpay_lookup_6(
+            gp_raw, GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6, GOLDENPAY_COLLECTION_AMOUNT_SRC_6)
+
+        result = enrich_admin_6(admin, betcat_lk, None, gp_lk)
+        row = result.iloc[0]
+
+        # 双命中时 Betcat 优先于 Goldenpay
+        self.assertEqual(row[MATCH_STATUS_COL_6], "是")
+        self.assertEqual(row[PLATFORM_SOURCE_COL_6], "BETCAT")
+        self.assertEqual(row[PLATFORM_ORDER_NO_COL_6], "BOrder1")
 
 
 if __name__ == "__main__":

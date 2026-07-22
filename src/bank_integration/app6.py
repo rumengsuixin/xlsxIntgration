@@ -8,22 +8,24 @@
         betcat-payout_*      → Betcat 代付（多文件合并）
         Cashnewpay收款明细*  → Cashnewpay 代收
         Cashnewpay兑换明细*  → Cashnewpay 代付
+        Goldenpay收款明细*   → Goldenpay 代收（收/付表头不同，读取时归一化列名）
+        Goldenpay兑换明细*   → Goldenpay 代付
                   ↓
         scan_source_files_6()
                   ↓
         read_admin_collection_6 / read_admin_payout_6
-        read_betcat_6 / read_cashnewpay_6
+        read_betcat_6 / read_cashnewpay_6 / read_goldenpay_6
                   ↓
-        build_betcat_lookup_6 / build_cashnewpay_lookup_6
+        build_betcat_lookup_6 / build_cashnewpay_lookup_6 / build_goldenpay_lookup_6
                   ↓
         enrich_admin_6()  ← left-join 查找表（代收和代付各调用一次）
                   ↓
-        data/output/代收代付对账结果_{YYYYMMDD}.xlsx（5 个 sheet）
+        data/output/代收代付对账结果_{YYYYMMDD}.xlsx（6 个 sheet）
 
 对账逻辑：
-    代收：Admin收款.订单号 ↔ Betcat.MerOrderNo / Cashnewpay.商户订单号
-    代付：Admin兑换.订单号 ↔ Betcat.MerOrderNo / Cashnewpay.商户订单号
-    匹配优先级：Betcat > Cashnewpay
+    代收：Admin收款.订单号 ↔ Betcat.MerOrderNo / Cashnewpay.商户订单号 / Goldenpay.商户单号
+    代付：Admin兑换.订单号 ↔ Betcat.MerOrderNo / Cashnewpay.商户订单号 / Goldenpay.商户单号
+    匹配优先级：Betcat > Cashnewpay > Goldenpay
 """
 
 import logging
@@ -59,6 +61,19 @@ from .config6 import (
     CASHNEWPAY_STATE_DESC_COL_6,
     CASHNEWPAY_STATUS_COL_6,
     FEE_COL_6,
+    GOLDENPAY_AMOUNT_COL_6,
+    GOLDENPAY_COLLECTION_AMOUNT_SRC_6,
+    GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6,
+    GOLDENPAY_COLLECTION_SHEET_6,
+    GOLDENPAY_CREATE_TIME_COL_6,
+    GOLDENPAY_FEE_COL_6,
+    GOLDENPAY_FINISH_TIME_COL_6,
+    GOLDENPAY_JOIN_COL_6,
+    GOLDENPAY_PAYOUT_AMOUNT_SRC_6,
+    GOLDENPAY_PAYOUT_PLATFORM_NO_SRC_6,
+    GOLDENPAY_PAYOUT_SHEET_6,
+    GOLDENPAY_PLATFORM_NO_COL_6,
+    GOLDENPAY_STATUS_COL_6,
     INPUT_DIR_6,
     MATCH_STATUS_COL_6,
     OUTPUT_AMOUNT_DIFF_SHEET_6,
@@ -382,6 +397,21 @@ def read_cashnewpay_6(filepath: Path) -> pd.DataFrame:
     )
 
 
+def read_goldenpay_6(filepath: Path, *, preferred_sheet: str) -> pd.DataFrame:
+    """读取 Goldenpay 平台文件（格式自适应：.csv/.xls/.xlsx）。
+
+    收款(sheet="代收订单导出", 22 列)与兑换(sheet="代付订单导出", 17 列)列结构不同，
+    由调用方传入 preferred_sheet 区分；未命中时回退首个 sheet（样例均单 sheet）。
+    时间列为 Excel datetime 对象；关联键统一为"商户单号"。
+    """
+    return _read_source_table_6(
+        filepath,
+        preferred_sheet=preferred_sheet,
+        use_first_sheet=True,
+        label="Goldenpay",
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 去重工具
 # ─────────────────────────────────────────────────────────────────────────────
@@ -448,6 +478,39 @@ def build_cashnewpay_lookup_6(df: pd.DataFrame) -> pd.DataFrame:
     return result.set_index(CASHNEWPAY_JOIN_COL_6)
 
 
+def build_goldenpay_lookup_6(
+    df: pd.DataFrame,
+    platform_no_src: str,
+    amount_src: str,
+) -> pd.DataFrame:
+    """构建以 GOLDENPAY_JOIN_COL_6（商户单号）为索引的 Goldenpay 查找表。
+
+    收款/兑换的平台单号列与金额列名不同（收款：订单号/订单金额；兑换：订单编号/金额），
+    由 platform_no_src / amount_src 传入源列名，先归一化到规范列名再保留。
+    保留（规范名）：平台单号 / 金额 / 手续费 / 订单状态 / 完成时间 / 创建时间
+    """
+    df = df.rename(columns={
+        platform_no_src: GOLDENPAY_PLATFORM_NO_COL_6,
+        amount_src:      GOLDENPAY_AMOUNT_COL_6,
+    })
+    keep_cols = [c for c in [
+        GOLDENPAY_JOIN_COL_6,
+        GOLDENPAY_PLATFORM_NO_COL_6,
+        GOLDENPAY_AMOUNT_COL_6,
+        GOLDENPAY_FEE_COL_6,
+        GOLDENPAY_STATUS_COL_6,
+        GOLDENPAY_FINISH_TIME_COL_6,
+        GOLDENPAY_CREATE_TIME_COL_6,
+    ] if c in df.columns]
+
+    if GOLDENPAY_JOIN_COL_6 not in keep_cols:
+        logger.warning("【GOLDENPAY】缺少关联列 '%s'，返回空查找表", GOLDENPAY_JOIN_COL_6)
+        return pd.DataFrame()
+
+    result = _dedup_lookup_6(df[keep_cols], GOLDENPAY_JOIN_COL_6, "GOLDENPAY")
+    return result.set_index(GOLDENPAY_JOIN_COL_6)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 主匹配逻辑
 # ─────────────────────────────────────────────────────────────────────────────
@@ -456,12 +519,13 @@ def enrich_admin_6(
     admin_df: pd.DataFrame,
     betcat_lk: Optional[pd.DataFrame],
     cashnewpay_lk: Optional[pd.DataFrame],
+    goldenpay_lk: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """以 admin 为主表，left-join 两个查找表，追加 OUTPUT_NEW_COLS_6。
+    """以 admin 为主表，left-join 各平台查找表，追加 OUTPUT_NEW_COLS_6。
 
-    代收和代付均调用此函数（join key 相同：Admin.订单号 ↔ 平台.MerOrderNo/商户订单号）
+    代收和代付均调用此函数（join key 相同：Admin.订单号 ↔ 平台.MerOrderNo/商户订单号/商户单号）
 
-    匹配优先级：Betcat > Cashnewpay
+    匹配优先级：Betcat > Cashnewpay > Goldenpay
     """
     result = admin_df.copy()
     expected_rows = len(admin_df)
@@ -485,8 +549,9 @@ def enrich_admin_6(
 
     betcat_avail     = betcat_lk is not None     and not betcat_lk.empty
     cashnewpay_avail = cashnewpay_lk is not None and not cashnewpay_lk.empty
+    goldenpay_avail  = goldenpay_lk is not None  and not goldenpay_lk.empty
 
-    # 两个平台使用相同的 admin 侧关联键
+    # 各平台使用相同的 admin 侧关联键
     admin_join_col = (
         ADMIN_COLLECTION_JOIN_COL_6
         if ADMIN_COLLECTION_JOIN_COL_6 in admin_df.columns
@@ -497,6 +562,8 @@ def enrich_admin_6(
         result = _safe_merge(result, betcat_lk, admin_join_col, "_b_", "BETCAT")
     if cashnewpay_avail:
         result = _safe_merge(result, cashnewpay_lk, admin_join_col, "_c_", "CASHNEWPAY")
+    if goldenpay_avail:
+        result = _safe_merge(result, goldenpay_lk, admin_join_col, "_g_", "GOLDENPAY")
 
     match_status_list      = []
     platform_source_list   = []
@@ -526,10 +593,23 @@ def enrich_admin_6(
         c_ctime  = str(row.get(f"_c_{CASHNEWPAY_CREATE_TIME_COL_6}", "")).strip() if cashnewpay_avail else ""
         c_hit    = c_amt != ""
 
-        if b_hit and c_hit:
+        # ── Goldenpay 命中判断 ─────────────────────────────────────────────────
+        g_amt    = str(row.get(f"_g_{GOLDENPAY_AMOUNT_COL_6}",      "")).strip() if goldenpay_avail else ""
+        g_no     = str(row.get(f"_g_{GOLDENPAY_PLATFORM_NO_COL_6}", "")).strip() if goldenpay_avail else ""
+        g_status = str(row.get(f"_g_{GOLDENPAY_STATUS_COL_6}",      "")).strip() if goldenpay_avail else ""
+        g_fee    = str(row.get(f"_g_{GOLDENPAY_FEE_COL_6}",         "")).strip() if goldenpay_avail else ""
+        g_time   = str(row.get(f"_g_{GOLDENPAY_FINISH_TIME_COL_6}", "")).strip() if goldenpay_avail else ""
+        g_ctime  = str(row.get(f"_g_{GOLDENPAY_CREATE_TIME_COL_6}", "")).strip() if goldenpay_avail else ""
+        g_hit    = g_amt != ""
+
+        # 多平台同时命中时按优先级取第一个（各平台订单号互不重叠，正常不应发生）
+        hits = [name for name, hit in (
+            ("BETCAT", b_hit), ("CASHNEWPAY", c_hit), ("GOLDENPAY", g_hit)
+        ) if hit]
+        if len(hits) > 1:
             logger.warning(
-                "订单 %s 同时命中 BETCAT 和 CASHNEWPAY，取 BETCAT",
-                str(row.get(admin_join_col, "")).strip(),
+                "订单 %s 同时命中 %s，按优先级取 %s",
+                str(row.get(admin_join_col, "")).strip(), "/".join(hits), hits[0],
             )
 
         if b_hit:
@@ -552,6 +632,14 @@ def enrich_admin_6(
             platform_status_list.append(_normalize_platform_status_6("CASHNEWPAY", raw_status))
             fee_list.append(c_fee)
             transaction_date_list.append(_format_date_6(c_time) or _format_date_6(c_ctime))
+        elif g_hit:
+            match_status_list.append("是")
+            platform_source_list.append("GOLDENPAY")
+            platform_order_no_list.append(g_no)
+            platform_amount_list.append(g_amt)
+            platform_status_list.append(_normalize_platform_status_6("GOLDENPAY", g_status))
+            fee_list.append(g_fee)
+            transaction_date_list.append(_format_date_6(g_time) or _format_date_6(g_ctime))
         else:
             match_status_list.append("否")
             platform_source_list.append("")
@@ -584,6 +672,7 @@ def enrich_admin_6(
         admin_order_keys,
         betcat_lk if betcat_avail else None,
         cashnewpay_lk if cashnewpay_avail else None,
+        goldenpay_lk if goldenpay_avail else None,
     )
     if not extra_df.empty:
         result = pd.concat([result, extra_df], ignore_index=True)
@@ -596,6 +685,7 @@ def _build_platform_only_rows_6(
     admin_order_keys: Set[str],
     betcat_lk: Optional[pd.DataFrame],
     cashnewpay_lk: Optional[pd.DataFrame],
+    goldenpay_lk: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """构建平台有、admin 无的多余行（MATCH_STATUS_COL_6 = "平台多余"）。"""
     extra = []
@@ -642,6 +732,27 @@ def _build_platform_only_rows_6(
             row[PLATFORM_STATUS_COL_6]   = _normalize_platform_status_6("CASHNEWPAY", raw_status)
             row[FEE_COL_6]               = c_fee
             row[TRANSACTION_DATE_COL_6]  = _format_date_6(c_time)
+            extra.append(row)
+
+    # ── Goldenpay 多余行 ─────────────────────────────────────
+    if goldenpay_lk is not None:
+        for key in goldenpay_lk.index:
+            k = str(key).strip()
+            if not k or k in admin_order_keys:
+                continue
+            row = {c: "" for c in result_cols}
+            row[MATCH_STATUS_COL_6]      = "平台多余"
+            row[PLATFORM_SOURCE_COL_6]   = "GOLDENPAY"
+            g_no     = str(goldenpay_lk.at[key, GOLDENPAY_PLATFORM_NO_COL_6]).strip() if GOLDENPAY_PLATFORM_NO_COL_6 in goldenpay_lk.columns else ""
+            g_amt    = str(goldenpay_lk.at[key, GOLDENPAY_AMOUNT_COL_6]).strip()      if GOLDENPAY_AMOUNT_COL_6      in goldenpay_lk.columns else ""
+            g_status = str(goldenpay_lk.at[key, GOLDENPAY_STATUS_COL_6]).strip()      if GOLDENPAY_STATUS_COL_6      in goldenpay_lk.columns else ""
+            g_fee    = str(goldenpay_lk.at[key, GOLDENPAY_FEE_COL_6]).strip()         if GOLDENPAY_FEE_COL_6         in goldenpay_lk.columns else ""
+            g_time   = str(goldenpay_lk.at[key, GOLDENPAY_FINISH_TIME_COL_6]).strip() if GOLDENPAY_FINISH_TIME_COL_6 in goldenpay_lk.columns else ""
+            row[PLATFORM_ORDER_NO_COL_6] = g_no
+            row[PLATFORM_AMOUNT_COL_6]   = g_amt
+            row[PLATFORM_STATUS_COL_6]   = _normalize_platform_status_6("GOLDENPAY", g_status)
+            row[FEE_COL_6]               = g_fee
+            row[TRANSACTION_DATE_COL_6]  = _format_date_6(g_time)
             extra.append(row)
 
     if not extra:
@@ -879,16 +990,38 @@ def main() -> int:
         cashnewpay_exchange_lk = build_cashnewpay_lookup_6(raw)
         logger.info("Cashnewpay 兑换查找表共 %d 条", len(cashnewpay_exchange_lk))
 
+    # ── 读取 Goldenpay 收款（代收）────────────────────────────────────────────
+    goldenpay_collection_lk: Optional[pd.DataFrame] = None
+    if files["goldenpay_collection"]:
+        frames = [read_goldenpay_6(fp, preferred_sheet=GOLDENPAY_COLLECTION_SHEET_6)
+                  for fp in files["goldenpay_collection"]]
+        raw = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        goldenpay_collection_lk = build_goldenpay_lookup_6(
+            raw, GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6, GOLDENPAY_COLLECTION_AMOUNT_SRC_6)
+        logger.info("Goldenpay 收款查找表共 %d 条", len(goldenpay_collection_lk))
+
+    # ── 读取 Goldenpay 兑换（代付）────────────────────────────────────────────
+    goldenpay_exchange_lk: Optional[pd.DataFrame] = None
+    if files["goldenpay_exchange"]:
+        frames = [read_goldenpay_6(fp, preferred_sheet=GOLDENPAY_PAYOUT_SHEET_6)
+                  for fp in files["goldenpay_exchange"]]
+        raw = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        goldenpay_exchange_lk = build_goldenpay_lookup_6(
+            raw, GOLDENPAY_PAYOUT_PLATFORM_NO_SRC_6, GOLDENPAY_PAYOUT_AMOUNT_SRC_6)
+        logger.info("Goldenpay 兑换查找表共 %d 条", len(goldenpay_exchange_lk))
+
     # ── 代收对账 ──────────────────────────────────────────────────────────────
     if admin_collection is not None:
-        collection_result = enrich_admin_6(admin_collection, betcat_payment_lk, cashnewpay_collection_lk)
+        collection_result = enrich_admin_6(
+            admin_collection, betcat_payment_lk, cashnewpay_collection_lk, goldenpay_collection_lk)
         log_match_stats_6(collection_result, "代收")
     else:
         collection_result = pd.DataFrame(columns=OUTPUT_NEW_COLS_6)
 
     # ── 代付对账 ──────────────────────────────────────────────────────────────
     if admin_payout is not None:
-        payout_result = enrich_admin_6(admin_payout, betcat_payout_lk, cashnewpay_exchange_lk)
+        payout_result = enrich_admin_6(
+            admin_payout, betcat_payout_lk, cashnewpay_exchange_lk, goldenpay_exchange_lk)
         log_match_stats_6(payout_result, "代付")
     else:
         payout_result = pd.DataFrame(columns=OUTPUT_NEW_COLS_6)

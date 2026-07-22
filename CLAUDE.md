@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **代号2**:海外银行,源文件命名携带币种,汇总到 `银行汇总.xlsx`,余额表每行代表"银行+币种"组合
 - **代号3**:游戏订单匹配,admin 订单表与 Adyen / 华为 / Google Play 商户平台订单通过流水号关联,输出 `订单匹配结果_{YYYYMMDD}.xlsx`
 - **代号5**:代付订单对账,admin 代付订单与 IBFYPAY / SUPERPAY / WANGGUYPAY / 话费卡 / EPIN 通过订单号关联,输出 `代付对账结果_{YYYYMMDD}.xlsx`
-- **代号6**:代收代付对账(Betcat / Cashnewpay),admin 收款/兑换订单与平台关联,输出 `代收代付对账结果_{YYYYMMDD}.xlsx`
+- **代号6**:代收代付对账(Betcat / Cashnewpay / Goldenpay),admin 收款/兑换订单与平台关联,输出 `代收代付对账结果_{YYYYMMDD}.xlsx`
 
 ## 文档维护原则(铁律)
 
@@ -96,9 +96,10 @@ tests/test_bank_integration.py
 - **admin 必须存在**:找不到 admin 文件时直接退出并打印错误
 
 ### 代号6
-- **源文件目录**:`data/input/6/`,平铺放置;按 stem 小写前缀识别:`admin收款` / `admin兑换` / `betcat-payment` / `betcat-payout` / `cashnewpay收款` / `cashnewpay兑换`
+- **源文件目录**:`data/input/6/`,平铺放置;按 stem 小写前缀识别:`admin收款` / `admin兑换` / `betcat-payment` / `betcat-payout` / `cashnewpay收款` / `cashnewpay兑换` / `goldenpay收款` / `goldenpay兑换`
 - **多格式自适应**:各平台源文件支持 `.csv/.xls/.xlsx` 任一格式,由 `_read_source_table_6` 按扩展名分派(`.csv`→多编码 utf-8-sig/gbk/gb18030/utf-8、`.xls`→xlrd、`.xlsx`→openpyxl);扫描白名单已放行三格式
-- **关联键**:admin.`订单号` ↔ Betcat.`MerOrderNo` / Cashnewpay.`商户订单号`;匹配优先级 Betcat > Cashnewpay
+- **关联键**:admin.`订单号` ↔ Betcat.`MerOrderNo` / Cashnewpay.`商户订单号` / Goldenpay.`商户单号`;匹配优先级 Betcat > Cashnewpay > Goldenpay
+- **Goldenpay 收/付表头不同**:与 Betcat/Cashnewpay「收付同表头」不同,Goldenpay 收款(sheet `代收订单导出`,金额列 `订单金额`、平台单号列 `订单号`)与兑换(sheet `代付订单导出`,金额列 `金额`、平台单号列 `订单编号`)列名不一致,`build_goldenpay_lookup_6` 读取时将金额/平台单号列**归一化**为统一列名,`enrich_admin_6` 才用一套常量引用
 - **admin 必须存在**:代收/代付 admin 均缺失时直接退出
 
 ## 日期格式支持

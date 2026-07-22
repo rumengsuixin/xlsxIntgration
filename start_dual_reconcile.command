@@ -10,6 +10,7 @@ echo "请将以下源文件放入 data/input/6/ 后运行："
 echo "  Admin收款订单明细*.xlsx / Admin兑换订单明细*.xlsx"
 echo "  betcat-payment_*.csv / betcat-payout_*.csv"
 echo "  Cashnewpay收款明细*.xlsx / Cashnewpay兑换明细*.xlsx"
+echo "  Goldenpay收款明细*.xlsx / Goldenpay兑换明细*.xlsx"
 echo ""
 
 read -p "准备好后按回车开始对账"

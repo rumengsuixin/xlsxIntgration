@@ -51,11 +51,12 @@ src/bank_integration/
     balances.py / workbook.py # 提取期末余额、复制工作副本并写入子表
     app.py ~ app6.py          # 各代号 main() 主流程
     pdf_daily_balance.py      # 代号2 华美银行 PDF 解析
-    platform_spec.py          # 代号6 平台外置:声明数据类/CANON/OutputSchema/handler 注册表
-    platform_engine.py        # 代号6 平台外置:通用读取/归一化查找表/按优先级 enrich(+低层读取原语)
-    platform_loader.py        # 代号6 平台外置:定位 platforms/、内置→JSON→插件深合并
+    platform_spec.py          # 平台外置:声明数据类/CANON/OutputColumn/OutputSchema/handler 注册表
+    platform_engine.py        # 平台外置:通用读取/查找表/enrich_admin_generic(代号6)/enrich_admin_columnar(代号5)
+    platform_loader.py        # 平台外置:定位 platforms/、内置→JSON→插件深合并
+    platform_handlers_5.py    # 代号5 平台外置:GenericPayout5 + IBFYPAY/EPIN handler + SCHEMA_5
 template/1|2/                 # 代号1/2 模板(必须预先存在)
-platforms/                    # 代号6 平台外置配置(exe 旁,免重打包):6/*.json 声明式 + plugins/*.py 插件
+platforms/                    # 平台外置配置(exe 旁,免重打包):5|6/*.json 声明式 + plugins/*.py 插件
 data/
     input/                    # 代号1 源文件;input/2 ~ input/6 各代号源文件;input/raw 原始样例(不扫描)
     output/                   # 各代号最终输出(汇总/匹配/对账文件)
@@ -98,6 +99,7 @@ tests/test_bank_integration.py / test_platform_plugin_6.py
 - **手续费**:IBFYPAY = 代付金额 − 手续费(源文件已有);SUPERPAY = abs(代付金额 − 实收);WANGGUYPAY = 源文件 `手续费(try)` 列
 - **平台多余行**:平台有、admin 无的记录,`是否匹配 = "平台多余"`,`机构` 填平台名称
 - **admin 必须存在**:找不到 admin 文件时直接退出并打印错误
+- **平台配置外置化(护栏)**:代号5 用**列式引擎** `platform_engine.enrich_admin_columnar`(与代号6 的 `enrich_admin_generic` 物理隔离,按平台**原生列名**取值,不走 CANON);内置声明 `config5.BUILTIN_SPECS_5`,取值逻辑在 `platform_handlers_5`(`GenericPayout5Handler` 通用 + `IbfypayHandler`/`EpinHandler` 覆盖 `match_values`),输出计划 `SCHEMA_5`。`app5.enrich_admin_5` 是薄壳,**其 6 参位置签名被单测依赖不得改**;`build_*_lookup_5`/`read_*_5` 亦被单测依赖。**加结构类似 SUPERPAY 的直连平台改 `platforms/5/*.json` 不改 app5**;IBFYPAY/WANGGUYPAY/EPIN/PHONECARD 的 read/build 仍在 app5 由 `main` 按 `BUILTIN_PLATFORM_KEYS_5` 分派,外部/插件平台走通用 handler。`platforms/5/*.json` 须与 `BUILTIN_SPECS_5` 一致(测试 `test_repo_json_matches_builtin_specs` code"5" 守护)。详见 [docs/平台插件参考.html](docs/平台插件参考.html)
 
 ### 代号6
 - **源文件目录**:`data/input/6/`,平铺放置;按 stem 小写前缀识别:`admin收款` / `admin兑换` / `betcat-payment` / `betcat-payout` / `cashnewpay收款` / `cashnewpay兑换` / `goldenpay收款` / `goldenpay兑换`

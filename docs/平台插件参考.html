@@ -104,8 +104,15 @@ def build_lookup(self, spec, direction, df) -> pandas.DataFrame: ...</pre>
 <h2>4. 唯一仍需重打包的例外</h2>
 <p>当新平台需要一个<b>未打进包的新第三方库</b>时(如 <code>.xlsb</code> 需 <code>pyxlsb</code>、<code>.parquet</code> 需 <code>pyarrow</code>)才需重打包。缓解:纯 Python 依赖放 <code>platforms/vendor/</code>(加载器自动 prepend <code>sys.path</code>);约定新平台优先导出 CSV/XLSX(<code>pandas/openpyxl/xlrd</code> 已在包内,覆盖绝大多数)。此外,输出表结构/汇总口径/admin 主表读取仍是代码,不在插件覆盖范围。</p>
 
-<h2>5. 推广到其它代号（规划）</h2>
-<p>基础设施 <code>platform_spec/engine/loader</code> 与代号无关,<code>load_platform_registry(code)</code> 传不同 <code>code</code> 即可复用;各代号只需提供自己的 <code>BUILTIN_SPECS_{n}</code> 与(必要时)自定义 handler。推广顺序建议 6→5→3→1/2(代号1/2 的农行正则/中行日期范围/华美 PDF 等硬编码分支需先降维成声明式选项或 handler)。</p>
+<h2>5. 代号5(代付对账)已外置化</h2>
+<p>基础设施 <code>platform_spec/engine/loader</code> 与代号无关,<code>load_platform_registry(code)</code> 传不同 <code>code</code> 即可复用。<strong>代号5 已推广落地</strong>,与代号6 的差异:</p>
+<ul>
+  <li>用<strong>列式引擎</strong> <code>enrich_admin_columnar</code>(不是代号6 的 <code>enrich_admin_generic</code>),按平台<strong>原生列名</strong>取值(不走 CANON 重命名),支持多 admin 关联键、币种、到账金额、机构、手续费三模式(<code>fee_mode</code>/<code>arrive_mode</code>)、EPIN 机构门槛(<code>admin_match_filter</code>);输出列由 <code>SCHEMA_5.column_plan</code> 声明。</li>
+  <li>内置 5 平台:<strong>SUPERPAY</strong> 纯声明(<code>handler:"generic5"</code>);<strong>IBFYPAY/WANGGUYPAY/EPIN/PHONECARD</strong> 挂 <code>platform_handlers_5</code> 的自定义 handler(其 read/build 保留在 <code>app5</code>,由 <code>main</code> 按 <code>BUILTIN_PLATFORM_KEYS_5</code> 分派)。</li>
+  <li><strong>加结构类似 SUPERPAY 的新直连平台</strong>:在 <code>platforms/5/</code> 放一个 JSON(声明 <code>join_col</code>/<code>admin_join_col</code>/<code>columns</code>/<code>fee_mode</code>/<code>arrive_mode</code>/<code>currency_col|default</code>/<code>status_map</code>/<code>directions.payout.prefixes</code>),<code>main</code> 通过通用 handler 自动扫描+建表+匹配,免打包。疑难平台走 <code>platforms/plugins/*.py</code>(<code>CODES=["5"]</code>)。</li>
+  <li>代号5 仅支持 <code>.xls/.xlsx</code>(不支持 CSV);余额汇总/匹配金额差异对比属 app5 输出形态,不在声明层。</li>
+</ul>
+<p>后续 3→1/2 可同法推广(代号1/2 的农行正则/中行日期范围/华美 PDF 等硬编码分支需先降维成声明式选项或 handler)。</p>
 
 </body>
 </html>

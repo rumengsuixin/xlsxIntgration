@@ -158,10 +158,13 @@ def _load_plugins(plugins_dir: Path, code: str, registry: Dict[str, dict]) -> No
 
 
 def _builtin_specs_for(code: str) -> List[dict]:
-    """取某代号的内置默认声明（当前仅代号6 试点）。"""
+    """取某代号的内置默认声明。"""
     if str(code) == "6":
         from .config6 import BUILTIN_SPECS_6
         return BUILTIN_SPECS_6
+    if str(code) == "5":
+        from .config5 import BUILTIN_SPECS_5
+        return BUILTIN_SPECS_5
     return []
 
 

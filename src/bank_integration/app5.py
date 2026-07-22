@@ -31,6 +31,9 @@ from typing import List, Optional, Set
 import pandas as pd
 
 from .config import OUTPUT_DIR
+from .platform_engine import enrich_admin_columnar
+from .platform_loader import load_platform_registry
+from .platform_handlers_5 import SCHEMA_5  # noqa: F401  （导入即注册代号5 handler）
 from .config5 import (
     INPUT_DIR_5,
     OUTPUT_FILE_TEMPLATE_5,
@@ -1191,7 +1194,21 @@ def enrich_admin_5(
         ↔ epin_lk.index 关联；build_epin_lookup_5 实现后生效
       - 任一平台命中 → 是否匹配=是，均未命中 → 是否匹配=否
       - 追加平台多余行（_build_platform_only_rows_5）
+
+    （薄壳）已改为委派通用列式引擎 enrich_admin_columnar;保留旧位置签名供既有测试/调用。
+    匹配优先级、多 admin 关联键、币种/到账/机构、逐平台取值均由注册表 + handler 驱动。
     """
+    specs = load_platform_registry("5")
+    lookups = {
+        "IBFYPAY": ibfpay_lk,
+        "SUPERPAY": superpay_lk,
+        "WANGGUYPAY": wangguypay_lk,
+        "PHONECARD": phonecard_lk,
+        "EPIN": epin_lk,
+    }
+    return enrich_admin_columnar(admin_df, lookups, specs, SCHEMA_5)
+
+    # ── 以下为旧逐平台硬编码实现，阶段4 删除（当前不可达）─────────────────────
     result = admin_df.copy()
     expected_rows = len(admin_df)
 

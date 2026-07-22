@@ -53,6 +53,20 @@ class PlatformSpec:
     directions: Dict[str, DirectionSpec] = field(default_factory=dict)
     enabled: bool = True
 
+    # ── 代号5(列式 enrich)扩展字段：全部可选，缺省=代号6 语义，故对代号6 无影响 ──
+    admin_join_col: Optional[str] = None          # 该平台在 admin 侧的关联列（None→用 schema 候选）
+    currency_col: Optional[str] = None            # 币种来源列（None→用 currency_default）
+    currency_default: str = ""                    # 无列时的默认币种
+    fee_mode: str = "column"                       # column | amount_minus_arrive | none
+    arrive_mode: str = "none"                      # column | amount_minus_fee | equals_amount | none
+    org_source: str = "admin"                      # 命中行机构来源: admin(保留) | platform(用平台名)
+    org_name: Optional[str] = None                # 平台名（多余行/org_source=platform 用；None→回退 key）
+    admin_match_filter: Optional[dict] = None     # 命中前置门槛 {"col":.., "pattern":..}（EPIN 机构纯数字）
+    extra_backfill_admin_col: object = "__default__"  # 多余行回填的 admin 列;"__default__"=admin_join_col;None=不回填
+    balance_handler: bool = False                 # handler 是否产出余额行
+    emits_amount_diff: bool = False               # 是否参与"匹配金额差异"sheet
+    required_columns: List[str] = field(default_factory=list)  # 读取时按此选含全部所需列的 sheet
+
     def cols_for(self, direction: str) -> Dict[str, str]:
         """顶层 columns 与方向 columns 逐键合并（方向覆盖顶层）。"""
         merged = dict(self.columns)
@@ -91,7 +105,33 @@ class PlatformSpec:
             status_prefix_map=dict(data.get("status_prefix_map", {})),
             directions=directions,
             enabled=bool(data.get("enabled", True)),
+            admin_join_col=data.get("admin_join_col"),
+            currency_col=data.get("currency_col"),
+            currency_default=data.get("currency_default", ""),
+            fee_mode=data.get("fee_mode", "column"),
+            arrive_mode=data.get("arrive_mode", "none"),
+            org_source=data.get("org_source", "admin"),
+            org_name=data.get("org_name"),
+            admin_match_filter=data.get("admin_match_filter"),
+            extra_backfill_admin_col=data.get("extra_backfill_admin_col", "__default__"),
+            balance_handler=bool(data.get("balance_handler", False)),
+            emits_amount_diff=bool(data.get("emits_amount_diff", False)),
+            required_columns=list(data.get("required_columns", [])),
         )
+
+
+@dataclass
+class OutputColumn:
+    """代号5 列式 enrich 的单个输出列声明。
+
+    source 填充策略(由 enrich_admin_columnar 解释):
+      match_status / platform_no / amount / currency / status / fee / arrive /
+      transaction_date / org / empty / handler:<平台key>(委派 handler.derive)
+    """
+
+    name: str                 # 输出列名
+    source: str               # 填充策略
+    in_extra: bool = True     # 平台多余行是否也填此列(EPIN 倒推汇率/计算金额设 False)
 
 
 @dataclass
@@ -112,6 +152,9 @@ class OutputSchema:
     match_yes: str = "是"
     match_no: str = "否"
     match_extra: str = "平台多余"
+    # ── 代号5(列式 enrich)扩展：None 时走代号6 的 7 列旧逻辑 ──
+    column_plan: Optional[List[OutputColumn]] = None   # 非 None → 列式输出计划(代号5)
+    org_col: Optional[str] = None                      # 命中行覆盖 admin 机构列(代号5="机构")
 
     def output_cols(self) -> List[str]:
         """按固定顺序返回 7 个新增列（与各代号 OUTPUT_NEW_COLS 顺序一致）。"""

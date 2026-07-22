@@ -10,6 +10,7 @@
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -99,6 +100,7 @@ def select_sheet(
     preferred_sheet: Optional[str],
     *,
     fallback_join_col: Optional[str] = None,
+    required_columns: Optional[List[str]] = None,
     use_first_sheet: bool = False,
     label: str = "",
     filename: str = "",
@@ -106,6 +108,7 @@ def select_sheet(
     """在 Excel 多 sheet 中选择目标 sheet。
 
     - 命中 preferred_sheet 直接返回；
+    - 否则传了 required_columns → 遍历找含全部所需列的 sheet（找不到抛 ValueError）；
     - 否则传了 fallback_join_col → 遍历找含该列的 sheet（找不到抛 ValueError）；
     - 否则 use_first_sheet=True → 用首个 sheet 并打 warning；
     - 均不适用（如 preferred_sheet 为 None）→ 兜底用首个 sheet。
@@ -113,6 +116,25 @@ def select_sheet(
     sheet_names = xls.sheet_names
     if preferred_sheet and preferred_sheet in sheet_names:
         return preferred_sheet
+
+    if required_columns:
+        for s in sheet_names:
+            try:
+                preview = pd.read_excel(xls, sheet_name=s, nrows=0, dtype=str)
+                cols = normalize_columns(preview.columns)
+                if all(rc in cols for rc in required_columns):
+                    if s != preferred_sheet:
+                        logger.warning(
+                            "%s文件未命中 sheet '%s'，回退使用含所需列的 sheet '%s'",
+                            label, preferred_sheet, s,
+                        )
+                    return s
+            except Exception:
+                continue
+        raise ValueError(
+            f"{label}文件 {filename} 中找不到 sheet '{preferred_sheet}' "
+            f"或含所需列 {required_columns} 的 sheet，可用 sheet: {sheet_names}"
+        )
 
     if fallback_join_col is not None:
         for s in sheet_names:
@@ -147,6 +169,7 @@ def read_source_table(
     *,
     preferred_sheet: Optional[str] = None,
     fallback_join_col: Optional[str] = None,
+    required_columns: Optional[List[str]] = None,
     use_first_sheet: bool = False,
     label: str = "",
 ) -> pd.DataFrame:
@@ -166,6 +189,7 @@ def read_source_table(
                 xls,
                 preferred_sheet,
                 fallback_join_col=fallback_join_col,
+                required_columns=required_columns,
                 use_first_sheet=use_first_sheet,
                 label=label,
                 filename=filepath.name,
@@ -457,3 +481,138 @@ register_handler("generic", GenericHandler())
 def resolve_handler(spec: PlatformSpec):
     """取 spec.handler 对应的 handler，缺失回退 generic。"""
     return get_handler(spec.handler) or get_handler("generic")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 列式 enrich（代号5：多 admin 关联键 / 币种 / 到账 / 机构 / 逐平台 handler 取值）
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# 与代号6 的 enrich_admin_generic 物理隔离——代号6 代码路径零触碰。
+# 控制流（merge / 命中 / 优先级 / 平台多余行 / 组装）由引擎掌控，
+# 逐平台取值委派给 handler 的 is_hit / match_values / extra_values；
+# 声明式平台用 platform_handlers_5.GenericPayout5Handler 的通用取值。
+# 输出列由 schema.column_plan（List[OutputColumn]）声明，source 为逻辑字段名。
+
+def normalize_currency(value: object) -> str:
+    """清洗平台币种显示值（strip + 大写）。"""
+    return str(value or "").strip().upper()
+
+
+def _admin_join_of(spec: PlatformSpec, schema: OutputSchema, admin_df: pd.DataFrame) -> str:
+    """该平台在 admin 侧的关联列：spec.admin_join_col 优先，否则用 schema 候选。"""
+    if spec.admin_join_col:
+        return spec.admin_join_col
+    return next(
+        (c for c in schema.admin_join_candidates if c in admin_df.columns),
+        schema.admin_join_candidates[0],
+    )
+
+
+def enrich_admin_columnar(admin_df, lookups, specs, schema) -> pd.DataFrame:
+    """以 admin 为主表，按各平台自身 admin 关联键 left-join，追加 column_plan 声明的列。
+
+    - specs 按 priority 升序;lookups 以 spec.key 索引(原生列查找表),None/空跳过。
+    - 逐行按优先级取第一个命中的平台(handler.is_hit),命中值由 handler.match_values 提供。
+    - schema.org_col 存在时,命中行用 handler 返回的 org 覆盖 admin 机构列;未命中保留 admin 原值。
+    - 结尾丢弃全部内部前缀列,追加 column_plan 列 + 平台多余行。
+    """
+    result = admin_df.copy()
+    expected_rows = len(admin_df)
+    plan = schema.column_plan or []
+
+    active = [
+        s for s in specs
+        if lookups.get(s.key) is not None and not lookups[s.key].empty
+    ]
+
+    for s in active:
+        result = _safe_merge(
+            result, lookups[s.key], _admin_join_of(s, schema, admin_df),
+            _prefix(s.key), s.key, expected_rows,
+        )
+
+    col_lists: Dict[str, List[str]] = {c.name: [] for c in plan}
+    org_list: List[str] = []
+
+    for _, row in result.iterrows():
+        chosen = None
+        hit_keys = []
+        for s in active:
+            h = resolve_handler(s)
+            if h.is_hit(s, row, _prefix(s.key)):
+                hit_keys.append(s.key)
+                if chosen is None:
+                    chosen = s
+        if len(hit_keys) > 1:
+            logger.warning(
+                "订单 %s 同时命中 %s，按优先级取 %s",
+                str(row.get(_admin_join_of(chosen, schema, admin_df), "")).strip(),
+                "/".join(hit_keys), hit_keys[0],
+            )
+
+        admin_org = str(row.get(schema.org_col, "")) if schema.org_col else ""
+        if chosen is not None:
+            vals = resolve_handler(chosen).match_values(chosen, row, _prefix(chosen.key), admin_org)
+        else:
+            vals = {"match_status": schema.match_no}
+
+        for c in plan:
+            col_lists[c.name].append(vals.get(c.source, ""))
+        if schema.org_col:
+            org_list.append(vals.get("org", admin_org) if chosen is not None else admin_org)
+
+    # 还原为仅 admin 原始列(丢弃全部内部前缀列),覆盖机构列,追加输出列
+    admin_cols = list(admin_df.columns)
+    result = result[admin_cols].copy()
+    if schema.org_col and schema.org_col in result.columns:
+        result[schema.org_col] = org_list
+    for c in plan:
+        result[c.name] = col_lists[c.name]
+
+    result_cols = list(result.columns)
+    extra_df = _build_platform_only_rows_columnar(result_cols, admin_df, lookups, active, schema)
+    if not extra_df.empty:
+        result = pd.concat([result, extra_df], ignore_index=True)
+
+    return result
+
+
+def _build_platform_only_rows_columnar(result_cols, admin_df, lookups, active_specs, schema) -> pd.DataFrame:
+    """平台有、admin 无的多余行(match_status=平台多余),取值委派 handler.extra_values。"""
+    extra: List[dict] = []
+    plan = schema.column_plan or []
+
+    for s in active_specs:
+        lk = lookups.get(s.key)
+        if lk is None or lk.empty:
+            continue
+        handler = resolve_handler(s)
+        ajc = _admin_join_of(s, schema, admin_df)
+        admin_keys = (
+            {str(v).strip() for v in admin_df[ajc] if str(v).strip()}
+            if ajc in admin_df.columns else set()
+        )
+        backfill = (
+            s.admin_join_col if s.extra_backfill_admin_col == "__default__"
+            else s.extra_backfill_admin_col
+        )
+        for key in lk.index:
+            k = str(key).strip()
+            if not k or k in admin_keys:
+                continue
+            vals = handler.extra_values(s, lk.loc[key], k)
+            row = {c: "" for c in result_cols}
+            row[schema.match_status_col] = schema.match_extra
+            if schema.org_col:
+                row[schema.org_col] = vals.get("org", s.org_name or s.key)
+            if backfill:
+                row[backfill] = k
+            for c in plan:
+                if not c.in_extra or c.source == "match_status":
+                    continue
+                row[c.name] = vals.get(c.source, "")
+            extra.append(row)
+
+    if not extra:
+        return pd.DataFrame(columns=result_cols)
+    return pd.DataFrame(extra, columns=result_cols)

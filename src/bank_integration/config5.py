@@ -201,3 +201,159 @@ EPIN_ODEMELER_AMOUNT_COL_5        = "付款金额(USD)"
 EPIN_ODEMELER_USER_COL_5          = "用户"
 EPIN_ODEMELER_BEGIN_BALANCE_COL_5 = "付款前余额(USD)"
 EPIN_ODEMELER_END_BALANCE_COL_5   = "付款后余额(USD)"
+
+# ── 平台状态映射（原始→标准，IBFYPAY 状态由 handler 特判不入表）──────────────
+# 由 app5._normalize_platform_status_5 与外置化引擎共用（单一事实来源）。
+PLATFORM_STATUS_MAP_5 = {
+    "SUPERPAY": {
+        "代付成功": "成功",
+        "代付失败": "失败",
+        "代付关闭": "关闭",
+    },
+    "WANGGUYPAY": {
+        "付款成功": "成功",
+        "付款失败": "失败",
+        "处理中": "处理中",
+        WANGGUYPAY_FUND_STATUS_5: "成功",
+    },
+    "PHONECARD": {
+        "已完成": "成功",
+        "成功": "成功",
+        "失败": "失败",
+        "处理中": "处理中",
+        "关闭": "关闭",
+    },
+    "EPIN": {
+        "Başarılı":  "成功",    # 土耳其语"成功"
+        "Başarısız": "失败",    # 土耳其语"失败"
+        "Beklemede": "处理中",  # 土耳其语"等待中"
+        "İptal":     "关闭",    # 土耳其语"取消"
+    },
+}
+
+# ── 内置平台声明（外置化真值来源）──────────────────────────────────────────────
+# 代号5 用列式 enrich（platform_engine.enrich_admin_columnar），按平台原生列名取值。
+# 优先级 IBFYPAY(10) > SUPERPAY(20) > WANGGUYPAY(30) > PHONECARD(40) > EPIN(50)，
+# 与旧硬编码链一致。SUPERPAY 纯声明(handler=generic5)；其余各挂自定义 handler。
+IBFYPAY_REJECTED_COL_5 = "_ibfpay_rejected"   # build_ibfpay_lookup 产出的驳回标记内部列
+IBFYPAY_AMOUNT_LOOKUP_COL_5 = "代付金额"       # build_ibfpay_lookup 归一后的代付金额列(非源"变动金额")
+IBFYPAY_FEE_LOOKUP_COL_5    = "手续费"          # build_ibfpay_lookup 归一后的手续费列
+
+BUILTIN_SPECS_5 = [
+    {
+        "key": "IBFYPAY",
+        "priority": 10,
+        "handler": "ibfpay",
+        "join_col": IBFYPAY_JOIN_COL_5,
+        "admin_join_col": IBFYPAY_ADMIN_JOIN_COL_5,
+        "sheet": IBFYPAY_SHEET_5,
+        "currency_default": IBFYPAY_DEFAULT_CURRENCY_5,
+        "fee_mode": "column",
+        "arrive_mode": "amount_minus_fee",
+        "org_source": "admin",
+        "org_name": "IBFYPAY",
+        "extra_backfill_admin_col": None,      # IBFYPAY 多余行不回填 admin 列
+        "balance_handler": True,
+        "columns": {
+            "amount":      IBFYPAY_AMOUNT_LOOKUP_COL_5,   # 代付金额(build 归一)
+            "fee":         IBFYPAY_FEE_LOOKUP_COL_5,       # 手续费(build 归一)
+            "finish_time": IBFYPAY_TIME_COL_5,
+        },
+        "directions": {"payout": {"prefixes": PLATFORM_PREFIXES_5["ibfpay"]}},
+    },
+    {
+        "key": "SUPERPAY",
+        "priority": 20,
+        "handler": "generic5",
+        "join_col": SUPERPAY_JOIN_COL_5,
+        "admin_join_col": ADMIN_JOIN_COL_5,
+        "sheet": SUPERPAY_SHEET_5,
+        "required_columns": [SUPERPAY_JOIN_COL_5, SUPERPAY_AMOUNT_COL_5, SUPERPAY_STATUS_COL_5],
+        "currency_col": SUPERPAY_CURRENCY_COL_5,
+        "fee_mode": "amount_minus_arrive",
+        "arrive_mode": "column",
+        "org_source": "admin",
+        "status_map": PLATFORM_STATUS_MAP_5["SUPERPAY"],
+        "columns": {
+            "platform_no": SUPERPAY_PLATFORM_NO_COL_5,
+            "amount":      SUPERPAY_AMOUNT_COL_5,
+            "arrive_amount": SUPERPAY_ACTUAL_COL_5,
+            "fee":         SUPERPAY_FEE_TOTAL_COL_5,
+            "status":      SUPERPAY_STATUS_COL_5,
+            "finish_time": SUPERPAY_FINISH_TIME_COL_5,
+            "create_time": SUPERPAY_CREATE_TIME_COL_5,
+        },
+        "directions": {"payout": {"prefixes": PLATFORM_PREFIXES_5["superpay"]}},
+    },
+    {
+        "key": "WANGGUYPAY",
+        "priority": 30,
+        "handler": "wangguypay",
+        "join_col": WANGGUYPAY_PLATFORM_NO_COL_5,
+        "admin_join_col": ADMIN_TP_ORDER_COL_5,
+        "currency_default": WANGGUYPAY_DEFAULT_CURRENCY_5,
+        "fee_mode": "column",
+        "arrive_mode": "column",
+        "org_source": "admin",
+        "org_name": "WANGGUYPAY",
+        "balance_handler": True,
+        "status_map": PLATFORM_STATUS_MAP_5["WANGGUYPAY"],
+        "columns": {
+            "platform_no": WANGGUYPAY_PLATFORM_NO_COL_5,
+            "amount":      WANGGUYPAY_AMOUNT_COL_5,
+            "arrive_amount": WANGGUYPAY_ARRIVE_COL_5,
+            "fee":         WANGGUYPAY_FEE_COL_5,
+            "status":      WANGGUYPAY_STATUS_COL_5,
+            "finish_time": WANGGUYPAY_FINISH_TIME_COL_5,
+            "create_time": WANGGUYPAY_CREATE_TIME_COL_5,
+        },
+        "directions": {"payout": {"prefixes": PLATFORM_PREFIXES_5["wangguypay"]}},
+    },
+    {
+        "key": "PHONECARD",
+        "priority": 40,
+        "handler": "phonecard",
+        "join_col": PHONECARD_JOIN_COL_5,
+        "admin_join_col": ADMIN_JOIN_COL_5,
+        "currency_default": "",
+        "fee_mode": "none",
+        "arrive_mode": "equals_amount",
+        "org_source": "platform",
+        "org_name": PHONECARD_PLATFORM_NAME_5,
+        "status_map": PLATFORM_STATUS_MAP_5["PHONECARD"],
+        "columns": {
+            "platform_no": PHONECARD_PLATFORM_NO_COL_5,
+            "amount":      PHONECARD_AMOUNT_COL_5,
+            "status":      PHONECARD_STATUS_COL_5,
+            "finish_time": PHONECARD_DATE_COL_5,
+        },
+        "directions": {"payout": {"prefixes": PLATFORM_PREFIXES_5["phonecard"]}},
+    },
+    {
+        "key": "EPIN",
+        "priority": 50,
+        "handler": "epin",
+        "join_col": EPIN_PINLER_PIN_CODE_COL_5,
+        "admin_join_col": EPIN_ADMIN_JOIN_COL_5,
+        "currency_default": EPIN_DEFAULT_CURRENCY_5,
+        "fee_mode": "none",
+        "arrive_mode": "equals_amount",
+        "org_source": "platform",
+        "org_name": EPIN_PLATFORM_NAME_5,
+        "admin_match_filter": {"col": ADMIN_ORG_COL_5, "pattern": EPIN_ORG_PATTERN_5},
+        "emits_amount_diff": True,
+        "balance_handler": True,
+        "status_map": PLATFORM_STATUS_MAP_5["EPIN"],
+        "columns": {
+            "platform_no": EPIN_SIPARISLER_ORDER_ID_COL_5,
+            "amount":      EPIN_SIPARISLER_UNIT_PRICE_COL_5,
+            "status":      EPIN_SIPARISLER_STATUS_COL_5,
+            "finish_time": EPIN_SIPARISLER_CONFIRM_TIME_COL_5,
+        },
+        "handler_params": {
+            "pinler_prefixes": PLATFORM_PREFIXES_5["epin_pinler"],
+            "odemeler_prefixes": PLATFORM_PREFIXES_5["epin_odemeler"],
+        },
+        "directions": {"payout": {"prefixes": PLATFORM_PREFIXES_5["epin_siparisler"]}},
+    },
+]

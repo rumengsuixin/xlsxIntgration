@@ -190,3 +190,92 @@ SUMMARY_COUNT_COL_6   = "笔数"
 SUMMARY_AMOUNT_COL_6  = "金额合计"
 SUMMARY_FEE_COL_6     = "手续费合计"
 SUMMARY_ARRIVE_COL_6  = "到账金额合计"  # 金额合计 - 手续费合计
+
+# ── Admin 文件识别前缀（供 scan 独立识别主表，不属于"平台"注册表）──────────────
+ADMIN_COLLECTION_PREFIXES_6 = PLATFORM_PREFIXES_6["admin_collection"]
+ADMIN_PAYOUT_PREFIXES_6     = PLATFORM_PREFIXES_6["admin_payout"]
+
+# ── 内置平台声明（外置化的"真值来源"）──────────────────────────────────────────
+# 用上方现有常量拼装，避免重复硬编码字符串导致漂移。platform_loader 读取它作为
+# 默认注册表，再叠加 platforms/6/*.json 与 platforms/plugins/*.py（外部可覆盖/新增）。
+# 规范字段名（columns / directions.<dir>.columns 的键）取自 platform_spec.CANON：
+#   platform_no / amount / fee / status / status_desc / finish_time / create_time
+# Goldenpay 收/付平台单号列与金额列名不同，用 directions.<dir>.columns 覆盖，
+# 通用引擎据此归一化，无需再写命令式 rename。
+BUILTIN_SPECS_6: list = [
+    {
+        "key": "BETCAT",
+        "priority": 10,
+        "join_col": BETCAT_JOIN_COL_6,
+        "handler": "generic",
+        "use_first_sheet": False,          # 无 sheet 约定，取首个 sheet（不打 warning）
+        "columns": {
+            "platform_no":  BETCAT_PLATFORM_NO_COL_6,
+            "amount":       BETCAT_AMOUNT_COL_6,
+            "fee":          BETCAT_FEE_COL_6,
+            "status":       BETCAT_STATUS_COL_6,
+            "finish_time":  BETCAT_PAY_TIME_COL_6,
+            "create_time":  BETCAT_CREATE_TIME_COL_6,
+        },
+        "status_map": PLATFORM_STATUS_MAP_6["BETCAT"],
+        "directions": {
+            "collection": {"prefixes": PLATFORM_PREFIXES_6["betcat_payment"]},
+            "payout":     {"prefixes": PLATFORM_PREFIXES_6["betcat_payout"]},
+        },
+    },
+    {
+        "key": "CASHNEWPAY",
+        "priority": 20,
+        "join_col": CASHNEWPAY_JOIN_COL_6,
+        "handler": "generic",
+        "sheet": CASHNEWPAY_SHEET_6,
+        "use_first_sheet": True,
+        "columns": {
+            "platform_no":  CASHNEWPAY_PLATFORM_NO_COL_6,
+            "amount":       CASHNEWPAY_AMOUNT_COL_6,
+            "fee":          CASHNEWPAY_FEE_COL_6,
+            "status":       CASHNEWPAY_STATUS_COL_6,
+            "status_desc":  CASHNEWPAY_STATE_DESC_COL_6,
+            "finish_time":  CASHNEWPAY_FINISH_TIME_COL_6,
+            "create_time":  CASHNEWPAY_CREATE_TIME_COL_6,
+        },
+        "status_map": PLATFORM_STATUS_MAP_6["CASHNEWPAY"],
+        "status_prefix_map": CASHNEWPAY_STATUS_PREFIX_MAP_6,
+        "directions": {
+            "collection": {"prefixes": PLATFORM_PREFIXES_6["cashnewpay_collection"]},
+            "payout":     {"prefixes": PLATFORM_PREFIXES_6["cashnewpay_exchange"]},
+        },
+    },
+    {
+        "key": "GOLDENPAY",
+        "priority": 30,
+        "join_col": GOLDENPAY_JOIN_COL_6,
+        "handler": "generic",
+        "use_first_sheet": True,
+        "columns": {
+            "fee":          GOLDENPAY_FEE_COL_6,
+            "status":       GOLDENPAY_STATUS_COL_6,
+            "finish_time":  GOLDENPAY_FINISH_TIME_COL_6,
+            "create_time":  GOLDENPAY_CREATE_TIME_COL_6,
+        },
+        "status_map": PLATFORM_STATUS_MAP_6["GOLDENPAY"],
+        "directions": {
+            "collection": {
+                "prefixes": PLATFORM_PREFIXES_6["goldenpay_collection"],
+                "sheet": GOLDENPAY_COLLECTION_SHEET_6,
+                "columns": {
+                    "platform_no": GOLDENPAY_COLLECTION_PLATFORM_NO_SRC_6,
+                    "amount":      GOLDENPAY_COLLECTION_AMOUNT_SRC_6,
+                },
+            },
+            "payout": {
+                "prefixes": PLATFORM_PREFIXES_6["goldenpay_exchange"],
+                "sheet": GOLDENPAY_PAYOUT_SHEET_6,
+                "columns": {
+                    "platform_no": GOLDENPAY_PAYOUT_PLATFORM_NO_SRC_6,
+                    "amount":      GOLDENPAY_PAYOUT_AMOUNT_SRC_6,
+                },
+            },
+        },
+    },
+]

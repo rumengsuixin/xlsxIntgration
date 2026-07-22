@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>平台插件参考 · xlsxIntgration</title>
+<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:1050px;margin:2rem auto;padding:0 1rem;line-height:1.6;color:#1a1a1a}
+  h1{font-size:1.5rem;border-bottom:2px solid #333;padding-bottom:.4rem}
+  h2{font-size:1.15rem;margin-top:2.2rem;color:#0a7d47;border-bottom:1px solid #eee;padding-bottom:.3rem}
+  h3{font-size:1rem;margin-top:1.4rem}
+  table{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.85rem}
+  th,td{border:1px solid #ccc;padding:.35rem .5rem;text-align:left;vertical-align:top}
+  th{background:#f5f5f5}
+  code{background:#f0f0f0;padding:.05rem .3rem;border-radius:3px;font-family:Consolas,monospace;font-size:.86em}
+  pre{background:#f6f8fa;border:1px solid #e1e4e8;border-radius:4px;padding:.6rem .8rem;overflow:auto;font-size:.82rem}
+  .nav{font-size:.85rem;color:#666;margin-bottom:1.2rem}
+  .nav a{color:#0366d6;text-decoration:none;margin-right:.8rem}
+  .lead{color:#555;font-size:.92rem}
+  .note{background:#fff8e6;border:1px solid #f0dca0;border-radius:4px;padding:.5rem .8rem;font-size:.86rem;margin:1rem 0}
+</style>
+</head>
+<body>
+<div class="nav">
+  索引:
+  <a href="../CLAUDE.md">CLAUDE.md</a>
+  <a href="数据流参考.html">数据流参考</a>
+  <a href="读取配置参考.html">读取配置参考</a>
+  <a href="表结构参考.html">表结构参考</a>
+  <a href="变更记录.html">变更记录</a>
+  <a href="../开发计划.md">开发计划.md</a>
+</div>
+
+<h1>平台插件参考(接新平台免重打包)</h1>
+<p class="lead">代号6 的平台定义已外置到 exe/仓库根旁的 <code>platforms/</code> 目录。<strong>改这里的文件后重新运行程序即可生效,无需重新打包。</strong>本文档是 JSON schema 与插件契约的<strong>唯一权威说明</strong>;面向使用者的简版见 <code>platforms/README.md</code>。</p>
+
+<h2>1. 目录与加载顺序</h2>
+<pre>platforms/
+├── 6/*.json         代号6 声明式平台（每平台一个）
+├── plugins/*.py     疑难平台插件（自定义 handler）
+└── vendor/          可选：纯 Python 第三方依赖（自动加入 sys.path）</pre>
+<p>加载器 <code>platform_loader.load_platform_registry("6")</code> 依次:<b>内置默认</b>(<code>config6.BUILTIN_SPECS_6</code>)→ <b>JSON 深合并</b> → <b>插件覆盖/新增</b>,最后按 <code>priority</code> 升序返回。同 <code>key</code> 深合并(JSON/插件只需写增量);<code>enabled:false</code> 停用(含内置平台);任一 JSON/插件出错只打中文 warning 跳过,不影响其它。<b>目录不存在/为空时注册表=内置三平台,与外置化前逐字节一致。</b></p>
+<p class="note">定位规则:环境变量 <code>BANK_PLATFORMS_DIR</code> 优先,否则 <code>get_project_root()/platforms</code>(打包后=exe 目录,源码运行=仓库根),与 <code>template/</code>、<code>data/</code> 同构。</p>
+
+<h2>2. JSON schema（第一层：声明式平台）</h2>
+<table>
+  <thead><tr><th>字段</th><th>必填</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>key</code></td><td>是</td><td>平台标识(大写),= 结果"来源平台"值 / 状态映射键 / merge 前缀</td></tr>
+    <tr><td><code>priority</code></td><td>是</td><td>越小越优先(匹配 &amp; 平台多余行追加顺序)。内置 Betcat=10 / Cashnewpay=20 / Goldenpay=30,新平台建议 ≥40</td></tr>
+    <tr><td><code>join_col</code></td><td>是</td><td>平台侧关联键列名(对应 admin.<code>订单号</code>)</td></tr>
+    <tr><td><code>handler</code></td><td>否</td><td>默认 <code>"generic"</code>;插件平台填其注册的 handler 名</td></tr>
+    <tr><td><code>handler_params</code></td><td>否</td><td>传给自定义 handler 的参数</td></tr>
+    <tr><td><code>sheet</code></td><td>否</td><td>Excel 优先 sheet(CSV 忽略)</td></tr>
+    <tr><td><code>use_first_sheet</code></td><td>否</td><td>未命中 sheet 时是否回退首个,默认 <code>true</code></td></tr>
+    <tr><td><code>columns</code></td><td>是</td><td>规范字段 → 源列名(顶层默认,见下)</td></tr>
+    <tr><td><code>status_map</code></td><td>否</td><td>原始状态 → 标准状态(成功/失败/处理中/关闭)精确映射</td></tr>
+    <tr><td><code>status_prefix_map</code></td><td>否</td><td>状态含动态后缀时按前缀映射(如 <code>USER_REFUND-&lt;单号&gt;</code>)</td></tr>
+    <tr><td><code>directions</code></td><td>是</td><td><code>collection</code>/<code>payout</code> 各含 <code>prefixes</code>(必填,文件名前缀)、可选 <code>sheet</code>、可选 <code>columns</code>(逐键覆盖顶层)</td></tr>
+    <tr><td><code>enabled</code></td><td>否</td><td><code>false</code> 停用</td></tr>
+  </tbody>
+</table>
+
+<h3>columns 的规范字段名（固定集合，取自 <code>platform_spec.CANON</code>）</h3>
+<table>
+  <thead><tr><th>规范字段</th><th>含义</th></tr></thead>
+  <tbody>
+    <tr><td><code>platform_no</code></td><td>平台内部流水号 → 结果"平台流水号"</td></tr>
+    <tr><td><code>amount</code></td><td>平台金额(<b>命中判断依据</b>,必须能取到)</td></tr>
+    <tr><td><code>fee</code></td><td>手续费</td></tr>
+    <tr><td><code>status</code></td><td>原始状态(中文)</td></tr>
+    <tr><td><code>status_desc</code></td><td>原始状态描述(英文,若有则优先于 <code>status</code> 映射)</td></tr>
+    <tr><td><code>finish_time</code></td><td>完成时间(结果"交易日期"首选)</td></tr>
+    <tr><td><code>create_time</code></td><td>创建时间(完成时间为空时回退)</td></tr>
+  </tbody>
+</table>
+
+<h3>示例：Goldenpay（收/付列名不同，用 directions 覆盖）</h3>
+<pre>{
+  "key": "GOLDENPAY", "priority": 30, "join_col": "商户单号",
+  "handler": "generic", "use_first_sheet": true,
+  "columns": { "fee": "手续费", "status": "订单状态",
+               "finish_time": "完成时间", "create_time": "创建时间" },
+  "status_map": { "支付成功": "成功", "成功": "成功", "支付失败": "失败", ... },
+  "directions": {
+    "collection": { "prefixes": ["goldenpay收款"], "sheet": "代收订单导出",
+                    "columns": { "platform_no": "订单号",   "amount": "订单金额" } },
+    "payout":     { "prefixes": ["goldenpay兑换"], "sheet": "代付订单导出",
+                    "columns": { "platform_no": "订单编号", "amount": "金额" } }
+  }
+}</pre>
+
+<h2>3. 插件契约（第二层：疑难平台）</h2>
+<p>当读取/清洗声明式表达不了(两行合并、聚合、多 sheet 联表、倒推汇率、PDF 等)时,写 <code>platforms/plugins/*.py</code>。可选 <code>CODE="6"</code>/<code>CODES=["5","6"]</code> 限定代号。两种写法:</p>
+<ul>
+  <li><b>纯声明</b>:模块级 <code>PLATFORM = {...}</code>(同 JSON schema),走内置 <code>generic</code> handler。</li>
+  <li><b>自定义 handler</b>:<code>def register(api):</code> 内 <code>api.register_platform(spec_dict, handler=你的handler实例)</code>。</li>
+</ul>
+<p>handler 需实现:</p>
+<pre>def read(self, spec, direction, filepath) -> pandas.DataFrame: ...
+def build_lookup(self, spec, direction, df) -> pandas.DataFrame: ...</pre>
+<p><code>build_lookup</code> 返回的查找表必须:以 <code>spec.join_col</code>(对应 admin 订单号)为 <b>DataFrame 索引</b>;列名用 <b>CANON 内部列名</b>(<code>__no__/__amt__/__fee__/__status__/__desc__/__ftime__/__ctime__</code>)。引擎据此统一取值、映射状态、生成结果 7 列,内部列不会泄漏到输出。可复用 <code>platform_engine</code> 的 <code>read_source_table</code>/<code>dedup_lookup</code>/<code>build_lookup_from_columns</code>。完整示例见 <code>platforms/plugins/example_platform.py.txt</code>。</p>
+
+<h2>4. 唯一仍需重打包的例外</h2>
+<p>当新平台需要一个<b>未打进包的新第三方库</b>时(如 <code>.xlsb</code> 需 <code>pyxlsb</code>、<code>.parquet</code> 需 <code>pyarrow</code>)才需重打包。缓解:纯 Python 依赖放 <code>platforms/vendor/</code>(加载器自动 prepend <code>sys.path</code>);约定新平台优先导出 CSV/XLSX(<code>pandas/openpyxl/xlrd</code> 已在包内,覆盖绝大多数)。此外,输出表结构/汇总口径/admin 主表读取仍是代码,不在插件覆盖范围。</p>
+
+<h2>5. 推广到其它代号（规划）</h2>
+<p>基础设施 <code>platform_spec/engine/loader</code> 与代号无关,<code>load_platform_registry(code)</code> 传不同 <code>code</code> 即可复用;各代号只需提供自己的 <code>BUILTIN_SPECS_{n}</code> 与(必要时)自定义 handler。推广顺序建议 6→5→3→1/2(代号1/2 的农行正则/中行日期范围/华美 PDF 等硬编码分支需先降维成声明式选项或 handler)。</p>
+
+</body>
+</html>

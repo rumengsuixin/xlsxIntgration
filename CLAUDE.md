@@ -51,12 +51,16 @@ src/bank_integration/
     balances.py / workbook.py # 提取期末余额、复制工作副本并写入子表
     app.py ~ app6.py          # 各代号 main() 主流程
     pdf_daily_balance.py      # 代号2 华美银行 PDF 解析
+    platform_spec.py          # 代号6 平台外置:声明数据类/CANON/OutputSchema/handler 注册表
+    platform_engine.py        # 代号6 平台外置:通用读取/归一化查找表/按优先级 enrich(+低层读取原语)
+    platform_loader.py        # 代号6 平台外置:定位 platforms/、内置→JSON→插件深合并
 template/1|2/                 # 代号1/2 模板(必须预先存在)
+platforms/                    # 代号6 平台外置配置(exe 旁,免重打包):6/*.json 声明式 + plugins/*.py 插件
 data/
     input/                    # 代号1 源文件;input/2 ~ input/6 各代号源文件;input/raw 原始样例(不扫描)
     output/                   # 各代号最终输出(汇总/匹配/对账文件)
-docs/                         # 参考文档(HTML):数据流/读取配置/表结构/变更记录
-tests/test_bank_integration.py
+docs/                         # 参考文档(HTML):数据流/读取配置/表结构/平台插件/变更记录
+tests/test_bank_integration.py / test_platform_plugin_6.py
 ```
 
 ## 关键约束
@@ -99,8 +103,9 @@ tests/test_bank_integration.py
 - **源文件目录**:`data/input/6/`,平铺放置;按 stem 小写前缀识别:`admin收款` / `admin兑换` / `betcat-payment` / `betcat-payout` / `cashnewpay收款` / `cashnewpay兑换` / `goldenpay收款` / `goldenpay兑换`
 - **多格式自适应**:各平台源文件支持 `.csv/.xls/.xlsx` 任一格式,由 `_read_source_table_6` 按扩展名分派(`.csv`→多编码 utf-8-sig/gbk/gb18030/utf-8、`.xls`→xlrd、`.xlsx`→openpyxl);扫描白名单已放行三格式
 - **关联键**:admin.`订单号` ↔ Betcat.`MerOrderNo` / Cashnewpay.`商户订单号` / Goldenpay.`商户单号`;匹配优先级 Betcat > Cashnewpay > Goldenpay
-- **Goldenpay 收/付表头不同**:与 Betcat/Cashnewpay「收付同表头」不同,Goldenpay 收款(sheet `代收订单导出`,金额列 `订单金额`、平台单号列 `订单号`)与兑换(sheet `代付订单导出`,金额列 `金额`、平台单号列 `订单编号`)列名不一致,`build_goldenpay_lookup_6` 读取时将金额/平台单号列**归一化**为统一列名,`enrich_admin_6` 才用一套常量引用
+- **Goldenpay 收/付表头不同**:与 Betcat/Cashnewpay「收付同表头」不同,Goldenpay 收款(sheet `代收订单导出`,金额列 `订单金额`、平台单号列 `订单号`)与兑换(sheet `代付订单导出`,金额列 `金额`、平台单号列 `订单编号`)列名不一致;现由 `BUILTIN_SPECS_6` 的 `directions.<方向>.columns` 分别声明,通用引擎归一化到 `CANON` 内部列,无命令式 rename
 - **admin 必须存在**:代收/代付 admin 均缺失时直接退出
+- **平台配置外置化(护栏)**:平台定义走"内置 `config6.BUILTIN_SPECS_6` → exe 旁 `platforms/6/*.json` → `platforms/plugins/*.py`"三层深合并(`platform_loader`),通用读取/匹配在 `platform_engine`,声明数据类在 `platform_spec`。`app6.py` 的 `build_*_lookup_6`/`enrich_admin_6`/`scan`/`main` 是薄壳,**改匹配/输出逻辑改引擎、加平台优先改 JSON/插件不改 `app6.py`**;`build_betcat_lookup_6`/`build_goldenpay_lookup_6`/`enrich_admin_6` 三处签名被单测依赖,不得改。查找表内部列必须用 `CANON`(`__amt__` 等),enrich 结尾丢弃、不得泄漏到输出。`platforms/6/*.json` 须与 `BUILTIN_SPECS_6` 保持一致(测试 `test_repo_json_matches_builtin_specs` 守护),改内置时同步重生成 JSON。详见 [docs/平台插件参考.html](docs/平台插件参考.html)
 
 ## 日期格式支持
 
@@ -117,6 +122,7 @@ tests/test_bank_integration.py
 | [docs/数据流参考.html](docs/数据流参考.html) | 代号1/2/5 数据流步骤(函数调用链) |
 | [docs/读取配置参考.html](docs/读取配置参考.html) | 各银行(代号1/2)+ 平台(代号5)读取配置表、代号3 平台识别/去重 |
 | [docs/表结构参考.html](docs/表结构参考.html) | 代号1/2 汇总表工作表结构、代号3/5 输出结构 |
+| [docs/平台插件参考.html](docs/平台插件参考.html) | 代号6 平台外置化:`platforms/` JSON schema + 插件契约(接新平台免重打包) |
 | [docs/变更记录.html](docs/变更记录.html) | 修复/优化历史(唯一来源,倒序) |
 | [开发计划.md](开发计划.md) | 各代号功能、待办、工程状态(当前未决 ⚠️ 记于各代号「待办」) |
 | [README.md](README.md) | 面向使用者的运行/打包说明 |

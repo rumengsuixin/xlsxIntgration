@@ -234,6 +234,18 @@ if template_src.exists():
         shutil.rmtree(template_dst)
     shutil.copytree(template_src, template_dst)
 
+# 平台外置配置（接新平台免重打包）：拷贝到 exe 旁，用户可编辑/仿写。
+# 与 template/、data/ 同为松散文件，运行时靠 get_project_root() 读取，不进二进制。
+platforms_src = project_root / "platforms"
+platforms_dst = dist_dir / "platforms"
+if platforms_src.exists():
+    if platforms_dst.exists():
+        shutil.rmtree(platforms_dst)
+    shutil.copytree(platforms_src, platforms_dst)
+else:
+    (platforms_dst / "6").mkdir(parents=True, exist_ok=True)
+    (platforms_dst / "plugins").mkdir(parents=True, exist_ok=True)
+
 data_dst = dist_dir / "data"
 if data_dst.exists():
     shutil.rmtree(data_dst)

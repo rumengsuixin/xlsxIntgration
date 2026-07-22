@@ -1,0 +1,36 @@
+{
+  "key": "BETCAT",
+  "priority": 10,
+  "join_col": "MerOrderNo",
+  "handler": "generic",
+  "use_first_sheet": false,
+  "columns": {
+    "platform_no": "OrderNo",
+    "amount": "Amount",
+    "fee": "TradeCharge",
+    "status": "Status",
+    "finish_time": "PayTime",
+    "create_time": "CreateTime"
+  },
+  "status_map": {
+    "支付已通知": "成功",
+    "支付成功": "成功",
+    "支付完成": "成功",
+    "支付失败": "失败",
+    "支付关闭": "关闭",
+    "待支付": "处理中",
+    "处理中": "处理中"
+  },
+  "directions": {
+    "collection": {
+      "prefixes": [
+        "betcat-payment"
+      ]
+    },
+    "payout": {
+      "prefixes": [
+        "betcat-payout"
+      ]
+    }
+  }
+}

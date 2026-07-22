@@ -1,0 +1,47 @@
+{
+  "key": "CASHNEWPAY",
+  "priority": 20,
+  "join_col": "商户订单号",
+  "handler": "generic",
+  "sheet": "Sheet1",
+  "use_first_sheet": true,
+  "columns": {
+    "platform_no": "订单号",
+    "amount": "订单金额",
+    "fee": "手续费",
+    "status": "订单状态",
+    "status_desc": "状态描述",
+    "finish_time": "完成时间",
+    "create_time": "创建时间"
+  },
+  "status_map": {
+    "成功": "成功",
+    "失败": "失败",
+    "处理中": "处理中",
+    "退款": "关闭",
+    "PAID": "成功",
+    "FAILED": "失败",
+    "failed": "失败",
+    "REJECTED": "失败",
+    "Payment failed": "失败",
+    "PENDING": "处理中",
+    "CREATED": "处理中",
+    "PROCESSING": "处理中"
+  },
+  "status_prefix_map": {
+    "USER_REFUND": "关闭",
+    "REFUND": "关闭"
+  },
+  "directions": {
+    "collection": {
+      "prefixes": [
+        "cashnewpay收款"
+      ]
+    },
+    "payout": {
+      "prefixes": [
+        "cashnewpay兑换"
+      ]
+    }
+  }
+}

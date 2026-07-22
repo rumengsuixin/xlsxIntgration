@@ -1,0 +1,112 @@
+# 平台插件样例（疑难平台专用）
+#
+# 用途：当一个新平台的读取/清洗无法用 platforms/6/*.json 纯声明表达时
+#      （例如需要两行合并、聚合计算、多 sheet 联表、倒推汇率、PDF 解析），
+#      写一个 .py 插件放到本目录即可，无需重新打包程序。
+#
+# 启用方法：把本文件复制/改名为一个真正的 .py（如 mypay.py），按需修改后保存。
+#          （本样例以 .py.txt 结尾，加载器默认不加载 .txt，避免样例被误当真平台。）
+#
+# 两种写法（二选一）：
+#   A. 纯声明：定义 PLATFORM = {...}，等价于往 platforms/6/ 放一个 JSON，走内置 generic handler。
+#   B. 自定义 handler：定义 register(api)，注册一个实现 read()/build_lookup() 的 handler。
+#
+# 无论哪种，build_lookup 返回的查找表都必须：
+#   - 以平台关联键（对应 admin 订单号）为 DataFrame 索引；
+#   - 列名使用 CANON 内部列名（platform_engine.CANON）：
+#       __no__(平台流水号) __amt__(金额,命中依据) __fee__(手续费)
+#       __status__(原始状态) __desc__(英文状态描述,可选)
+#       __ftime__(完成时间) __ctime__(创建时间,可选)
+#   引擎据此统一取值、映射状态、生成输出 7 列，绝不泄漏这些内部列到结果表。
+
+# 目标代号（可选）：只在代号6 加载。不写则对所有代号生效。
+CODE = "6"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 写法 A：纯声明（若结构类似，直接放 platforms/6/mypay.json 更简单，这里仅示意）
+# ─────────────────────────────────────────────────────────────────────────────
+# PLATFORM = {
+#     "key": "MYPAY",
+#     "priority": 40,                       # 越小越优先；置于内置三平台之后
+#     "join_col": "商户订单号",             # 平台侧关联键（对应 admin.订单号）
+#     "handler": "generic",
+#     "sheet": "Sheet1",
+#     "columns": {                          # 规范字段 -> 源列名
+#         "platform_no": "平台流水号",
+#         "amount": "订单金额",
+#         "fee": "手续费",
+#         "status": "订单状态",
+#         "finish_time": "完成时间",
+#         "create_time": "创建时间",
+#     },
+#     "status_map": {"成功": "成功", "失败": "失败", "处理中": "处理中", "已退款": "关闭"},
+#     "directions": {
+#         "collection": {"prefixes": ["mypay收款"]},
+#         "payout":     {"prefixes": ["mypay兑换"]},
+#     },
+# }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 写法 B：自定义 handler（示例：源表把一笔订单拆成"扣款"+"手续费"两行，需合并回一行）
+# ─────────────────────────────────────────────────────────────────────────────
+import pandas as pd
+
+from src.bank_integration.platform_engine import (
+    read_source_table,   # 通用读取（.csv/.xls/.xlsx 自适应）
+    dedup_lookup,        # 通用去重
+)
+from src.bank_integration.platform_spec import CANON
+
+
+class TwoRowMergeHandler:
+    """把同一订单的两行（扣款行 + 手续费行）合并成一行查找记录。"""
+
+    def read(self, spec, direction, filepath):
+        # 复用通用读取；如需特殊 sheet/编码，可自行 pd.read_excel/read_csv
+        return read_source_table(
+            filepath,
+            preferred_sheet=spec.sheet_for(direction),
+            use_first_sheet=spec.use_first_sheet,
+            label=spec.key,
+        )
+
+    def build_lookup(self, spec, direction, df):
+        join = spec.join_col
+        if join not in df.columns:
+            return pd.DataFrame()
+        # —— 这里放你的自定义清洗逻辑（示意：按"类型"列拆分再合并）——
+        pay = df[df["类型"] == "扣款"].copy()
+        fee = df[df["类型"] == "手续费"][[join, "金额"]].rename(columns={"金额": "_fee_amt"})
+        merged = pay.merge(fee, on=join, how="left")
+        # —— 归一化到 CANON 内部列 ——
+        out = pd.DataFrame({
+            join:               merged[join],
+            CANON["platform_no"]: merged.get("平台流水号", ""),
+            CANON["amount"]:      merged["金额"].abs().astype(str),
+            CANON["fee"]:         merged["_fee_amt"].fillna("0").astype(str),
+            CANON["status"]:      merged.get("状态", ""),
+            CANON["finish_time"]: merged.get("完成时间", ""),
+        })
+        out = dedup_lookup(out, join, spec.key)
+        return out.set_index(join)
+
+
+def register(api):
+    """加载器会以 register(api) 调用本函数；用 api.register_platform 注册平台 + handler。"""
+    api.register_platform(
+        {
+            "key": "MYPAY",
+            "priority": 40,
+            "join_col": "商户订单号",
+            "handler": "two_row_merge",
+            "sheet": "Sheet1",
+            "status_map": {"成功": "成功", "失败": "失败"},
+            "directions": {
+                "collection": {"prefixes": ["mypay收款"]},
+                "payout":     {"prefixes": ["mypay兑换"]},
+            },
+        },
+        handler=TwoRowMergeHandler(),
+    )

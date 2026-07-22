@@ -11,6 +11,19 @@ from PyInstaller.utils.hooks import collect_submodules
 block_cipher = None
 project_root = Path.cwd()
 
+# 打包体积优化:排除未使用的重依赖与预防性排除未安装的库
+# lxml(代号7 删除后无 import;openpyxl 惰性回退 stdlib)、pypdfium2(仅图像渲染,本项目只提取文本/表格)
+# cryptography 不排除(pdfminer 顶层强制加载,import pdfplumber 即需要)
+EXCLUDES = [
+    "lxml",
+    "pypdfium2", "pypdfium2_raw",
+    "numpy.tests", "pandas.tests",
+    "matplotlib", "scipy",
+    "tkinter", "_tkinter",
+    "PyQt5", "PyQt6", "PySide2", "PySide6",
+    "IPython", "jupyter", "notebook", "pytest",
+]
+
 a1 = Analysis(
     ["整合1.py"],
     pathex=[str(project_root)],
@@ -20,7 +33,7 @@ a1 = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=EXCLUDES,
     cipher=block_cipher,
     noarchive=False,
 )
@@ -34,7 +47,7 @@ a2 = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=EXCLUDES,
     cipher=block_cipher,
     noarchive=False,
 )
@@ -48,7 +61,7 @@ a3 = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=EXCLUDES,
     cipher=block_cipher,
     noarchive=False,
 )
@@ -62,7 +75,7 @@ a5 = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=EXCLUDES,
     cipher=block_cipher,
     noarchive=False,
 )
@@ -76,7 +89,7 @@ a8 = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=EXCLUDES,
     cipher=block_cipher,
     noarchive=False,
 )
@@ -95,7 +108,7 @@ exe1 = EXE(
     name="domestic_bank_integration",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=True,
     upx=True,
     console=True,
     disable_windowed_traceback=False,
@@ -113,7 +126,7 @@ exe2 = EXE(
     name="overseas_bank_integration",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=True,
     upx=True,
     console=True,
     disable_windowed_traceback=False,
@@ -131,7 +144,7 @@ exe3 = EXE(
     name="order_payment_match",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=True,
     upx=True,
     console=True,
     disable_windowed_traceback=False,
@@ -149,7 +162,7 @@ exe5 = EXE(
     name="payout_order_reconcile",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=True,
     upx=True,
     console=True,
     disable_windowed_traceback=False,
@@ -167,7 +180,7 @@ exe8 = EXE(
     name="collection_payout_reconcile",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=True,
     upx=True,
     console=True,
     disable_windowed_traceback=False,
@@ -198,7 +211,7 @@ coll = COLLECT(
     a8.binaries,
     a8.zipfiles,
     a8.datas,
-    strip=False,
+    strip=True,
     upx=True,
     upx_exclude=[],
     name="bank-integration",

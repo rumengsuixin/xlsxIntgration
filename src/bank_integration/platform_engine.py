@@ -45,6 +45,11 @@ def format_date(val) -> str:
 
     支持：pandas Timestamp / datetime、ISO 8601 带时区、含毫秒字符串、
     YYYY-MM-DD / YYYY/MM/DD（含时间变体）。
+
+    时区处理：保留原始时区的**本地墙钟日期**，不转 UTC。带时区的平台时间
+    （如 Betcat 的 `2026-06-30T23:53:20-03:00`）若转 UTC 会把 6/30 深夜交易
+    推到 7/1，导致月份归属错误、且与 admin 本地时间（无时区）对不上。与
+    app5._format_date_5 的口径一致。
     """
     try:
         if pd.isna(val):
@@ -55,7 +60,7 @@ def format_date(val) -> str:
         s = str(val).strip()
         if not s or s.lower() in ("nan", "none", "nat"):
             return ""
-        parsed = pd.to_datetime(s, errors="coerce", utc=True)
+        parsed = pd.to_datetime(s, errors="coerce")
         if not pd.isna(parsed):
             return parsed.strftime("%Y-%m-%d")
         # 兜底：直接取前10字符（已是 YYYY-MM-DD 格式时）

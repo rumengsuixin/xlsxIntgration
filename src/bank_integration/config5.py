@@ -111,13 +111,15 @@ PHONECARD_PREFERRED_SHEET_KEY_5 = "汇总"
 #   sheet=Binance Pay Payout Template,表头在第2行(header=1),日期取自文件名;
 #   收款ID 在 `Recipient's Account information (Required)`,USDT 面额在 `Amount (Required)`。
 # admin 侧新格式多出 `其他` 列(BIN-<收款ID>)标识 USDT 兑换单,USDT 面额在 `奖品名称`
-# (如 "USDT 0.5",`金额`列是 TRY)。二者按 收款ID 去前缀关联,按 T+1 窗口对齐日期。
+# (如 "USDT 0.5",`金额`列是 TRY)。二者按 收款ID 去前缀关联,按严格 T-1 对齐日期。
+# 平台侧实际是 macro post-processor 合并后的文件(表头第0行、sheet=数据、逐行 date 列);
+# date 列 = 每日打款导出文件的上传日 T,内容为 T-1 天数据,故用 t1_shift 恒定归到 admin 的 T-1。
 BINANCE_PLATFORM_NAME_5    = "Binance"
-BINANCE_SHEET_5            = "Binance Pay Payout Template"
-BINANCE_HEADER_5           = 1                 # 第1行是大标题,列头在第2行
+BINANCE_SHEET_5            = "数据"            # macro 合并输出的 sheet 名(找不到会回退首个 sheet)
+BINANCE_HEADER_5           = 0                 # 合并文件列头在第0行
 BINANCE_ID_COL_5           = "Recipient's Account information (Required)"
 BINANCE_AMOUNT_COL_5       = "Amount (Required)"
-BINANCE_DATE_FROM_NAME_5   = r"(\d{4}-\d{2}-\d{2})"   # 从文件名提取打款日
+BINANCE_PLATFORM_DATE_COL_5 = "date"          # 合并文件逐行日期列(上传日 T)
 BINANCE_FILE_PREFIXES_5    = ["usdt奖品发放信息", "binance-", "merged-"]
 BINANCE_OUTPUT_SHEET_5     = "Binance-USDT对账"
 
@@ -399,7 +401,7 @@ BUILTIN_SPECS_5 = [
         "join_col": BINANCE_ID_COL_5,
         "recon_mode": "aggregate",
         "recon": {
-            "date_match_mode": "t1_window",     # 平台常在 admin 次日打款,按 T+1 窗口对齐
+            "date_match_mode": "t1_shift",      # 平台日=上传日 T,内容为 T-1 数据,恒定归到 admin 的 T-1
             "amount_tolerance": 0,
             "output_sheet": BINANCE_OUTPUT_SHEET_5,
             "platform": {
@@ -407,7 +409,7 @@ BUILTIN_SPECS_5 = [
                 "header_row": BINANCE_HEADER_5,
                 "id_col": BINANCE_ID_COL_5,
                 "amount_col": BINANCE_AMOUNT_COL_5,
-                "date_from_filename": BINANCE_DATE_FROM_NAME_5,
+                "date_col": BINANCE_PLATFORM_DATE_COL_5,
             },
             "admin": {
                 "filter_col": ADMIN_OTHER_COL_5,

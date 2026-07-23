@@ -700,6 +700,8 @@ def reconcile_aggregate(admin_agg: pd.DataFrame, platform_agg: pd.DataFrame, *,
       - period    ：忽略日期，仅按 id 汇总比对（整期）；
       - t1_window ：平台打款日 pd 归属到一个 admin 业务日——pd 当天有 admin 归 pd，
                     否则前一日 pd-1 有 admin 归 pd-1(T+1)，都没有则留在 pd(平台多余)。
+      - t1_shift  ：平台日恒定前移 1 天归属到 admin 的 pd-1（不试同日）——用于平台日期
+                    是「上传日 T、内容为 T-1 天数据」的场景（如 Binance 每日打款导出）。
     状态：两侧都有→|差额|≤容差 一致 / 否则 金额不符；仅 admin→平台缺失；仅平台→平台多余。
     columns：8 个显示列名，按 _RECON_FIELDS 顺序对应；缺省用内部字段名。
     """
@@ -731,6 +733,8 @@ def reconcile_aggregate(admin_agg: pd.DataFrame, platform_agg: pd.DataFrame, *,
                 bd = _shift_day(pday, -1)
             else:
                 bd = pday
+        elif date_match_mode == "t1_shift":
+            bd = _shift_day(pday, -1)      # 平台上传日 T → 业务日 T-1（恒定，不试同日）
         else:  # exact
             bd = pday
         s0, c0 = plat.get((i, bd), (0.0, 0))

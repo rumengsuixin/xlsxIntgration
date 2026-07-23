@@ -69,10 +69,10 @@
     <tr><td>IBFYPAY(订单明细)</td><td>XLSX</td><td>Sheet</td><td>0</td><td>系统流水号</td><td>第三方订单号</td><td>无 <code>类型</code> 列时自动识别,手续费置0</td></tr>
     <tr><td>SUPERPAY</td><td>XLSX</td><td>sheet1</td><td>0</td><td>商户订单号</td><td>订单号</td><td>手续费=代付金额−实收(取绝对值)</td></tr>
     <tr><td>WANGGUYPAY</td><td>XLSX</td><td>付款订单</td><td>1</td><td>商户订单号</td><td>订单号</td><td>header=1(第1行为冗余标题)</td></tr>
-    <tr><td>Binance(聚合型)</td><td>XLS/XLSX</td><td>Binance Pay Payout Template</td><td>1</td><td>Recipient's Account information (Required)</td><td>其他(去 <code>BIN-</code>)</td><td>无订单号,聚合对账;header=1(第1行大标题);打款日取自<strong>文件名</strong> <code>(\d{4}-\d{2}-\d{2})</code>;金额取 <code>Amount (Required)</code></td></tr>
+    <tr><td>Binance(聚合型)</td><td>XLS/XLSX</td><td>数据</td><td>0</td><td>Recipient's Account information (Required)</td><td>其他(去 <code>BIN-</code>)</td><td>无订单号,聚合对账;读 macro 合并后文件(表头第0行、sheet=数据);日期取自逐行 <code>date</code> 列(=上传日 T);金额取 <code>Amount (Required)</code></td></tr>
   </tbody>
 </table>
-<p class="lead"><strong>Binance 为「聚合对账」范式(与上面 5 个 1:1 平台不同构)</strong>:平台无订单号、一个收款 ID 对多笔,故不建查找表逐行追加,而是两侧各按「收款ID + 日期」<code>groupby</code> 求和+计数后 full-outer 比对,产出独立 sheet <code>Binance-USDT对账</code>。admin 侧仅取 <code>其他</code> 以 <code>BIN-</code> 开头且 <code>状态=已完成</code> 的行,USDT 面额取自 <code>奖品名称</code>(正则 <code>USDT\s*([\d.]+)</code>,<code>金额</code>列是 TRY 不用);日期口径 <code>t1_window</code>(T+1 窗口对齐)。全部取值/口径由 <code>platforms/5/binance.json</code> 的 <code>recon</code> 声明驱动,详见 <a href="平台插件参考.html">平台插件参考</a>。</p>
+<p class="lead"><strong>Binance 为「聚合对账」范式(与上面 5 个 1:1 平台不同构)</strong>:平台无订单号、一个收款 ID 对多笔,故不建查找表逐行追加,而是两侧各按「收款ID + 日期」<code>groupby</code> 求和+计数后 full-outer 比对,产出独立 sheet <code>Binance-USDT对账</code>。admin 侧仅取 <code>其他</code> 以 <code>BIN-</code> 开头且 <code>状态=已完成</code> 的行,USDT 面额取自 <code>奖品名称</code>(正则 <code>USDT\s*([\d.]+)</code>,<code>金额</code>列是 TRY 不用);日期口径 <code>t1_shift</code>(严格 T-1:平台 <code>date</code> 列=上传日 T、内容为 T-1 数据,平台日恒定归到 admin 的 T-1)。平台文件为 macro 合并后格式(非原始模板)。全部取值/口径由 <code>platforms/5/binance.json</code> 的 <code>recon</code> 声明驱动,详见 <a href="平台插件参考.html">平台插件参考</a>。</p>
 
 <h2>代号3 平台识别与去重规则(config3.py)</h2>
 <ul>

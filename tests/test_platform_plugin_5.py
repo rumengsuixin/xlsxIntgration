@@ -180,7 +180,7 @@ class DeriveSeriesTests(unittest.TestCase):
 
 
 class ReconcileAggregateTests(unittest.TestCase):
-    """四状态判定 + 三种日期口径(exact / period / t1_window)。"""
+    """四状态判定 + 四种日期口径(exact / period / t1_window / t1_shift)。"""
 
     def _admin(self):
         # (id, date, amt):三个收款ID,同一 admin 业务日 07-01
@@ -238,9 +238,22 @@ class ReconcileAggregateTests(unittest.TestCase):
         out = reconcile_aggregate(admin, plat, date_match_mode="exact", tolerance=0.01)
         self.assertEqual(out.iloc[0]["status"], "一致")
 
+    def test_t1_shift_forces_prev_day(self):
+        # 平台日恒定前移 1 天:平台 07-02 全部归到 admin 07-01,即使 admin 也有 07-02
+        # 活动也不试同日(与 t1_window 的关键区别)。
+        admin = aggregate_by_keys(
+            ["1001", "1001"], ["2026-07-01", "2026-07-02"], ["3.0", "9.0"])
+        plat = aggregate_by_keys(["1001"], ["2026-07-02"], ["3.0"])
+        out = reconcile_aggregate(admin, plat, date_match_mode="t1_shift")
+        k = self._by_key(out)
+        # 平台 07-02 → 归到 07-01,与 admin 07-01(3.0)一致
+        self.assertEqual(k[("2026-07-01", "1001")]["status"], "一致")
+        # admin 07-02(9.0)未被同日吸走 → 平台缺失(t1_window 会误判为金额不符)
+        self.assertEqual(k[("2026-07-02", "1001")]["status"], "平台缺失")
+
 
 class BinanceAggregateHandlerTests(unittest.TestCase):
-    """BINANCE 走注册表 + aggregate_recon handler 端到端(原始模板 header=1 + 文件名取日)。"""
+    """BINANCE 走注册表 + aggregate_recon handler 端到端(合并文件 header=0 + date 列 + 严格 T-1)。"""
 
     def _spec(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -251,23 +264,27 @@ class BinanceAggregateHandlerTests(unittest.TestCase):
         spec = self._spec()
         self.assertEqual(spec.handler, "aggregate_recon")
         self.assertEqual(spec.recon_mode, "aggregate")
-        self.assertEqual(spec.recon["date_match_mode"], "t1_window")
+        self.assertEqual(spec.recon["date_match_mode"], "t1_shift")
         self.assertEqual(spec.recon["output_sheet"], "Binance-USDT对账")
-        self.assertEqual(spec.recon["platform"]["header_row"], 1)
+        self.assertEqual(spec.recon["platform"]["header_row"], 0)
+        self.assertEqual(spec.recon["platform"]["sheet"], "数据")
+        self.assertEqual(spec.recon["platform"]["date_col"], "date")
+        self.assertNotIn("date_from_filename", spec.recon["platform"])
 
     def _write_platform(self, path):
+        # macro 合并后格式:sheet=数据、列头在第0行、逐行 date 列(上传日 T)
         from openpyxl import Workbook
         wb = Workbook()
         ws = wb.active
-        ws.title = "Binance Pay Payout Template"
-        ws.append(["批量代付模板(标题行)"])                       # 第1行大标题,header=1 跳过
-        ws.append(["Account Type (Required)",
+        ws.title = "数据"
+        ws.append(["date", "Account Type (Required)",
                    "Recipient's Account information (Required)",
                    "Crypto Currency (Required)",
-                   "Amount (Required)"])                            # 第2行=列头
-        ws.append(["Binance ID", "1001", "USDT", "3.0"])
-        ws.append(["Binance ID", "1002", "USDT", "5.0"])
-        ws.append(["Binance ID", "1005", "USDT", "7.0"])
+                   "Amount (Required)"])                            # 第0行=列头
+        # date=上传日 07-02,t1_shift 恒定归到 admin 业务日 07-01
+        ws.append(["2026-07-02", "Binance ID", "1001", "USDT", "3.0"])
+        ws.append(["2026-07-02", "Binance ID", "1002", "USDT", "5.0"])
+        ws.append(["2026-07-02", "Binance ID", "1005", "USDT", "7.0"])
         wb.save(path)
 
     def test_build_reconciliation_end_to_end(self):
@@ -279,8 +296,9 @@ class BinanceAggregateHandlerTests(unittest.TestCase):
             {"其他": "BIN-1004", "状态": "已取消", "奖品名称": "USDT 9.0", "日期": "2026-07-01"},
         ])
         with tempfile.TemporaryDirectory() as tmp:
-            # 文件名带打款日 07-02(admin 07-01 的次日),验证 T+1 归属
-            fp = Path(tmp) / "USDT奖品发放信息2026-07-02.xlsx"
+            # 文件名不含可解析日期(证明日期取自表内 date 列,而非文件名);
+            # 平台 date=07-02(上传日),t1_shift 恒定归到 admin 07-01。
+            fp = Path(tmp) / "merged-20260722-173546.xlsx"
             self._write_platform(fp)
             sheet_name, out = resolve_handler(spec).build_reconciliation(spec, admin, [fp])
         self.assertEqual(sheet_name, "Binance-USDT对账")
@@ -293,7 +311,8 @@ class BinanceAggregateHandlerTests(unittest.TestCase):
         self.assertEqual(k[("2026-07-01", "1002")]["对账状态"], "金额不符")     # 5 vs 4
         self.assertAlmostEqual(k[("2026-07-01", "1002")]["差额"], 1.0)
         self.assertEqual(k[("2026-07-01", "1003")]["对账状态"], "平台缺失")
-        self.assertEqual(k[("2026-07-02", "1005")]["对账状态"], "平台多余")
+        # 1005 平台侧被 t1_shift 归到 07-01(而非文件里的 07-02)
+        self.assertEqual(k[("2026-07-01", "1005")]["对账状态"], "平台多余")
         # 已取消的 1004 不计入应付,故不应出现
         self.assertNotIn(("2026-07-01", "1004"), k)
 

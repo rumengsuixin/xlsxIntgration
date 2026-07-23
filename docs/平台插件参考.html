@@ -119,7 +119,7 @@ def build_lookup(self, spec, direction, df) -> pandas.DataFrame: ...</pre>
 <table>
   <thead><tr><th>字段</th><th>含义</th></tr></thead>
   <tbody>
-    <tr><td><code>recon.date_match_mode</code></td><td>日期口径:<code>exact</code>(严格按天)/<code>period</code>(忽略日期整期)/<code>t1_window</code>(T+1 窗口对齐:平台打款日 <code>pd</code> 当天有 admin 归 <code>pd</code>,否则前一日 <code>pd-1</code> 有 admin 归 <code>pd-1</code>,都没有留 <code>pd</code>=平台多余)</td></tr>
+    <tr><td><code>recon.date_match_mode</code></td><td>日期口径:<code>exact</code>(严格按天)/<code>period</code>(忽略日期整期)/<code>t1_window</code>(T+1 窗口对齐:平台打款日 <code>pd</code> 当天有 admin 归 <code>pd</code>,否则前一日 <code>pd-1</code> 有 admin 归 <code>pd-1</code>,都没有留 <code>pd</code>=平台多余)/<code>t1_shift</code>(严格 T-1:平台日 <code>pd</code> <strong>恒定</strong>前移到 <code>pd-1</code>、不试同日,用于平台日=上传日 T 而内容为 T-1 数据的场景,如 Binance)</td></tr>
     <tr><td><code>recon.amount_tolerance</code></td><td>金额容差,<code>|差额|≤容差</code> 判「一致」(默认 0)</td></tr>
     <tr><td><code>recon.output_sheet</code></td><td>独立对账 sheet 名(如 <code>Binance-USDT对账</code>)</td></tr>
     <tr><td><code>recon.platform</code></td><td>平台侧取值:<code>sheet</code>/<code>header_row</code>(表头所在行,0-based)/<code>id_col</code>/<code>amount_col</code>;日期取自 <code>date_from_filename</code>(文件名正则,第1组)或 <code>date_col</code>(列)</td></tr>
@@ -129,19 +129,19 @@ def build_lookup(self, spec, direction, df) -> pandas.DataFrame: ...</pre>
   </tbody>
 </table>
 <p class="lead">派生仅支持「列 + 正则(<code>amount_regex</code>)+ 去前缀(<code>id_strip_prefix</code>)」;超出者(查汇率表换算、跨表链式 join)才需插件或改引擎——外置化的诚实边界。</p>
-<h3>示例:Binance(聚合型,原始模板 header=1、打款日取自文件名)</h3>
+<h3>示例:Binance(聚合型,macro 合并后格式 header=0、逐行 date 列、严格 T-1)</h3>
 <pre>{
   "key": "BINANCE", "priority": 60,
   "handler": "aggregate_recon", "recon_mode": "aggregate",
   "join_col": "Recipient's Account information (Required)",   // 占位(聚合不建查找表)
   "recon": {
-    "date_match_mode": "t1_window", "amount_tolerance": 0,
+    "date_match_mode": "t1_shift", "amount_tolerance": 0,     // 平台日=上传日 T,内容属 T-1
     "output_sheet": "Binance-USDT对账",
     "platform": {
-      "sheet": "Binance Pay Payout Template", "header_row": 1,
+      "sheet": "数据", "header_row": 0,                       // macro 合并输出(找不到 sheet 回退首个)
       "id_col": "Recipient's Account information (Required)",
       "amount_col": "Amount (Required)",
-      "date_from_filename": "(\\d{4}-\\d{2}-\\d{2})"
+      "date_col": "date"                                       // 合并文件逐行日期列(上传日 T)
     },
     "admin": {
       "filter_col": "其他", "filter_prefix": "BIN-",

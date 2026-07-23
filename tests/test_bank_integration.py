@@ -2430,7 +2430,7 @@ class BankIntegrationSampleTests(unittest.TestCase):
         self.assertNotIn(CMP_AMOUNT_INTERNAL_COL, list(main.columns))
         self.assertNotIn(CMP_AMOUNT_INTERNAL_COL, list(diff.columns))
 
-    def test_write_output_keeps_apple_rows_in_result_sheet(self):
+    def test_write_output_moves_apple_rows_to_apple_sheet(self):
         detail = pd.DataFrame(
             [
                 {
@@ -2462,10 +2462,19 @@ class BankIntegrationSampleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             output_path = write_output(detail, Path(tmp))
+            # 主结果 sheet：苹果行已被拆出，仅保留非苹果（Adyen）行
             result = pd.read_excel(output_path, sheet_name=OUTPUT_SHEET_3, dtype=str).fillna("")
+            # 苹果支付 sheet 为自定义布局，用 header=None 读原始单元格
+            apple_sheet = pd.read_excel(
+                output_path, sheet_name=OUTPUT_APPLE_SHEET_3, header=None, dtype=str
+            ).fillna("")
 
-        self.assertEqual(len(result), 2)
-        self.assertIn("苹果支付Lua", set(result[ADMIN_PAYMENT_COL]))
+        # 苹果行不进主结果 sheet
+        self.assertEqual(len(result), 1)
+        self.assertNotIn("苹果支付Lua", set(result[ADMIN_PAYMENT_COL]))
+        # 苹果行不丢失：落在独立的“苹果支付”sheet 里
+        apple_cells = set(apple_sheet.to_numpy().ravel().tolist())
+        self.assertIn("苹果支付Lua", apple_cells)
 
     def test_monthly_comparison_uses_match_status_and_settlement_currency(self):
         summary = pd.DataFrame(
@@ -2549,23 +2558,25 @@ class BankIntegrationSampleTests(unittest.TestCase):
         )
 
     def test_read_samples_and_extract_latest_balance_by_date(self):
+        # (日期列, 余额列, 预期交易行数)：行数按各银行真实样例给定，
+        # 既匹配夹具又保留防截断守护（中信样例 智星-中信银行.xlsx 天然 9 行，余为 12 行）。
         cases = {
-            "中信银行": ("交易日期", "账户余额"),
-            "招商银行": ("交易日", "余额"),
-            "建设银行": ("交易时间", "余额"),
-            "浦发银行": ("交易日期", "余额"),
-            "工商银行": ("交易时间", "余额"),
-            "中国银行": ("交易日期", "交易后余额"),
-            "农业银行": ("交易时间", "账户余额"),
+            "中信银行": ("交易日期", "账户余额", 9),
+            "招商银行": ("交易日", "余额", 12),
+            "建设银行": ("交易时间", "余额", 12),
+            "浦发银行": ("交易日期", "余额", 12),
+            "工商银行": ("交易时间", "余额", 12),
+            "中国银行": ("交易日期", "交易后余额", 12),
+            "农业银行": ("交易时间", "账户余额", 12),
         }
         sources = {item["bank_name"]: item["filepath"] for item in scan_source_files(INPUT_DIR)}
 
-        for bank_name, (date_col, balance_col) in cases.items():
+        for bank_name, (date_col, balance_col, expected_rows) in cases.items():
             with self.subTest(bank_name=bank_name):
                 df = read_bank_file(sources[bank_name], bank_name)
                 balance_date, balance = get_last_balance(df, bank_name)
 
-                self.assertEqual(len(df), 12)
+                self.assertEqual(len(df), expected_rows)
                 self.assertIn(date_col, df.columns)
                 self.assertIn(balance_col, df.columns)
                 self.assertEqual(balance_date, "2026-12-28")

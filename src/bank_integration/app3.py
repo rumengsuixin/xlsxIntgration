@@ -254,8 +254,13 @@ def _read_csv_by_columns(
     label: str,
     any_column_groups: Optional[List[List[str]]] = None,
 ) -> pd.DataFrame:
-    df = _read_csv_file(filepath, header=header, label=label).dropna(how="all").fillna("")
-    if _columns_match(df.columns, required_columns, any_column_groups):
+    # 首读用配置 header；若文件行数不足/为空导致 pandas 抛 ParserError/EmptyDataError，
+    # 不直接崩溃，转由下方 _find_csv_header_row 自动探测真实表头再重读。
+    try:
+        df = _read_csv_file(filepath, header=header, label=label).dropna(how="all").fillna("")
+    except (pd.errors.ParserError, pd.errors.EmptyDataError):
+        df = None
+    if df is not None and _columns_match(df.columns, required_columns, any_column_groups):
         return df
 
     detected_header = _find_csv_header_row(
@@ -263,7 +268,7 @@ def _read_csv_by_columns(
         required_columns=required_columns,
         any_column_groups=any_column_groups,
     )
-    if detected_header is not None and detected_header != header:
+    if detected_header is not None and (df is None or detected_header != header):
         logging.warning(
             "%s CSV %s configured header=%d not usable; using detected header=%d",
             label,
@@ -275,13 +280,14 @@ def _read_csv_by_columns(
         if _columns_match(df.columns, required_columns, any_column_groups):
             return df
 
-    if not _columns_match(df.columns, required_columns, any_column_groups):
+    if df is None or not _columns_match(df.columns, required_columns, any_column_groups):
         required_desc = list(required_columns)
         if any_column_groups:
             required_desc = required_desc + [f"one of {any_column_groups}"]
+        actual_cols = list(df.columns) if df is not None else "文件无法按配置表头读取"
         raise ValueError(
             f"{label} CSV {filepath.name} does not contain required columns {required_desc!r}. "
-            f"Actual columns: {list(df.columns)!r}"
+            f"Actual columns: {actual_cols!r}"
         )
     return df
 
@@ -325,7 +331,7 @@ def _select_sheet_by_columns(
                         expected,
                         filepath.name,
                         sheet_name,
-                        required,
+                        required_columns,
                         sheet_names,
                     )
                 return sheet_name

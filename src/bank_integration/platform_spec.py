@@ -67,6 +67,11 @@ class PlatformSpec:
     emits_amount_diff: bool = False               # 是否参与"匹配金额差异"sheet
     required_columns: List[str] = field(default_factory=list)  # 读取时按此选含全部所需列的 sheet
 
+    # ── 聚合对账扩展(多对多:平台无订单号,按 收款ID+日期 汇总比对,产出独立 sheet)──
+    # 缺省 None → 现有"逐行 1:1 追加"范式不受影响;handler=aggregate_recon 时由 recon 驱动。
+    recon_mode: Optional[str] = None              # None(逐行 enrich) | "aggregate"(聚合对账)
+    recon: dict = field(default_factory=dict)     # 聚合对账声明(platform/admin 取值、日期口径、状态标签、输出)
+
     def cols_for(self, direction: str) -> Dict[str, str]:
         """顶层 columns 与方向 columns 逐键合并（方向覆盖顶层）。"""
         merged = dict(self.columns)

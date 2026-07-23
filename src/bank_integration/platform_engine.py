@@ -616,3 +616,145 @@ def _build_platform_only_rows_columnar(result_cols, admin_df, lookups, active_sp
     if not extra:
         return pd.DataFrame(columns=result_cols)
     return pd.DataFrame(extra, columns=result_cols)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 通用聚合对账原语（代号无关：多对多，按 键+日期 汇总后 full-outer 比对）
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# 与逐行 1:1 的 enrich_admin_columnar 正交：平台无订单号、一个收款ID 对多笔，
+# 无法逐行追加，须两侧各自按 (ID, 日期) groupby 求和/计数后做 full-outer 比对，
+# 并产出独立 sheet。以下三个原语纯声明驱动，无任何平台专属分支：
+#   derive_series      —— 按列取值(可去前缀 / 正则取组)
+#   aggregate_by_keys  —— 按 (id, date) 聚合金额合计与笔数
+#   reconcile_aggregate—— full-outer + 日期口径(exact/period/t1_window) + 状态判定
+
+
+def derive_series(df: pd.DataFrame, col: Optional[str], *,
+                  regex: Optional[str] = None,
+                  strip_prefix: Optional[str] = None) -> pd.Series:
+    """按列取值，返回字符串 Series。
+
+    - col 缺失或不在表中 → 返回等长空串 Series（缺列不报错，交由上层判定）；
+    - strip_prefix：去掉值开头的固定前缀（如 admin `其他` 去 `BIN-`）；
+    - regex：在（去前缀后的）值上应用正则，取第 1 组（如 `USDT\\s*([\\d.]+)`）。
+    先去前缀再取正则，二者可单独或组合使用。
+    """
+    if not col or col not in df.columns:
+        return pd.Series([""] * len(df), index=df.index, dtype=object)
+    s = df[col].astype(str).str.strip()
+    if strip_prefix:
+        s = s.str.replace(rf"^{re.escape(strip_prefix)}", "", regex=True)
+    if regex:
+        s = s.str.extract(regex, expand=False, flags=re.IGNORECASE)
+    return s.fillna("")
+
+
+def aggregate_by_keys(ids, dates, amounts) -> pd.DataFrame:
+    """按 (id, date) 聚合金额合计(_sum)与笔数(_cnt)。
+
+    仅计入 id 非空且金额可解析为 float 的行；返回列 [_id, _date, _sum, _cnt]。
+    """
+    amt = [to_float(a) for a in amounts]
+    df = pd.DataFrame({
+        "_id": [str(i).strip() for i in ids],
+        "_date": [str(d).strip() for d in dates],
+        "_amt": amt,
+    })
+    df = df[(df["_id"] != "") & df["_amt"].notna()]
+    if df.empty:
+        return pd.DataFrame(columns=["_id", "_date", "_sum", "_cnt"])
+    g = df.groupby(["_id", "_date"], as_index=False).agg(
+        _sum=("_amt", "sum"), _cnt=("_amt", "count"))
+    return g
+
+
+def _shift_day(date_str: str, days: int) -> str:
+    """将 YYYY-MM-DD 平移 days 天并重新格式化；解析失败原样返回。"""
+    ts = pd.to_datetime(str(date_str), errors="coerce")
+    if pd.isna(ts):
+        return str(date_str)
+    return (ts + pd.Timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+# reconcile_aggregate 输出列的固定语义顺序（JSON 的 output_columns 仅提供显示名）
+_RECON_FIELDS = ("date", "id", "admin_amt", "admin_cnt", "plat_amt", "plat_cnt", "diff", "status")
+
+_DEFAULT_RECON_LABELS = {
+    "consistent": "一致",
+    "amount_diff": "金额不符",
+    "platform_missing": "平台缺失",
+    "platform_extra": "平台多余",
+}
+
+
+def reconcile_aggregate(admin_agg: pd.DataFrame, platform_agg: pd.DataFrame, *,
+                        date_match_mode: str = "exact",
+                        tolerance: float = 0.0,
+                        labels: Optional[dict] = None,
+                        columns: Optional[List[str]] = None) -> pd.DataFrame:
+    """两侧聚合结果 full-outer 比对，产出对账表。
+
+    date_match_mode：
+      - exact     ：严格按 (id, 平台日) 对齐；
+      - period    ：忽略日期，仅按 id 汇总比对（整期）；
+      - t1_window ：平台打款日 pd 归属到一个 admin 业务日——pd 当天有 admin 归 pd，
+                    否则前一日 pd-1 有 admin 归 pd-1(T+1)，都没有则留在 pd(平台多余)。
+    状态：两侧都有→|差额|≤容差 一致 / 否则 金额不符；仅 admin→平台缺失；仅平台→平台多余。
+    columns：8 个显示列名，按 _RECON_FIELDS 顺序对应；缺省用内部字段名。
+    """
+    lab = {**_DEFAULT_RECON_LABELS, **(labels or {})}
+    cols = list(columns) if columns and len(columns) == len(_RECON_FIELDS) else list(_RECON_FIELDS)
+
+    # admin 侧：(id, date) → (sum, cnt)
+    admin: Dict[tuple, tuple] = {}
+    for _, r in admin_agg.iterrows():
+        admin[(str(r["_id"]).strip(), format_date(r["_date"]))] = (float(r["_sum"]), int(r["_cnt"]))
+
+    if date_match_mode == "period":
+        collapsed: Dict[tuple, tuple] = {}
+        for (i, _d), (s, c) in admin.items():
+            s0, c0 = collapsed.get((i, ""), (0.0, 0))
+            collapsed[(i, "")] = (s0 + s, c0 + c)
+        admin = collapsed
+
+    # 平台侧：按日期口径归属业务日后累加
+    plat: Dict[tuple, tuple] = {}
+    for _, r in platform_agg.iterrows():
+        i, pday = str(r["_id"]).strip(), format_date(r["_date"])
+        if date_match_mode == "period":
+            bd = ""
+        elif date_match_mode == "t1_window":
+            if (i, pday) in admin:
+                bd = pday
+            elif (i, _shift_day(pday, -1)) in admin:
+                bd = _shift_day(pday, -1)
+            else:
+                bd = pday
+        else:  # exact
+            bd = pday
+        s0, c0 = plat.get((i, bd), (0.0, 0))
+        plat[(i, bd)] = (s0 + float(r["_sum"]), c0 + int(r["_cnt"]))
+
+    rows: List[dict] = []
+    for (i, d) in sorted(set(admin) | set(plat)):
+        a = admin.get((i, d))
+        p = plat.get((i, d))
+        a_amt = round(a[0], 8) if a else 0.0
+        p_amt = round(p[0], 8) if p else 0.0
+        diff = round(p_amt - a_amt, 8)
+        if a and p:
+            status = lab["consistent"] if abs(diff) <= tolerance else lab["amount_diff"]
+        elif a:
+            status = lab["platform_missing"]
+        else:
+            status = lab["platform_extra"]
+        values = [
+            d, i,
+            a_amt if a else "", a[1] if a else "",
+            p_amt if p else "", p[1] if p else "",
+            diff, status,
+        ]
+        rows.append(dict(zip(cols, values)))
+
+    return pd.DataFrame(rows, columns=cols)

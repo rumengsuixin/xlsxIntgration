@@ -106,6 +106,37 @@ PHONECARD_ORDER_TYPE_COL_5    = "订单类型"
 PHONECARD_PRIZE_COL_5         = "奖品名称"
 PHONECARD_PREFERRED_SHEET_KEY_5 = "汇总"
 
+# ── Binance USDT 批量代付（聚合型:平台无订单号,按 收款ID+日期 汇总对账）──────────
+# 平台文件为原始 Binance 模板 USDT奖品发放信息YYYY-MM-DD.xls:
+#   sheet=Binance Pay Payout Template,表头在第2行(header=1),日期取自文件名;
+#   收款ID 在 `Recipient's Account information (Required)`,USDT 面额在 `Amount (Required)`。
+# admin 侧新格式多出 `其他` 列(BIN-<收款ID>)标识 USDT 兑换单,USDT 面额在 `奖品名称`
+# (如 "USDT 0.5",`金额`列是 TRY)。二者按 收款ID 去前缀关联,按 T+1 窗口对齐日期。
+BINANCE_PLATFORM_NAME_5    = "Binance"
+BINANCE_SHEET_5            = "Binance Pay Payout Template"
+BINANCE_HEADER_5           = 1                 # 第1行是大标题,列头在第2行
+BINANCE_ID_COL_5           = "Recipient's Account information (Required)"
+BINANCE_AMOUNT_COL_5       = "Amount (Required)"
+BINANCE_DATE_FROM_NAME_5   = r"(\d{4}-\d{2}-\d{2})"   # 从文件名提取打款日
+BINANCE_FILE_PREFIXES_5    = ["usdt奖品发放信息", "binance-", "merged-"]
+BINANCE_OUTPUT_SHEET_5     = "Binance-USDT对账"
+
+ADMIN_OTHER_COL_5          = "其他"           # 新格式 admin 多出的列(BIN-<收款ID>)
+BINANCE_ADMIN_PREFIX_5     = "BIN-"
+BINANCE_ADMIN_USDT_REGEX_5 = r"USDT\s*([\d.]+)"      # 从 奖品名称 提取 USDT 面额
+ADMIN_STATUS_DONE_5        = "已完成"
+
+BINANCE_RECON_LABELS_5 = {
+    "consistent":       "一致",
+    "amount_diff":      "金额不符",
+    "platform_missing": "平台缺失",
+    "platform_extra":   "平台多余",
+}
+BINANCE_RECON_COLUMNS_5 = [
+    "日期", "收款ID", "admin应付USDT", "admin笔数",
+    "平台实付USDT", "平台笔数", "差额", "对账状态",
+]
+
 # ── 文件识别前缀映射（stem.lower() startswith 任意一个前缀即命中）─────────────
 # wangupay-（实际文件名少一个"g"）和 wangguypay- 均支持
 PLATFORM_PREFIXES_5: dict = {
@@ -358,5 +389,40 @@ BUILTIN_SPECS_5 = [
             "odemeler_prefixes": PLATFORM_PREFIXES_5["epin_odemeler"],
         },
         "directions": {"payout": {"prefixes": PLATFORM_PREFIXES_5["epin_siparisler"]}},
+    },
+    {
+        # 聚合型平台:handler=aggregate_recon,不走列式 enrich/查找表,产出独立 sheet。
+        # join_col 仅为占位以满足 from_dict 必填(聚合引擎不建查找表、不使用它)。
+        "key": "BINANCE",
+        "priority": 60,
+        "handler": "aggregate_recon",
+        "join_col": BINANCE_ID_COL_5,
+        "recon_mode": "aggregate",
+        "recon": {
+            "date_match_mode": "t1_window",     # 平台常在 admin 次日打款,按 T+1 窗口对齐
+            "amount_tolerance": 0,
+            "output_sheet": BINANCE_OUTPUT_SHEET_5,
+            "platform": {
+                "sheet": BINANCE_SHEET_5,
+                "header_row": BINANCE_HEADER_5,
+                "id_col": BINANCE_ID_COL_5,
+                "amount_col": BINANCE_AMOUNT_COL_5,
+                "date_from_filename": BINANCE_DATE_FROM_NAME_5,
+            },
+            "admin": {
+                "filter_col": ADMIN_OTHER_COL_5,
+                "filter_prefix": BINANCE_ADMIN_PREFIX_5,
+                "status_col": ADMIN_STATUS_COL_5,
+                "status_include": [ADMIN_STATUS_DONE_5],
+                "id_col": ADMIN_OTHER_COL_5,
+                "id_strip_prefix": BINANCE_ADMIN_PREFIX_5,
+                "amount_col": ADMIN_PRIZE_COL_5,
+                "amount_regex": BINANCE_ADMIN_USDT_REGEX_5,
+                "date_col": ADMIN_DATE_COL_5,
+            },
+            "labels": BINANCE_RECON_LABELS_5,
+            "output_columns": BINANCE_RECON_COLUMNS_5,
+        },
+        "directions": {"payout": {"prefixes": BINANCE_FILE_PREFIXES_5}},
     },
 ]

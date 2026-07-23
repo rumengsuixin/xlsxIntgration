@@ -122,6 +122,8 @@ class PlatformSpec:
             balance_handler=bool(data.get("balance_handler", False)),
             emits_amount_diff=bool(data.get("emits_amount_diff", False)),
             required_columns=list(data.get("required_columns", [])),
+            recon_mode=data.get("recon_mode"),
+            recon=dict(data.get("recon", {})),
         )
 
 

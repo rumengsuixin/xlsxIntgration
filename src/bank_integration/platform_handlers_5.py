@@ -13,16 +13,21 @@
 
 import logging
 import re
+from pathlib import Path
 
 import pandas as pd
 
 from . import config5 as c5
 from .platform_engine import (
+    aggregate_by_keys,
     dedup_lookup,
+    derive_series,
+    excel_engine,
     format_date,
     normalize_currency,
     normalize_status,
     read_source_table,
+    reconcile_aggregate,
     to_float,
 )
 from .platform_spec import OutputColumn, OutputSchema, register_handler
@@ -251,6 +256,77 @@ class PhonecardHandler(GenericPayout5Handler):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# 聚合对账 handler（通用:多对多,平台无订单号,按 收款ID+日期 汇总比对,出独立 sheet）
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# 全程按 spec.recon 声明驱动,无任何平台专属分支——同型新平台仅加一个 JSON 即接入。
+# 与 enrich_admin_columnar(逐行 1:1 追加)正交,不参与 main 的列式查找/enrich。
+
+class AggregateReconHandler:
+    """按 spec.recon 声明做聚合对账,返回 (sheet 名, 对账 DataFrame)。"""
+
+    def read(self, spec, filepath):
+        """读平台源文件:sheet / header_row 由 spec.recon.platform 声明(默认首 sheet、表头首行)。"""
+        p = spec.recon.get("platform", {})
+        header = int(p.get("header_row", 0))
+        sheet = p.get("sheet")
+        engine = excel_engine(Path(filepath))
+        with pd.ExcelFile(filepath, engine=engine) as xls:
+            target = sheet if (sheet and sheet in xls.sheet_names) else xls.sheet_names[0]
+        df = pd.read_excel(filepath, sheet_name=target, header=header, dtype=str, engine=engine).fillna("")
+        df.columns = [str(c).strip() for c in df.columns]
+        return df
+
+    def build_reconciliation(self, spec, admin_df, filepaths):
+        r = spec.recon or {}
+        p = r.get("platform", {})
+        a = r.get("admin", {})
+
+        # ── 平台侧:多文件累加,日期取自文件名(date_from_filename)或列(date_col)──
+        p_ids, p_dates, p_amts = [], [], []
+        for fp in filepaths:
+            df = self.read(spec, fp)
+            ids = list(derive_series(df, p.get("id_col")))
+            amts = list(derive_series(df, p.get("amount_col")))
+            date_re = p.get("date_from_filename")
+            if date_re:
+                m = re.search(date_re, Path(fp).name)
+                d = format_date(m.group(1)) if m else ""
+                dates = [d] * len(df)
+            else:
+                dates = [format_date(x) for x in derive_series(df, p.get("date_col"))]
+            p_ids += ids
+            p_dates += dates
+            p_amts += amts
+        platform_agg = aggregate_by_keys(p_ids, p_dates, p_amts)
+
+        # ── admin 侧:前缀筛选 + 状态过滤 → 派生(去前缀 ID / 正则取额 / 取日)──
+        adf = admin_df
+        fcol, fpre = a.get("filter_col"), a.get("filter_prefix")
+        if fcol and fcol in adf.columns and fpre:
+            adf = adf[adf[fcol].astype(str).str.startswith(fpre)]
+        scol, sinc = a.get("status_col"), a.get("status_include")
+        if scol and scol in adf.columns and sinc:
+            adf = adf[adf[scol].astype(str).str.strip().isin(sinc)]
+        a_ids = list(derive_series(adf, a.get("id_col"), strip_prefix=a.get("id_strip_prefix")))
+        a_amts = list(derive_series(adf, a.get("amount_col"), regex=a.get("amount_regex")))
+        a_dates = [format_date(x) for x in derive_series(adf, a.get("date_col"))]
+        admin_agg = aggregate_by_keys(a_ids, a_dates, a_amts)
+
+        out = reconcile_aggregate(
+            admin_agg, platform_agg,
+            date_match_mode=r.get("date_match_mode", "exact"),
+            tolerance=float(r.get("amount_tolerance", 0) or 0),
+            labels=r.get("labels"),
+            columns=r.get("output_columns"),
+        )
+        sheet_name = r.get("output_sheet") or f"{spec.key}对账"
+        logger.info("【%s】聚合对账:平台 %d 组 / admin %d 组 → 对账 %d 行",
+                    spec.key, len(platform_agg), len(admin_agg), len(out))
+        return sheet_name, out
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # 代号5 输出 schema（10 个追加列 + 机构覆盖）
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -285,3 +361,4 @@ register_handler("ibfpay", IbfypayHandler())
 register_handler("wangguypay", WangguypayHandler())
 register_handler("phonecard", PhonecardHandler())
 register_handler("epin", EpinHandler())
+register_handler("aggregate_recon", AggregateReconHandler())

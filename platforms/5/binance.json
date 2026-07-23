@@ -1,0 +1,57 @@
+{
+  "key": "BINANCE",
+  "priority": 60,
+  "handler": "aggregate_recon",
+  "join_col": "Recipient's Account information (Required)",
+  "recon_mode": "aggregate",
+  "recon": {
+    "date_match_mode": "t1_window",
+    "amount_tolerance": 0,
+    "output_sheet": "Binance-USDT对账",
+    "platform": {
+      "sheet": "Binance Pay Payout Template",
+      "header_row": 1,
+      "id_col": "Recipient's Account information (Required)",
+      "amount_col": "Amount (Required)",
+      "date_from_filename": "(\\d{4}-\\d{2}-\\d{2})"
+    },
+    "admin": {
+      "filter_col": "其他",
+      "filter_prefix": "BIN-",
+      "status_col": "状态",
+      "status_include": [
+        "已完成"
+      ],
+      "id_col": "其他",
+      "id_strip_prefix": "BIN-",
+      "amount_col": "奖品名称",
+      "amount_regex": "USDT\\s*([\\d.]+)",
+      "date_col": "日期"
+    },
+    "labels": {
+      "consistent": "一致",
+      "amount_diff": "金额不符",
+      "platform_missing": "平台缺失",
+      "platform_extra": "平台多余"
+    },
+    "output_columns": [
+      "日期",
+      "收款ID",
+      "admin应付USDT",
+      "admin笔数",
+      "平台实付USDT",
+      "平台笔数",
+      "差额",
+      "对账状态"
+    ]
+  },
+  "directions": {
+    "payout": {
+      "prefixes": [
+        "usdt奖品发放信息",
+        "binance-",
+        "merged-"
+      ]
+    }
+  }
+}

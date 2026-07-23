@@ -114,5 +114,50 @@ def build_lookup(self, spec, direction, df) -> pandas.DataFrame: ...</pre>
 </ul>
 <p>后续 3→1/2 可同法推广(代号1/2 的农行正则/中行日期范围/华美 PDF 等硬编码分支需先降维成声明式选项或 handler)。</p>
 
+<h2>6. 代号5 聚合型平台(<code>recon</code> schema,第二种范式)</h2>
+<p class="lead">上面 5 个平台都是「订单号 1:1 追加」。平台<strong>没有订单号、一个收款 ID 对多笔</strong>的(如 Binance USDT 批量代付)走<strong>聚合对账</strong>范式:两侧各按「收款ID + 日期」<code>groupby</code> 求和+计数 → full-outer 比对 → 四状态 → 产出<strong>独立 sheet</strong>(原有 sheet 逐字节不变、净增)。设 <code>recon_mode:"aggregate"</code> + <code>handler:"aggregate_recon"</code>,取值/口径/输出<strong>全部由 <code>recon</code> 块声明</strong>,通用 <code>AggregateReconHandler</code> 无平台专属分支。<strong>加同型新平台只丢一个 JSON,免改代码免重打包。</strong></p>
+<table>
+  <thead><tr><th>字段</th><th>含义</th></tr></thead>
+  <tbody>
+    <tr><td><code>recon.date_match_mode</code></td><td>日期口径:<code>exact</code>(严格按天)/<code>period</code>(忽略日期整期)/<code>t1_window</code>(T+1 窗口对齐:平台打款日 <code>pd</code> 当天有 admin 归 <code>pd</code>,否则前一日 <code>pd-1</code> 有 admin 归 <code>pd-1</code>,都没有留 <code>pd</code>=平台多余)</td></tr>
+    <tr><td><code>recon.amount_tolerance</code></td><td>金额容差,<code>|差额|≤容差</code> 判「一致」(默认 0)</td></tr>
+    <tr><td><code>recon.output_sheet</code></td><td>独立对账 sheet 名(如 <code>Binance-USDT对账</code>)</td></tr>
+    <tr><td><code>recon.platform</code></td><td>平台侧取值:<code>sheet</code>/<code>header_row</code>(表头所在行,0-based)/<code>id_col</code>/<code>amount_col</code>;日期取自 <code>date_from_filename</code>(文件名正则,第1组)或 <code>date_col</code>(列)</td></tr>
+    <tr><td><code>recon.admin</code></td><td>admin 侧:<code>filter_col</code>+<code>filter_prefix</code>(前缀筛选)、<code>status_col</code>+<code>status_include</code>(状态白名单)、<code>id_col</code>+<code>id_strip_prefix</code>(去前缀取ID)、<code>amount_col</code>+<code>amount_regex</code>(正则取额,第1组)、<code>date_col</code></td></tr>
+    <tr><td><code>recon.labels</code></td><td>四状态标签:<code>consistent</code>/<code>amount_diff</code>/<code>platform_missing</code>/<code>platform_extra</code></td></tr>
+    <tr><td><code>recon.output_columns</code></td><td>8 个显示列名(按固定语义序:日期/收款ID/admin金额/admin笔数/平台金额/平台笔数/差额/状态)</td></tr>
+  </tbody>
+</table>
+<p class="lead">派生仅支持「列 + 正则(<code>amount_regex</code>)+ 去前缀(<code>id_strip_prefix</code>)」;超出者(查汇率表换算、跨表链式 join)才需插件或改引擎——外置化的诚实边界。</p>
+<h3>示例:Binance(聚合型,原始模板 header=1、打款日取自文件名)</h3>
+<pre>{
+  "key": "BINANCE", "priority": 60,
+  "handler": "aggregate_recon", "recon_mode": "aggregate",
+  "join_col": "Recipient's Account information (Required)",   // 占位(聚合不建查找表)
+  "recon": {
+    "date_match_mode": "t1_window", "amount_tolerance": 0,
+    "output_sheet": "Binance-USDT对账",
+    "platform": {
+      "sheet": "Binance Pay Payout Template", "header_row": 1,
+      "id_col": "Recipient's Account information (Required)",
+      "amount_col": "Amount (Required)",
+      "date_from_filename": "(\\d{4}-\\d{2}-\\d{2})"
+    },
+    "admin": {
+      "filter_col": "其他", "filter_prefix": "BIN-",
+      "status_col": "状态", "status_include": ["已完成"],
+      "id_col": "其他", "id_strip_prefix": "BIN-",
+      "amount_col": "奖品名称", "amount_regex": "USDT\\s*([\\d.]+)",
+      "date_col": "日期"
+    },
+    "labels": { "consistent": "一致", "amount_diff": "金额不符",
+                "platform_missing": "平台缺失", "platform_extra": "平台多余" },
+    "output_columns": ["日期","收款ID","admin应付USDT","admin笔数",
+                       "平台实付USDT","平台笔数","差额","对账状态"]
+  },
+  "directions": { "payout": { "prefixes": ["usdt奖品发放信息","binance-","merged-"] } }
+}</pre>
+<p class="lead"><code>platforms/5/binance.json</code> 须与 <code>config5.BUILTIN_SPECS_5</code> 的 BINANCE 声明一致(测试 <code>test_repo_json_matches_builtin_specs</code> code"5" 守护);<code>recon</code> 非特判合并键,深合并时<strong>整块替换</strong>,故 JSON 须完整镜像。</p>
+
 </body>
 </html>

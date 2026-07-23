@@ -31,7 +31,7 @@ from typing import List, Optional, Set
 import pandas as pd
 
 from .config import OUTPUT_DIR
-from .platform_engine import enrich_admin_columnar, resolve_handler
+from .platform_engine import enrich_admin_columnar, excel_engine, resolve_handler
 from .platform_loader import load_platform_registry
 from .platform_handlers_5 import SCHEMA_5  # noqa: F401  （导入即注册代号5 handler）
 from .config5 import (
@@ -430,7 +430,8 @@ def _find_sheet_with_col_5(xls: pd.ExcelFile, col: str) -> str:
     """
     for s in xls.sheet_names:
         try:
-            preview = pd.read_excel(xls, sheet_name=s, nrows=0, engine="xlrd")
+            # 不显式传 engine：xls 已绑定其打开时的引擎(.xls→xlrd / .xlsx→openpyxl)
+            preview = pd.read_excel(xls, sheet_name=s, nrows=0)
             if col in _normalize_columns_5(preview.columns):
                 return s
         except Exception:
@@ -443,20 +444,21 @@ def _find_sheet_with_col_5(xls: pd.ExcelFile, col: str) -> str:
 # ---------------------------------------------------------------------------
 
 def read_admin_5(filepath: Path) -> pd.DataFrame:
-    """读取 admin 主表（XLS，sheet="Simple"），全列字符串。
+    """读取 admin 主表（sheet="Simple"），全列字符串。
 
     关键点：
-      - 文件为 .xls 格式，必须 engine="xlrd"，openpyxl 无法处理
+      - 按扩展名自适应引擎：.xls→xlrd / .xlsx→openpyxl（新格式 admin 为 .xlsx）
       - 若 sheet "Simple" 不存在则通过 _find_sheet_with_col_5 回退查找
       - 返回 dropna(how="all").fillna("") 的 DataFrame
 
     Args:
-        filepath: admin XLS 文件路径。
+        filepath: admin XLS/XLSX 文件路径。
 
     Returns:
         包含 admin 全部原始列的 DataFrame。
     """
-    with pd.ExcelFile(filepath, engine="xlrd") as xls:
+    engine = excel_engine(filepath)
+    with pd.ExcelFile(filepath, engine=engine) as xls:
         sheet_names = xls.sheet_names
         if ADMIN_SHEET_5 in sheet_names:
             target = ADMIN_SHEET_5
@@ -466,7 +468,7 @@ def read_admin_5(filepath: Path) -> pd.DataFrame:
                 ADMIN_SHEET_5, ADMIN_JOIN_COL_5,
             )
             target = _find_sheet_with_col_5(xls, ADMIN_JOIN_COL_5)
-    df = pd.read_excel(filepath, sheet_name=target, dtype=str, engine="xlrd")
+    df = pd.read_excel(filepath, sheet_name=target, dtype=str, engine=engine)
     return df.dropna(how="all").fillna("")
 
 
@@ -1259,17 +1261,22 @@ def write_output_5(
     result_df: pd.DataFrame,
     output_dir: Path,
     platform_balance_summary: Optional[pd.DataFrame] = None,
+    extra_sheets: Optional[dict] = None,
 ) -> Path:
     """将结果写入 data/output/代付对账结果_{YYYYMMDD}.xlsx。
 
-    输出结构（3 个 sheet）：
+    输出结构（固定 4 个 sheet + 可选附加 sheet）：
       - OUTPUT_SHEET_5（"代付对账结果"）：全量结果，冻结首行，启用自动筛选
       - OUTPUT_FAILED_SHEET_5（"匹配失败订单"）：是否匹配=否 的行
       - OUTPUT_SUMMARY_SHEET_5（"平台汇总"）：build_summary_sheet_5 结果
+      - OUTPUT_AMOUNT_DIFF_SHEET_5（"匹配金额差异"）：EPIN 计算金额与 admin 不符行
+      - extra_sheets：聚合型平台(如 Binance)各自的对账 sheet，净增在末尾，不影响上述 4 表
 
     Args:
         result_df: enrich_admin_5 返回的完整 DataFrame。
         output_dir: 输出目录（自动 mkdir）。
+        platform_balance_summary: 平台余额汇总（可选）。
+        extra_sheets: {sheet 名: DataFrame} 附加表（可选，聚合型平台产出）。
 
     Returns:
         写入的输出文件 Path。
@@ -1296,6 +1303,13 @@ def write_output_5(
         summary_df.to_excel(writer, sheet_name=OUTPUT_SUMMARY_SHEET_5, index=False)
         diff_df.to_excel(writer, sheet_name=OUTPUT_AMOUNT_DIFF_SHEET_5, index=False)
         for sname in (OUTPUT_SHEET_5, OUTPUT_FAILED_SHEET_5, OUTPUT_AMOUNT_DIFF_SHEET_5):
+            ws = writer.sheets[sname]
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = ws.dimensions
+
+        # 附加 sheet(聚合型平台对账):净增在末尾,不影响上述固定 4 表
+        for sname, sdf in (extra_sheets or {}).items():
+            sdf.to_excel(writer, sheet_name=sname, index=False)
             ws = writer.sheets[sname]
             ws.freeze_panes = "A2"
             ws.auto_filter.ref = ws.dimensions
@@ -1414,6 +1428,8 @@ def main() -> int:
     for spec in specs:
         if spec.key in BUILTIN_PLATFORM_KEYS_5:
             continue
+        if getattr(spec, "recon_mode", None) == "aggregate":
+            continue  # 聚合型平台不进列式查找/enrich,单独走 build_reconciliation
         ext_files = files.get(spec.key, [])
         if not ext_files:
             continue
@@ -1427,9 +1443,25 @@ def main() -> int:
     result_df = enrich_admin_columnar(admin_df, lookups, specs, SCHEMA_5)
     log_match_stats_5(result_df)
 
+    # ── 聚合型平台(recon_mode=aggregate):独立对账,各产出一个附加 sheet ──
+    extra_sheets: dict = {}
+    for spec in specs:
+        if getattr(spec, "recon_mode", None) != "aggregate":
+            continue
+        agg_files = files.get(spec.key, [])
+        if not agg_files:
+            logging.info("聚合平台 %s 未发现源文件，跳过", spec.key)
+            continue
+        try:
+            sheet_name, agg_df = resolve_handler(spec).build_reconciliation(spec, admin_df, agg_files)
+            extra_sheets[sheet_name] = agg_df
+            logging.info("%s 聚合对账 %d 行 → sheet《%s》", spec.key, len(agg_df), sheet_name)
+        except Exception:
+            logging.error("平台 %s 聚合对账失败，已跳过", spec.key, exc_info=True)
+
     # ── 输出 ──────────────────────────────────────────────────
     try:
-        output_path = write_output_5(result_df, OUTPUT_DIR, platform_balance_summary)
+        output_path = write_output_5(result_df, OUTPUT_DIR, platform_balance_summary, extra_sheets)
         logging.info("完成。输出文件: %s", output_path)
     except PermissionError:
         logging.error("无法写入输出文件，请确认文件未在 Excel 中打开后重试。")
